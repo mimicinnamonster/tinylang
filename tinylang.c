@@ -1092,10 +1092,10 @@ void comp_stmt(Code *c) {
                     if (idx_count > 0) emit(c, (Instr){OC_LVALS, idx_count, 0, .name = nm});
                     else emit(c, (Instr){OC_STORE, 0, 0, .name = nm});
                 }
-            } else { comp_expr(c); emit(c, (Instr){OC_POP, 0, 0}); }
+            } else { comp_expr(c); emit(c, (Instr){ (comp_file ? OC_POP : OC_PRINT), 0, 0 }); }
             break;
         }
-        default: comp_expr(c); emit(c, (Instr){OC_POP, 0, 0}); break;
+        default: comp_expr(c); emit(c, (Instr){ (comp_file ? OC_POP : OC_PRINT), 0, 0 }); break;
     }
 }
 
@@ -1280,7 +1280,7 @@ void exec(Code *c) {
                 } else istk[++isp] = vnum(-2);
                 break;
             }
-            case OC_PRINT: { print_val(istk[isp--]); printf("\n"); break; }
+            case OC_PRINT: { if (isp >= 0) { print_val(istk[isp--]); printf("\n"); } break; }
             case OC_INPUT: {
                 char buf[1024]; int n;
                 if (!fgets(buf, 1024, stdin)) { n = 0; } else { n = strlen(buf); if (n && buf[n-1]=='\n') n--; }
@@ -1597,7 +1597,7 @@ int main(int a, char **v) {
             lex(buf); Code *code = new_code(); comp_program(code);
             { int _sr = repl_catching; repl_catching = 1;
               if (setjmp(repl_jmp)) { isp = -1; rf = 0; call_depth = -1; }
-              else { exec(code); }
+              else { isp = -1; exec(code); }
               repl_catching = _sr; }
             code_free(code); free(ts);
         }

@@ -679,13 +679,32 @@ print(x);
 x = 1;;;y = 2
 ```
 
-Expression statements (evaluated for side effect, result discarded):
+### Expression statements vs REPL auto-print
+
+In **script mode**, expression statements are evaluated for side effect and the result discarded:
 
 ```
 x + y               // valid: evaluates and discards
 print(5)            // valid: calls print, discards return value
 42                  // valid: literal expression, no-op
 ```
+
+In the **REPL**, a bare expression statement automatically prints its value instead of discarding it:
+
+```
+> 5
+5
+> x + 3
+42
+> "hello"
+hello
+> [1, 2, 3]
+[1, 2, 3]
+> nil
+[]
+```
+
+This makes the REPL feel like a calculator — type an expression, see its result. Assignments (`x = 5`) produce no output. The built-in `print()` function works as expected and does not cause double-printing.
 
 ---
 
@@ -750,6 +769,10 @@ in bar()
 ```
 
 No recovery, no try/catch — except for the built-in `assert()` function (see §17), which wraps a single expression in an error-catching context and returns the error message as a string instead of halting.
+
+### REPL auto-print
+
+When a bare expression is used as a statement in the REPL, the VM emits `OC_PRINT` instead of `OC_POP`. This is controlled by a compile-time check on `comp_file` — when `comp_file` is `NULL` (REPL mode), bare expression statements compile to `OC_PRINT`; in script mode (`comp_file` set), they compile to `OC_POP`. The `OC_PRINT` handler safely no-ops on an empty stack, so calls to the built-in `print()` function leave nothing extra to print.
 
 | Error | Message |
 |-------|---------|

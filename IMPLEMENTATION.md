@@ -178,7 +178,7 @@ typedef enum {
     OC_JMP,      // unconditional jump
     OC_RET,      // set return flag and value, exit function
     OC_POP,      // discard top of stack
-    OC_PRINT,    // built-in print
+    OC_PRINT,    // built-in print (also used by REPL auto-print)
     OC_INPUT,    // built-in input
     OC_ASSERT,   // built-in assert (error-catching)
     OC_CFUNC,    // call registered C function (FFI)
@@ -329,7 +329,7 @@ case OC_CALL: {
         sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
     int saved_rf = rf; rf = 0; isp = -1;
     exec(f->code);
-    Value result = rf ? rv : nilv();  // no return → nil
+    Value result = rf ? rv : nilv();
     sfree(cs); cs = saved_cs; cur_fi = saved_cur_fi;
     rf = saved_rf; isp = saved_isp;
     for (int j = 0; j <= saved_isp; j++) istk[j] = saved[j];  // restore
@@ -490,6 +490,34 @@ state, lexes the included file, compiles its statements into the current
 `Code`, then restores the previous token state. This is recursive — included
 files can themselves include other files.
 
+### REPL auto-print
+
+When the compiler emits a bare expression statement, it emits either `OC_POP`
+(to discard the value) or `OC_PRINT` (to display it). The decision is made
+at compile time by checking the global `comp_file` pointer:
+
+- **Script mode** (`comp_file` is set to the source file path): emits `OC_POP`
+  — the expression result is silently discarded, matching script semantics.
+- **REPL mode** (`comp_file` is NULL): emits `OC_PRINT` — the expression value
+  is printed to stdout followed by a newline.
+
+This applies to both identifier-led expressions and literal expressions:
+
+```c
+// In comp_stmt, both the T_ID and default cases:
+emit(c, (Instr){ (comp_file ? OC_POP : OC_PRINT), 0, 0 });
+```
+
+The `OC_PRINT` VM handler includes a safety check (`if (isp >= 0)`) so that
+it no-ops when the stack is empty. This is necessary because the built-in
+`print()` function is compiled to its own `OC_PRINT` instruction (inside
+`comp_prim`), consuming its argument from the stack. The subsequent
+`OC_PRINT` from `comp_stmt` would otherwise fire on a stale stack entry.
+
+Each REPL iteration also resets `isp = -1` before calling `exec(code)` to
+prevent stale values from a previous iteration's stack from being misread
+as expression results.
+
 ---
 
 ## 6. FFI Integration
@@ -569,7 +597,7 @@ result = ffi_call(sqrt_fn, "dd", 9.0)   // → 3.0
 | VM — exec loop, all opcodes | ~200 |
 | Built-ins (print, input, assert) | ~40 |
 | FFI helpers (tl_to_cstring, dlopen, dlsym, dlclose, ffi_call) | ~100 |
-| Main / REPL | ~30 |
+| Main / REPL (including auto-print) | ~30 |
 | apply (operators + comparisons) | ~65 |
 | Includes + structs + enums + globals | ~60 |
 | print_val + truthy + veq + die | ~40 |
