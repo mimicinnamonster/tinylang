@@ -26,6 +26,29 @@ cc -Wall -Wextra -o tinylang tinylang.c
 ./tinylang test.tl
 ```
 
+### REPL
+
+Run without arguments for an interactive REPL:
+
+```sh
+./tinylang
+```
+
+For line editing, history, and arrow keys, wrap with `rlwrap`:
+
+```sh
+brew install rlwrap   # if not installed
+rlwrap ./tinylang
+```
+
+Errors in the REPL kill the process. Use the included `repl.sh` wrapper to keep it running:
+
+```sh
+./repl.sh
+```
+
+This restarts the REPL immediately after any error. Ctrl+C to exit.
+
 ## Example
 
 ```
