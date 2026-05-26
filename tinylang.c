@@ -32,7 +32,7 @@ typedef enum {
     OC_CALL, OC_TCO,
     OC_JZ, OC_JMP, OC_RET, OC_POP,
     OC_LVALS,
-    OC_PRINT, OC_INPUT, OC_ASSERT, OC_CFUNC,
+    OC_PRINT, OC_INPUT, OC_ASSERT, OC_CFUNC, OC_PUSH,
     OC_END,
 } OC;
 
@@ -53,7 +53,6 @@ typedef struct { char *n, **p; int a; Code *code; } Fn;
 Fn *fs; int fc, fm;
 Value istk[4096]; int isp;
 
-/* ========================== FFI REGISTRATION ========================== */
 typedef Value (*CFunc)(int, Value*);
 typedef struct { char *name; CFunc func; } CReg;
 static CReg *cregs; static int creg_count, creg_cap;
@@ -68,7 +67,6 @@ void tl_register(const char *name, CFunc func) {
     creg_count++;
 }
 
-/* ========================== VALUE ========================== */
 Value vnum(double n) { return (Value){ .type = VAL_NUM, .as.num = n }; }
 Value vempty(void) { return (Value){ .type = VAL_ARR, .as.arr = NULL }; }
 Value vptr(void *p) { return (Value){ .type = VAL_PTR, .as.ptr = p }; }
@@ -118,20 +116,17 @@ void vassign(Value *d, Value s) {
 
 void print_val(Value v) {
     if (v.type == VAL_NUM) {
-        if (v.as.num == (double)(int64_t)v.as.num) printf("%lld", (int64_t)v.as.num);
-        else printf("%g", v.as.num);
-
+        double d = v.as.num;
+        if (d == (double)(int64_t)d) printf("%lld", (int64_t)d);
+        else printf("%g", d);
     } else if (v.type == VAL_ARR) {
-        int is_str = 1;
-
+        int is_str = v.as.arr ? 1 : 0;
         if (v.as.arr) for (int i = 0; i < v.as.arr->len && is_str; i++) {
             if (v.as.arr->items[i].type != VAL_NUM) { is_str = 0; break; }
             int c = (int)v.as.arr->items[i].as.num;
             if (c != 10 && c != 13 && c != 9 && (c < 32 || c > 126)) is_str = 0;
         }
-
-        if (is_str && v.as.arr) for (int i = 0; i < v.as.arr->len; i++)
-            putchar((int)v.as.arr->items[i].as.num);
+        if (is_str) { for (int i = 0; i < v.as.arr->len; i++) putchar((int)v.as.arr->items[i].as.num); }
         else {
             putchar('[');
             if (v.as.arr) for (int i = 0; i < v.as.arr->len; i++) {
@@ -139,14 +134,12 @@ void print_val(Value v) {
             }
             putchar(']');
         }
-    } else if (v.type == VAL_PTR) {
-        printf("<ptr: %p>", v.as.ptr);
-    }
+    } else printf("<ptr: %p>", v.as.ptr);
 }
 
 int truthy(Value v) {
     if (v.type == VAL_PTR) return v.as.ptr != NULL;
-    return !(v.type == VAL_ARR && (!v.as.arr || v.as.arr->len == 0));
+    return v.type != VAL_ARR || (v.as.arr && v.as.arr->len > 0);
 }
 
 int veq(Value a, Value b) {
@@ -233,14 +226,9 @@ Value apply(int op, Value l, Value r) {
             if (op == T_CA) return vnum((double)(a ^ b));
 
             int64_t s = (int64_t)r.as.num;
-            if (s < 0) {
-              s = -s; if (s > 63) s = 63;
-              return vnum((double)((uint64_t)a >> s));
-            }
-            else {
-              if (s > 63) s = 63;
-              return vnum((double)((uint64_t)a << s));
-            }
+            if (s < 0) { if (s < -63) s = -63; return vnum((double)((uint64_t)a >> -s)); }
+            if (s > 63) s = 63;
+            return vnum((double)((uint64_t)a << s));
         }
         case T_EQ: return veq(l, r) ? vnum(1) : nilv();
         case T_NE: return veq(l, r) ? nilv() : vnum(1);
@@ -277,15 +265,11 @@ void lex(const char *s) {
         if (c == '/' && src[1] == '/') { while (pc() && pc() != '\n') ac(); continue; }
 
         if (isdigit(c) || (c == '.' && isdigit(src[1]))) {
-            char b[64]; int i = 0, dot = 0;
-
-            if (c == '.') { dot = 1; b[i++] = '.'; ac(); c = pc(); }
+            char b[64]; int i = 0;
+            if (c == '.') { b[i++] = c; ac(); c = pc(); }
             while (isdigit(c)) { b[i++] = c; ac(); c = pc(); }
-
-            if (c == '.' && !dot) {
-                dot = 1; b[i++] = '.'; ac(); c = pc();
-                while (isdigit(c)) { b[i++] = c; ac(); c = pc(); }
-            } b[i] = 0; tk.t = T_NUM; tk.n = atof(b); goto em;
+            if (c == '.') { b[i++] = c; ac(); c = pc(); while (isdigit(c)) { b[i++] = c; ac(); c = pc(); } }
+            b[i] = 0; tk.t = T_NUM; tk.n = atof(b); goto em;
         }
 
         if (isalpha(c) || c == '_') {
@@ -543,18 +527,13 @@ void comp_while(Code *c) {
 
 void comp_return(Code *c) {
     tp++;
-
     int is_tc = (cur_fi >= 0 && ts[tp].t == T_ID &&
                  !strcmp(ts[tp].s, fs[cur_fi].n) && ts[tp+1].t == T_LP);
     comp_expr(c);
-
-    if (is_tc && c->len > 0 && c->code[c->len-1].op == OC_CALL) {
-        Instr *last = &c->code[c->len-1]; int ac = last->b;
-        last->op = OC_TCO; last->a = ac; last->b = 0;
-
-    } else if (!is_tc) {
-        emit(c, (Instr){OC_RET, 0, 0});
-    }
+    if (is_tc && c->code[c->len-1].op == OC_CALL) {
+        Instr *last = &c->code[c->len-1];
+        last->op = OC_TCO; last->a = last->b; last->b = 0;
+    } else if (!is_tc) emit(c, (Instr){OC_RET, 0, 0});
 }
 
 void comp_fn(Code *c) {
@@ -577,16 +556,14 @@ void comp_fn(Code *c) {
 
     Code *body = new_code(); comp_block(body); emit(body, (Instr){OC_END, 0, 0}); f->code = body;
 
-    int tco_pos = body->len - 1;
-    while (tco_pos >= 0 && (body->code[tco_pos].op == OC_RET || body->code[tco_pos].op == OC_END)) tco_pos--;
-
-    if (tco_pos >= 0 && body->code[tco_pos].op == OC_CALL &&
-        body->code[tco_pos].a < fc && !strcmp(fs[body->code[tco_pos].a].n, name)) {
-        int ac = body->code[tco_pos].b; body->code[tco_pos].op = OC_TCO; body->code[tco_pos].a = ac;
-    }
+    int last = body->len - 1;
+    if (last >= 0 && body->code[last].op == OC_END) last--;
+    if (last >= 0 && body->code[last].op == OC_RET) last--;
+    if (last >= 0 && body->code[last].op == OC_CALL &&
+        body->code[last].a < fc && !strcmp(fs[body->code[last].a].n, name))
+        { body->code[last].op = OC_TCO; body->code[last].a = body->code[last].b; body->code[last].b = 0; }
 }
 
-/* ========================== FFI HELPERS ========================== */
 char *tl_to_cstring(Value v) {
     if (v.type != VAL_ARR || !v.as.arr) return strdup("");
     char *s = malloc(v.as.arr->len + 1);
@@ -682,7 +659,7 @@ Value tl_ffi_call(int argc, Value *args) {
     }
     return vempty();
 }
-#endif /* TL_FFI */
+#endif
 
 char *readf(const char *p);
 
@@ -757,10 +734,46 @@ void comp_stmt(Code *c) {
                 }
 
                 if (ts[tp].t != T_EQ) die("expected ="); tp++;
-                comp_expr(c);
 
-                if (idx_count > 0) emit(c, (Instr){OC_LVALS, idx_count, 0, .name = nm});
-                else emit(c, (Instr){OC_STORE, 0, 0, .name = nm});
+                /* x = x + [elem] → OC_PUSH */
+                int is_push = (idx_count == 0);
+                if (is_push) {
+                    int pn = tp;
+                    while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                    is_push = ts[pn].t == T_ID && !strcmp(ts[pn].s, nm);
+                    if (is_push) {
+                        pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                        is_push = ts[pn].t == T_PL;
+                        if (is_push) {
+                            pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                            is_push = ts[pn].t == T_LB;
+                            if (is_push) {
+                                pn++; int depth = 1;
+                                while (depth > 0 && ts[pn].t != T_EOF) {
+                                    if (ts[pn].t == T_LP || ts[pn].t == T_LB) depth++;
+                                    if (ts[pn].t == T_RP || ts[pn].t == T_RB) depth--;
+                                    if (depth == 1 && ts[pn].t == T_CM) { is_push = 0; break; }
+                                    pn++;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (is_push) {
+                    tp++; /* skip var name */
+                    tp++; /* skip + */
+                    tp++; /* skip [ */
+                    comp_expr(c);
+                    while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
+                    if (ts[tp].t != T_RB) die("expected ]");
+                    tp++;
+                    emit(c, (Instr){OC_PUSH, 0, 0, .name = nm});
+                } else {
+                    comp_expr(c);
+                    if (idx_count > 0) emit(c, (Instr){OC_LVALS, idx_count, 0, .name = nm});
+                    else emit(c, (Instr){OC_STORE, 0, 0, .name = nm});
+                }
 
             } else { comp_expr(c); emit(c, (Instr){OC_POP, 0, 0}); }
             break;
@@ -796,8 +809,9 @@ void exec(Code *c) {
                 int n = ins->a; Arr *a = aalloc(n); a->len = n;
 
                 for (int i = n-1; i >= 0; i--) {
-                    a->items[i] = istk[isp--];
-                    if (a->items[i].type == VAL_ARR) aretain(a->items[i].as.arr);
+                    Value v = istk[isp--];
+                    a->items[i] = v;
+                    if (v.type == VAL_ARR) { aretain(v.as.arr); arelease(v.as.arr); }
                 }
 
                 istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a }; break;
@@ -806,7 +820,7 @@ void exec(Code *c) {
                 Value v = sget(cs, ins->name);
                 istk[++isp] = v; if (v.type == VAL_ARR) aretain(v.as.arr); break;
             }
-            case OC_STORE: sset(cs, ins->name, istk[isp--]); break;
+            case OC_STORE: { Value v = istk[isp--]; sset(cs, ins->name, v); if (v.type == VAL_ARR) arelease(v.as.arr); break; }
 
             case OC_OP: {
                 Value r = istk[isp--], l = istk[isp--], res = apply(ins->a, l, r);
@@ -841,19 +855,17 @@ void exec(Code *c) {
 
                 } else if (idx.type == VAL_ARR) {
                     Value cur = arr;
-
                     if (idx.as.arr) for (int j = 0; j < idx.as.arr->len; j++) {
                         int ii = (int)idx.as.arr->items[j].as.num;
                         if (cur.type != VAL_ARR || !cur.as.arr || ii < 0 || ii >= cur.as.arr->len)
                             die("index out of bounds");
                         Value next = cur.as.arr->items[ii];
-
                         if (next.type == VAL_ARR) aretain(next.as.arr);
                         if (cur.type == VAL_ARR) arelease(cur.as.arr);
                         cur = next;
                     }
-
-                    if (arr.type == VAL_ARR) arelease(arr.as.arr);
+                    /* arr was released inside the loop; release idx, push result */
+                    if (idx.type == VAL_ARR) arelease(idx.as.arr);
                     istk[++isp] = cur;
 
                 } else die("index must be number or array");
@@ -872,13 +884,11 @@ void exec(Code *c) {
 
                 for (int j = 0; j < depth; j++) {
                     amake_uniq(slot);
-
                     if (indices[j].type == VAL_NUM) {
                         int ii = (int)indices[j].as.num;
                         if (slot->type != VAL_ARR || !slot->as.arr || ii < 0 || ii >= slot->as.arr->len)
                             die("index out of bounds");
                         slot = &slot->as.arr->items[ii];
-
                     } else if (indices[j].type == VAL_ARR) {
                         for (int k = 0; k < indices[j].as.arr->len; k++) {
                             int ii = (int)indices[j].as.arr->items[k].as.num;
@@ -889,7 +899,11 @@ void exec(Code *c) {
                     } else die("index must be number or array");
                 }
 
-                vassign(slot, val); break;
+                vassign(slot, val);
+                if (val.type == VAL_ARR) arelease(val.as.arr);
+                for (int j = 0; j < depth; j++)
+                    if (indices[j].type == VAL_ARR) arelease(indices[j].as.arr);
+                break;
             }
 
             case OC_CALL: {
@@ -991,6 +1005,32 @@ void exec(Code *c) {
                 for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
                 Value result = cregs[ci].func(ac, args);
                 istk[++isp] = result;
+                break;
+            }
+
+            case OC_PUSH: {
+                char *name = ins->name;
+                Value elem = istk[isp--];
+                int si = -1;
+                for (int i = 0; i < cs->c; i++) if (!strcmp(cs->n[i], name)) { si = i; break; }
+                if (si < 0) die("undefined '%s'", name);
+                Value *slot = &cs->v[si];
+                if (slot->type != VAL_ARR) die("cannot append to non-array");
+                /* Create array if nil */
+                if (!slot->as.arr) {
+                    slot->as.arr = aalloc(4);
+                    slot->as.arr->len = 0;
+                } else {
+                    amake_uniq(slot);
+                }
+                int len = slot->as.arr->len;
+                if (len >= slot->as.arr->cap) {
+                    slot->as.arr->cap = slot->as.arr->cap ? slot->as.arr->cap * 2 : 4;
+                    slot->as.arr->items = realloc(slot->as.arr->items, slot->as.arr->cap * sizeof(Value));
+                }
+                vassign(&slot->as.arr->items[len], elem);
+                slot->as.arr->len = len + 1;
+                if (elem.type == VAL_ARR) arelease(elem.as.arr);
                 break;
             }
 

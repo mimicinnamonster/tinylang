@@ -1,6 +1,6 @@
 # TinyLang
 
-A tiny, statically-typed programming language implemented in ~1050 lines of C.
+A tiny, statically-typed programming language implemented in ~1090 lines of C.
 Single-pass compiler to bytecode with a stack-based VM, refcount+COW, and tail
 call optimization. No AST, no GC, no closures, no pointers.
 
@@ -99,15 +99,16 @@ print(nodes[0][0])                  // 42
 
 ## Implementation
 
-- ~1050 lines of C, single file
+- ~1090 lines of C, single file
 - Optional FFI extension via libffi
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
-- Stack-based VM: 21 opcodes, `Value istk[4096]` stack
-- Deep copy on assignment, refcount+COW for arrays
+- Stack-based VM: 22 opcodes, `Value istk[4096]` stack
+- Deep copy on assignment, refcount+COW arrays with push optimization
+  (`x = x + [elem]` compiles to O(1) `OC_PUSH`, no array copy)
 - Tail call optimization: parameter rebinding + ip reset (no C stack growth)
 - `assert()` error catching via `setjmp`/`longjmp`
 - FFI via `OC_CFUNC` opcode: registered C functions called at zero dispatch cost
-- Comprehensive test suite (35 tests: 14 happy-path + 21 error)
+- Comprehensive test suite (40+ tests: happy-path, benchmarks, error cases)
 
 ## Grammar
 

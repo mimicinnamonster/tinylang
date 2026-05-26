@@ -241,6 +241,23 @@ lvalue     := identifier ("[" expr "]")*
 `*` on array × number = **repetition** (returns new array with elements repeated `n` times).
 `+` / `*` on mixed types = type error.
 
+**Push optimization:** `x = x + [expr]` (same variable, single-element literal)
+is compiled to `OC_PUSH` — the element is appended directly to `x`'s array
+in O(1) instead of copying the entire array. This enables O(N) sequential
+appends:
+
+```
+arr = []
+i = 0
+while i < 1000 {
+  arr = arr + [i]    // O(1) per iteration with OC_PUSH
+  i = i + 1
+}
+```
+
+`y = x + [1]` (different variable) falls through to the general
+concatenation path, preserving value semantics.
+
 ### Bitwise (binary, infix)
 
 `&`  `|`  `^`  `@`

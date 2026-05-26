@@ -1,7 +1,7 @@
 # TinyLang — Implementation Guide
 
-**715 lines of C.** Single-pass compiler to bytecode with stack-based VM,
-refcount+COW, and tail call optimization.
+**~1090 lines of C.** Single-pass compiler to bytecode with stack-based VM,
+refcount+COW, tail call optimization, and array push optimization.
 
 ---
 
@@ -62,7 +62,7 @@ A single-pass recursive descent compiler that walks the token array and emits
 `Instr[]` bytecode. No intermediate AST — each parser function emits instructions
 directly.
 
-### Instruction Set (19 opcodes)
+### Instruction Set (22 opcodes)
 
 ```c
 typedef enum {
@@ -85,6 +85,8 @@ typedef enum {
     OC_PRINT,    // built-in print
     OC_INPUT,    // built-in input
     OC_ASSERT,   // built-in assert (error-catching)
+    OC_CFUNC,    // call registered C function (FFI)
+    OC_PUSH,     // x = x + [elem]: pop elem, append to var array in-place
     OC_END,      // terminator
 } OC;
 ```
@@ -292,6 +294,45 @@ index expressions. At runtime, it walks the chain:
    `slot = &slot->as.arr->items[idx]`
 3. `vassign(slot, val)` — write the value into the final (private) slot
 
+### LVALS walk
+
+Array lvalue assignment walks from the root variable through each index.
+For each index, `amake_uniq(slot)` ensures copy-on-write, then the slot
+advances to the indexed element. The result is always correct regardless
+of sharing — no cursor caching is needed.
+
+### Push optimization (`OC_PUSH`)
+
+The compiler detects `x = x + [expr]` (same variable both sides, single-element
+array literal) and emits `OC_PUSH` instead of `OC_VAR + OC_MAKE_ARR +
+OC_OP + OC_STORE`. At runtime, `OC_PUSH`:
+
+1. Pops the element from the stack (the raw `expr` result, not an array)
+2. Creates the variable's array if it's nil (`arr = []` → first push)
+3. Calls `amake_uniq` on the variable slot (COW if shared with other vars)
+4. Grows capacity if needed (amortized O(1), doubles capacity)
+5. Writes the element via `vassign` into the new slot
+
+This avoids allocating a temporary 1-element array and the full
+concatenation copy. The `x = x + [elem]` pattern runs in O(1) per element
+instead of O(len(x)). Value semantics are preserved because the optimization
+only fires when the destination variable matches the source — `y = x + [1]`
+falls through to the general `+` path.
+
+### Refcount leak fixes
+
+`OC_STORE`, `OC_LVALS`, and `OC_MAKE_ARR` popped values from the internal
+stack without releasing the retain from the corresponding `OC_VAR` push.
+This leaked +1 refcount per variable store, which prevented the push
+optimization from detecting exclusive ownership. These opcodes now properly
+release the stack reference after assignment.
+
+**OC_INDEX multi-index fix:** The multi-index traversal path (`arr[idx]` where
+`idx` is an array) released the root array `arr` inside the traversal loop
+as `cur` advanced, and then released it again after the loop. This double-
+release caused a use-after-free crash when refcounting was otherwise correct.
+The post-loop release was removed, and `idx` is properly released after use.
+
 ### Include handling
 
 `include "path"` is handled at compile time. The compiler saves its token
@@ -364,23 +405,26 @@ result = ffi_call(sqrt_fn, "dd", 9.0)   // → 3.0
 
 ## 7. Line Count
 
-**Total:** ~1050 lines.
+**Total:** ~1090 lines.
 
 | Component | Lines |
 |-----------|-------|
 | Value + ArrayData + refcount helpers | ~50 |
-| Lexer | ~130 |
-| Compiler — expressions + primaries | ~70 |
+| Lexer | ~110 |
+| Compiler — expressions + primaries | ~65 |
 | Compiler — statements (if, while, assign, block) | ~90 |
-| Compiler — functions, return, TCO | ~55 |
+| Compiler — functions, return, TCO | ~45 |
 | Compiler — include, program | ~35 |
 | Scope + function table | ~25 |
-| VM — exec loop, all opcodes | ~190 |
+| VM — exec loop, all opcodes | ~200 |
 | Built-ins (print, input, assert) | ~40 |
-| FFI helpers (tl_to_cstring, dlopen, dlsym, dlclose, ffi_call) | ~110 |
+| FFI helpers (tl_to_cstring, dlopen, dlsym, dlclose, ffi_call) | ~100 |
 | Main / REPL | ~30 |
-| Struct defs + globals + enums | ~20 |
+| apply (operators + comparisons) | ~65 |
+| Includes + structs + enums + globals | ~60 |
+| print_val + truthy + veq + die | ~40 |
 | FFI registration (CReg, tl_register) | ~20 |
+| Include + readf | ~55 |
 
 ---
 
