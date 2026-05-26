@@ -517,13 +517,29 @@ char *readf(const char *p) {
     fclose(f); return b;
 }
 
-int main(int a, char **v) {
-    if (a < 2) { fprintf(stderr, "usage: tinylang <file>\n"); return 1; }
-    char *src = readf(v[1]); if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
-    lex(src); cs = snew(); cur_fi = -1;
+void run(const char *src) {
+    if (ts) { free(ts); ts = NULL; }
+    lex(src);
     while (peek().t != T_EOF) {
         if (peek().t == T_NL) { adv(); continue; }
         stmt();
     }
-    sfree(cs); free(ts); free(src); return 0;
+}
+
+int main(int a, char **v) {
+    cs = snew(); cur_fi = -1;
+    if (a >= 2) {
+        char *src = readf(v[1]);
+        if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
+        run(src); free(src);
+    } else {
+        printf("TinyLang v0.1\n");
+        char line[4096];
+        while (1) {
+            printf("> "); fflush(stdout);
+            if (!fgets(line, sizeof(line), stdin)) { printf("\n"); break; }
+            run(line);
+        }
+    }
+    sfree(cs); if (ts) free(ts); return 0;
 }
