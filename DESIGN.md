@@ -463,12 +463,13 @@ No new syntax needed — `[0] * 5` is already `primary * primary` in the grammar
 
 ---
 
-## 12. Statement Separation (Go-style)
+## 12. Statement Separation (Go-style + Explicit Semicolons)
 
-- Newlines act as statement separators
-- Semicolons inferred by lexer at newlines (never written manually)
+- Newlines act as statement separators (Go-style inference)
+- Explicit `;` may also be used to separate statements on the same line
 - A newline is NOT a separator if the last token before it is an operator or opening `(`, `[`, `{`
 - Consecutive blank lines are fine
+- Multiple consecutive `;` are treated as empty statements (no-ops)
 
 ```
 x = 5
@@ -478,7 +479,14 @@ print(x + y)
 z = (x +            // x continues: + expects more
      y)
 
-a = 10 b = 20       // ERROR: need newline between statements
+// Multiple statements on one line via ;
+a = 10; b = 20; print(a + b)
+
+// Trailing ; is fine (empty statement)
+print(x);
+
+// Multiple ; are fine
+x = 1;;;y = 2
 ```
 
 Expression statements (evaluated for side effect, result discarded):

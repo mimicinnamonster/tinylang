@@ -17,7 +17,7 @@ typedef struct Value { Type type; union { double num; Arr *arr; } as; } Value;
 
 typedef enum {
     T_EOF, T_NUM, T_ID, T_STR, T_NIL,
-    T_LP, T_RP, T_LB, T_RB, T_LC, T_RC, T_CM,
+    T_LP, T_RP, T_LB, T_RB, T_LC, T_RC, T_CM, T_SEMI,
     T_PL, T_MI, T_ST, T_SL, T_PC,
     T_AM, T_PI, T_CA, T_AT, T_BN,
     T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
@@ -259,7 +259,7 @@ void lex(const char *s) {
             case '(': tk.t=T_LP; break; case ')': tk.t=T_RP; break;
             case '[': tk.t=T_LB; break; case ']': tk.t=T_RB; break;
             case '{': tk.t=T_LC; break; case '}': tk.t=T_RC; break;
-            case ',': tk.t=T_CM; break;
+            case ',': tk.t=T_CM; break; case ';': tk.t=T_SEMI; break;
             case '+': tk.t=T_PL; break; case '-': tk.t=T_MI; break;
             case '*': tk.t=T_ST; break; case '/': tk.t=T_SL; break;
             case '%': tk.t=T_PC; break;
@@ -449,10 +449,10 @@ Value expr(void) {
 }
 
 void blk(void) {
-    while (peek().t == T_NL) adv();
+    while (peek().t == T_NL || peek().t == T_SEMI) adv();
     xpct(T_LC);
     while (peek().t != T_RC && peek().t != T_EOF && !rf) {
-        if (peek().t == T_NL) { adv(); continue; }
+        if (peek().t == T_NL || peek().t == T_SEMI) { adv(); continue; }
         stmt();
     }
     if (rf) {
@@ -480,7 +480,7 @@ void iff(void) {
 
 void wh(void) {
     int cond = tp; expr();
-    while (peek().t == T_NL) adv();
+    while (peek().t == T_NL || peek().t == T_SEMI) adv();
     int bs = tp; xpct(T_LC); int d = 1;
     while (d > 0) { if (peek().t == T_LC) d++; if (peek().t == T_RC) d--;
         if (peek().t == T_EOF) die("unterminated while"); tp++; }
@@ -498,7 +498,7 @@ void fn_def(void) {
     if (peek().t != T_RP) do { Tok p = adv(); if (p.t != T_ID) die("expected param");
         ps[pa++] = strdup(p.s); } while (mtch(T_CM));
     xpct(T_RP);
-    while (peek().t == T_NL) adv(); xpct(T_LC);
+    while (peek().t == T_NL || peek().t == T_SEMI) adv(); xpct(T_LC);
     int bs = tp, depth = 1;
     while (depth > 0) {
         if (peek().t == T_EOF) die("unterminated function body");
@@ -513,7 +513,7 @@ void fn_def(void) {
 }
 
 void stmt(void) {
-    if (peek().t == T_NL) { adv(); return; }  /* skip bare newlines */
+    if (peek().t == T_NL || peek().t == T_SEMI) { adv(); return; }  /* skip bare newlines/semicolons */
     switch (peek().t) {
         case T_IF: adv(); iff(); break;
         case T_WH: adv(); wh(); break;
@@ -584,7 +584,7 @@ char *readf(const char *p) {
 void run(const char *src) {
     lex(src);
     while (peek().t != T_EOF) {
-        if (peek().t == T_NL) { adv(); continue; }
+        if (peek().t == T_NL || peek().t == T_SEMI) { adv(); continue; }
         if (peek().t == T_INCLUDE) {
             adv();
             Tok t = adv();

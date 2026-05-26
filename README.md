@@ -10,7 +10,7 @@ refcount+COW and tail call optimization.
 - **Value semantics:** No references, no aliasing, no GC — refcount+COW sharing
 - **Tail call optimization:** Recursive functions don't blow the C stack
 - **No operator precedence:** All binary ops require explicit `()`
-- **Go-style newlines:** Statements separated by newlines with semicolon inference
+- **Statement separation:** Newlines (Go-style inference) or explicit `;` separate statements
 - **Functions:** Pure (no globals), define-before-use, no closures, recursion OK
 - **Control flow:** `if`/`elif`/`else`, `while`
 - **Arrays:** Nested, heterogeneous, `[val] * n` repetition, `arr + arr` concatenation
@@ -149,7 +149,7 @@ index_list    := expr ("," expr)*
 
 ## Implementation
 
-- ~605 lines of C, single file
+- ~570 lines of C, single file
 - No external dependencies (ISO C + math.h)
 - Pre-lexed token array, single-pass recursive descent parser
 - Deep copy on assignment, refcount+COW for arrays

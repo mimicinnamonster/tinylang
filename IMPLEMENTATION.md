@@ -130,6 +130,14 @@ Tokens that trigger semicolon insertion: `TOK_NUMBER`, `TOK_IDENT`, `TOK_STRING`
 
 Tokens that DO NOT trigger it (expression continues): operators like `TOK_PLUS`, `TOK_MINUS`, etc., and opening `(` `[` `{`.
 
+### Explicit semicolons
+
+Explicit `;` tokens (`TOK_SEMI`) are also supported as statement separators, treated equivalently to `TOK_NEWLINE` wherever the parser expects a statement separator. This allows multiple statements on a single line:
+
+```
+x = 5; y = 10; print(x + y)
+```
+
 ### Lexer functions
 
 ```c
