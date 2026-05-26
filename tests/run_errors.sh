@@ -42,6 +42,9 @@ run_test() {
         e_print_noargs)   expected_msg="print needs 1 arg";;
         e_fn_redef)       expected_msg="already defined";;
         e_include_missing) expected_msg="cannot include";;
+        e_invalid_binary) expected_msg="invalid binary literal";;
+        e_invalid_hex)   expected_msg="invalid hex literal";;
+        e_bad_octal)     expected_msg="invalid digit in octal literal";;
         e_percent_nonnum) expected_msg="'%' requires numbers";;
         *)                expected_msg="error:";;
     esac

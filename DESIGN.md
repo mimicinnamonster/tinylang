@@ -717,9 +717,21 @@ This makes the REPL feel like a calculator — type an expression, see its resul
 5.0          // float
 .5           // 0.5
 5.           // 5.0
+0xff         // hex: 255
+0xFF         // hex: 255 (case-insensitive)
+0xdeadbeef   // hex: 3735928559
+0b101        // binary: 5
+0B11111111   // binary: 255 (case-insensitive prefix)
+0123         // octal: 83 (leading zero)
+0777         // octal: 511
+00           // octal: 0
 ```
 
-Decimal only. No hex, octal, or binary literals.
+- **Hex literals:** `0x` or `0X` prefix, followed by one or more hex digits (`0-9`, `a-f`, `A-F`)
+- **Binary literals:** `0b` or `0B` prefix, followed by one or more binary digits (`0`, `1`)
+- **Octal literals:** Leading `0` followed by one or more octal digits (`0-7`). `0` followed by `8` or `9` is an error. A bare `0` is decimal.
+- All non-decimal literals produce unsigned integer values (stored in the narrowest `NumKind` that fits).
+- Invalid characters after a non-decimal literal prefix (e.g., `0xG`, `0b2`, `0b12`) produce a compile error.
 
 ### Identifiers
 

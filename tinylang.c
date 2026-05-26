@@ -550,6 +550,45 @@ void lex(const char *s) {
 
         if (isdigit(c) || (c == '.' && isdigit(src[1]))) {
             char b[64]; int i = 0;
+            if (c == '0') {
+                int nxt = (unsigned char)src[1];
+                if (nxt == 'b' || nxt == 'B') {
+                    ac(); ac();
+                    while (pc() == '0' || pc() == '1') {
+                        if (i >= 62) die("binary literal too long");
+                        b[i++] = ac();
+                    }
+                    if (i == 0) die("invalid binary literal");
+                    if (isalnum(pc())) die("invalid character in binary literal");
+                    b[i] = 0;
+                    tk.t = T_NUM; tk.n = (double)strtoull(b, NULL, 2); goto em;
+                }
+                if (nxt == 'x' || nxt == 'X') {
+                    ac(); ac();
+                    while (isxdigit(pc())) {
+                        if (i >= 62) die("hex literal too long");
+                        b[i++] = ac();
+                    }
+                    if (i == 0) die("invalid hex literal");
+                    if (isalnum(pc())) die("invalid character in hex literal");
+                    b[i] = 0;
+                    tk.t = T_NUM; tk.n = (double)strtoull(b, NULL, 16); goto em;
+                }
+                if (nxt >= '0' && nxt <= '7') {
+                    ac();
+                    while (pc() >= '0' && pc() <= '7') {
+                        if (i >= 62) die("octal literal too long");
+                        b[i++] = ac();
+                    }
+                    if (isdigit(pc())) die("invalid digit in octal literal");
+                    if (isalnum(pc())) die("invalid character in octal literal");
+                    b[i] = 0;
+                    tk.t = T_NUM; tk.n = (double)strtoull(b, NULL, 8); goto em;
+                }
+                if (nxt >= '8' && nxt <= '9') {
+                    die("invalid digit in octal literal");
+                }
+            }
             if (c == '.') { b[i++] = c; ac(); c = pc(); }
             while (isdigit(c)) { b[i++] = c; ac(); c = pc(); }
             if (c == '.') { b[i++] = c; ac(); c = pc(); while (isdigit(c)) { b[i++] = c; ac(); c = pc(); } }
