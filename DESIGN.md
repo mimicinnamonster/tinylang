@@ -531,7 +531,7 @@ Built-in function names (`print`, `input`) are NOT keywords — they live in the
 
 ## 15. Error Handling
 
-Runtime errors halt with a message to stderr. No recovery, no try/catch.
+Runtime errors halt with a message to stderr. No recovery, no try/catch — except for the built-in `assert()` function (see §17), which wraps a single expression in an error-catching context and returns the error message as a string instead of halting.
 
 | Error | Message |
 |-------|---------|
@@ -608,6 +608,7 @@ Note: `lvalue` and `primary` both have `identifier "[" index_list "]"`. The pars
 |------|-----------|-----------|
 | `print` | `print(x)` | Writes `x` to stdout. Numbers: decimal (no `.0` if integer). Arrays: `[e1, e2, ...]`. Empty array: `[]`. Strings (printed as text, not byte arrays). |
 | `input` | `input()` | Reads a line from stdin, returns as byte array (string) |
+| `assert` | `assert(expr)` | Evaluates `expr` in an error-catching context. If evaluation succeeds and the result is truthy, returns `[]` (nil). If evaluation succeeds but the result is falsy, returns `"assertion failed"`. If evaluation produces a runtime error, the error is caught and the actual error message is returned as a string. |
 
 `print` special-cases arrays whose elements are all printable ASCII or common control characters (10, 13, 9) — these are printed as the text string rather than `[104, 101, ...]`.
 

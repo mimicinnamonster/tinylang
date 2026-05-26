@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <math.h>
+#include <setjmp.h>
 
 /* ========================== TYPES ========================== */
 typedef enum { VAL_NUM, VAL_ARR } Type;
@@ -36,6 +37,8 @@ int rf; Value rv;
 int cur_fi; int last_tok; /* current function index for TCO (-1 = top level) */
 int tco;    /* tail call flag */
 static char *include_dir;
+jmp_buf assert_jmp; int assert_catching; /* error catch for assert() */
+char assert_msg[512];                      /* captured error message */
 
 /* ========================== VALUE ========================== */
 Value vnum(double n) { return (Value){ .type = VAL_NUM, .as.num = n }; }
@@ -116,8 +119,16 @@ int veq(Value a, Value b) {
 
 void die(const char *f, ...) {
     va_list ap; va_start(ap, f);
+    va_list aq; va_copy(aq, ap);
     fprintf(stderr, "error: "); vfprintf(stderr, f, ap); fprintf(stderr, "\n");
-    va_end(ap); exit(1);
+    va_end(ap);
+    if (assert_catching) {
+        vsnprintf(assert_msg, sizeof(assert_msg), f, aq);
+        va_end(aq);
+        longjmp(assert_jmp, 1);
+    }
+    va_end(aq);
+    exit(1);
 }
 
 Value apply(int op, Value l, Value r) {
@@ -304,9 +315,35 @@ Value prim(void) {
         case T_STR: { Arr *a = (Arr*)t.s; return (Value){ .type = VAL_ARR, .as.arr = a }; }
         case T_ID: {
             if (peek().t == T_LP) {
+                int is_assert = !strcmp(t.s, "assert");
                 adv(); Value as[64]; int ac2 = 0;
-                if (peek().t != T_RP) do as[ac2++] = expr(); while (mtch(T_CM));
-                xpct(T_RP);
+                if (is_assert) {
+                    /* save global state so we can recover after caught error */
+                    Tok *saved_ts = ts; int saved_tp = tp;
+                    Scp *saved_cs = cs; int saved_cur_fi = cur_fi;
+                    int saved_rf = rf; Value saved_rv = rv;
+                    assert_catching = 1;
+                    if (setjmp(assert_jmp)) {
+                        /* error caught — restore state and skip to matching closing paren */
+                        ts = saved_ts; tp = saved_tp;
+                        cs = saved_cs; cur_fi = saved_cur_fi;
+                        rf = saved_rf; rv = saved_rv;
+                        assert_catching = 0; ac2 = -1;
+                        { int pd = 1; while (pd > 0 && peek().t != T_EOF) {
+                            if (peek().t == T_LP) pd++;
+                            if (peek().t == T_RP) pd--;
+                            if (pd > 0) adv();
+                        } }
+                        mtch(T_RP);
+                    } else {
+                        if (peek().t != T_RP) do as[ac2++] = expr(); while (mtch(T_CM));
+                        xpct(T_RP);
+                        assert_catching = 0;
+                    }
+                } else {
+                    if (peek().t != T_RP) do as[ac2++] = expr(); while (mtch(T_CM));
+                    xpct(T_RP);
+                }
                 if (!strcmp(t.s, "print")) {
                     if (ac2 < 1) die("print needs 1 arg"); print_val(as[0]); printf("\n"); return vempty();
                 }
@@ -315,6 +352,21 @@ Value prim(void) {
                     int n = strlen(b); if (n && b[n-1]=='\n') n--;
                     Arr *a = aalloc(n); a->len = n;
                     for (int i = 0; i < n; i++) a->items[i] = vnum((unsigned char)b[i]);
+                    return (Value){ .type = VAL_ARR, .as.arr = a };
+                }
+                if (!strcmp(t.s, "assert")) {
+                    const char *err;
+                    if (ac2 < 0) {
+                        /* error was caught — use captured message */
+                        err = assert_msg;
+                    } else if (ac2 < 1 || !truthy(as[0])) {
+                        err = "assertion failed";
+                    } else {
+                        return vempty();
+                    }
+                    int n = strlen(err);
+                    Arr *a = aalloc(n); a->len = n;
+                    for (int i = 0; i < n; i++) a->items[i] = vnum((unsigned char)err[i]);
                     return (Value){ .type = VAL_ARR, .as.arr = a };
                 }
                 /* TCO: if in tail position and calling ourselves, optimize */
