@@ -264,6 +264,7 @@ lvalue     := identifier ("[" expr "]")*
 
 - `!`  negation (prefix): `[]` → `1`, anything else → `[]`
 - `-`  numeric negation (prefix): `-5` negates 5
+- `#`  array length (prefix): `#arr` returns number of elements in `arr`, type error on numbers
 ### Context determines `=` meaning
 
 | Position | What `=` means |
@@ -524,7 +525,7 @@ These are reserved as token types — cannot be used as variable or parameter na
 function   return   if   elif   else   while   nil
 ```
 
-Built-in function names (`print`, `len`, `input`) are NOT keywords — they live in the function table. You CAN name a variable `print` without conflicting with the function `print()` (different namespaces).
+Built-in function names (`print`, `input`) are NOT keywords — they live in the function table. You CAN name a variable `print` without conflicting with the function `print()` (different namespaces).
 
 ---
 
@@ -585,6 +586,7 @@ primary       := number_literal
                | "(" expr ")"                         // grouping
                | "!" primary                          // negation
                | "-" primary                          // unary minus
+               | "#" primary                          // array length
 
 op            := "+" | "-" | "*" | "/" | "%"
                | "&" | "|" | "^" | "@"
@@ -604,7 +606,6 @@ Note: `lvalue` and `primary` both have `identifier "[" index_list "]"`. The pars
 
 | Name | Signature | Semantics |
 |------|-----------|-----------|
-| `len` | `len(x)` | Returns number of elements in array `x`, type error on number |
 | `print` | `print(x)` | Writes `x` to stdout. Numbers: decimal (no `.0` if integer). Arrays: `[e1, e2, ...]`. Empty array: `[]`. Strings (printed as text, not byte arrays). |
 | `input` | `input()` | Reads a line from stdin, returns as byte array (string) |
 

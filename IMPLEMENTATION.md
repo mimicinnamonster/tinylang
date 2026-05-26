@@ -538,11 +538,6 @@ Value call_builtin(const char *name, Value *args, int argc) {
         print_value(args[0]);
         return val_empty_array();
     }
-    if (!strcmp(name, "len")) {
-        if (argc < 1) error("len requires 1 argument");
-        if (args[0].type != VAL_ARR) error("len requires array");
-        return val_num(args[0].as.data->len);
-    }
     if (!strcmp(name, "input")) {
         char buf[1024];
         if (!fgets(buf, sizeof(buf), stdin)) return val_empty_array();
@@ -670,5 +665,5 @@ Well under 1000 lines.
 5. Array expressions (literals, index, multi-index) — test creation + access
 6. Statements (assignment, if, while, blocks) — test control flow
 7. Functions (definition + call, return) — test recursion
-8. Built-in functions (print, len, input) — test I/O
+8. Built-in functions (print, input) + `#` array-length operator — test I/O
 9. Main/REPL — wire everything together

@@ -60,22 +60,22 @@ print(m)
 // --- 5. Array repetition ---
 print("--- array repetition ---")
 z = [0] * 10
-print(len(z))
+print(#z)
 print(z[0])
 print(z[9])
 
 nils = [] * 5
-print(len(nils))
+print(#nils)
 
 pairs = [1, 2] * 3
 print(pairs)
-print(len(pairs))   // 6
+print(#pairs)   // 6
 
 // --- 6. Array concatenation ---
 print("--- array concat ---")
 c = [1, 2] + [3, 4]
 print(c)
-print(len(c))       // 4
+print(#c)       // 4
 
 // --- 7. Array equality ---
 print("--- array equality ---")
@@ -89,11 +89,11 @@ s = "hello world"
 print(s)
 print(s[0])     // 104 'h'
 print(s[4])     // 111 'o'
-print(len(s))
+print(#s)
 
 s2 = "line1\nline2"
 print(s2)
-print(len(s2))
+print(#s2)
 
 // --- 9. Functions ---
 print("--- functions ---")
@@ -110,7 +110,7 @@ print(add(3, 4))
 
 function noop() {
 }
-print(len(noop()))    // 0 (returns [])
+print(#noop())    // 0 (returns [])
 
 // --- 10. Recursion ---
 print("--- recursion ---")

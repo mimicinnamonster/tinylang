@@ -16,8 +16,8 @@ refcount+COW and tail call optimization.
 - **Arrays:** Nested, heterogeneous, `[val] * n` repetition, `arr + arr` concatenation
 - **Multi-index:** `arr[i, j, k]` desugars to `arr[i][j][k]`
 - **Strings:** Syntactic sugar for byte arrays, escape sequences supported
-- **Operators:** `+ - * / %`, `& | ^ @` (shift), `= != < > <= >=`, `!`
-- **Built-ins:** `print()`, `len()`, `input()`
+- **Operators:** `+ - * / %`, `& | ^ @` (shift), `= != < > <= >=`, `!`, `#` (array length prefix)
+- **Built-ins:** `print()`, `input()`
 
 ## Quick start
 

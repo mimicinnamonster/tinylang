@@ -1,6 +1,7 @@
 # Compiled binary
 tinylang
 tinylang.dSYM/
+a.out
 
 # Editor files
 *.swp

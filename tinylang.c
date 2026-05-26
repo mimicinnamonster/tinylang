@@ -19,6 +19,7 @@ typedef enum {
     T_PL, T_MI, T_ST, T_SL, T_PC,
     T_AM, T_PI, T_CA, T_AT, T_BN,
     T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
+    T_HASH,
     T_NL, T_IF, T_ELIF, T_ELSE, T_WH, T_FN, T_RT,
 } TK;
 
@@ -250,6 +251,7 @@ void lex(const char *s) {
             case '%': tk.t=T_PC; break;
             case '&': tk.t=T_AM; break; case '|': tk.t=T_PI; break;
             case '^': tk.t=T_CA; break; case '@': tk.t=T_AT; break;
+            case '#': tk.t=T_HASH; break;
             case '!': if (pc()=='='){ac();tk.t=T_NE;}else tk.t=T_BN; break;
             case '=': tk.t=T_EQ; break;
             case '<': if (pc()=='='){ac();tk.t=T_LE;}else tk.t=T_LT; break;
@@ -304,11 +306,6 @@ Value prim(void) {
                 xpct(T_RP);
                 if (!strcmp(t.s, "print")) {
                     if (ac2 < 1) die("print needs 1 arg"); print_val(as[0]); printf("\n"); return vempty();
-                }
-                if (!strcmp(t.s, "len")) {
-                    if (ac2 < 1) die("len needs 1 arg");
-                    if (as[0].type != VAL_ARR) die("len needs array");
-                    return vnum((double)(as[0].as.arr ? as[0].as.arr->len : 0));
                 }
                 if (!strcmp(t.s, "input")) {
                     char b[1024]; if (!fgets(b,1024,stdin)) return vempty();
@@ -375,6 +372,7 @@ Value prim(void) {
         case T_LP: { Value v = expr(); xpct(T_RP); return v; }
         case T_BN: { Value v = prim(); return truthy(v) ? vempty() : vnum(1); }
         case T_MI: { Value v = prim(); if (v.type != VAL_NUM) die("minus on non-number"); return vnum(-v.as.num); }
+        case T_HASH: { Value v = prim(); if (v.type != VAL_ARR) die("# requires array"); return vnum((double)(v.as.arr ? v.as.arr->len : 0)); }
         default: die("unexpected token at line %d", t.l); return vempty();
     }
 }
