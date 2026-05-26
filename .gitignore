@@ -1,0 +1,9 @@
+# Compiled binary
+tinylang
+tinylang.dSYM/
+
+# Editor files
+*.swp
+*.swo
+*~
+.DS_Store
