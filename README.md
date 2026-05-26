@@ -17,7 +17,7 @@ call optimization. No AST, no GC, no closures, no pointers.
 - **Multi-index:** `arr[i, j, k]` desugars to `arr[i][j][k]`
 - **Strings:** Syntactic sugar for byte arrays, escape sequences supported
 - **Operators:** `+ - * / %`, `& | ^ @` (shift), `= != < > <= >=`, `!`, `#` (array length prefix)
-- **Built-ins:** `print()`, `input()`, `assert()`
+- **Built-ins:** `print()`, `input()`, `assert()`, `thispath()`
 - **FFI:** `dlopen()`, `dlsym()`, `dlclose()`, `ffi_call()` — optional (requires libffi)
 
 ## Quick start
@@ -47,7 +47,7 @@ The REPL reads until braces balance before executing, so multi-line functions an
 hi
 ```
 
-Errors kill the REPL process — `repl.sh` wraps it in a restart loop.
+Runtime errors print a message with source file and line number, plus a stack trace showing the call chain. Execution halts for the current input. In script mode the process exits with status 1; in the REPL it continues to the next input, preserving the current scope.
 
 ### FFI build
 
