@@ -41,13 +41,23 @@ brew install rlwrap   # if not installed
 rlwrap ./tinylang
 ```
 
+The REPL handles multi-line input (functions, if/while blocks) — it reads until braces balance before executing:
+
+```
+> function hello() {
+    print("hi")
+  }
+> hello()
+hi
+```
+
 Errors in the REPL kill the process. Use the included `repl.sh` wrapper to keep it running:
 
 ```sh
 ./repl.sh
 ```
 
-This restarts the REPL immediately after any error. Ctrl+C to exit.
+This restarts the REPL immediately after any error (Ctrl+C to exit).
 
 ## Example
 

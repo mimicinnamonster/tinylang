@@ -24,7 +24,7 @@ typedef enum {
 
 typedef struct { TK t; double n; char *s; int l; } Tok;
 typedef struct { char **n; Value *v; int c, m; } Scp;
-typedef struct { char *n, **p; int a, bs, be; } Fn;
+typedef struct { char *n, **p; int a, bs, be; Tok *toks; } Fn;
 
 /* ========================== GLOBALS ========================== */
 Tok *ts; int tc, tp;
@@ -323,19 +323,20 @@ Value prim(void) {
                     Fn *f = &fs[cur_fi];
                     for (int i = 0; i < f->a; i++)
                         sset(cs, f->p[i], (i < ac2) ? as[i] : vempty());
-                    tp = f->bs; rf = 0; tco = 0;
+                    ts = f->toks; tp = f->bs; rf = 0; tco = 0;
                     return vempty(); /* return value ignored */
                 }
                 /* normal function call */
                 int fi = ffind(t.s); if (fi < 0) die("undefined function '%s'", t.s);
                 Fn *f = &fs[fi]; int sp = tp; Scp *ss = cs; int sf = cur_fi;
+                Tok *st = ts; ts = f->toks;
                 cs = snew(); cur_fi = fi;
                 for (int i = 0; i < f->a; i++)
                     sset(cs, f->p[i], (i < ac2) ? as[i] : vempty());
                 tp = f->bs; int sr = rf; rf = 0;
                 while (tp < f->be && !rf) stmt();
                 Value r = rf ? rv : vempty(); rf = sr;
-                sfree(cs); cs = ss; tp = sp; cur_fi = sf;
+                sfree(cs); cs = ss; tp = sp; cur_fi = sf; ts = st;
                 return r;
             }
             Value v = sget(cs, t.s);
@@ -447,7 +448,8 @@ void fn_def(void) {
     if (ffind(t.s) >= 0) die("'%s' already defined", t.s);
     if (fc >= fm) { fm = fm ? fm*2 : 8; fs = realloc(fs, fm*sizeof(Fn)); }
     Fn *f = &fs[fc++]; f->n = strdup(t.s); f->p = malloc(pa*sizeof(char*));
-    for (int i = 0; i < pa; i++) f->p[i] = ps[i]; f->a = pa; f->bs = bs; f->be = be;
+    for (int i = 0; i < pa; i++) f->p[i] = ps[i]; f->a = pa;
+    f->bs = bs; f->be = be; f->toks = ts;
 }
 
 void stmt(void) {
@@ -518,7 +520,6 @@ char *readf(const char *p) {
 }
 
 void run(const char *src) {
-    if (ts) { free(ts); ts = NULL; }
     lex(src);
     while (peek().t != T_EOF) {
         if (peek().t == T_NL) { adv(); continue; }
@@ -534,12 +535,21 @@ int main(int a, char **v) {
         run(src); free(src);
     } else {
         printf("TinyLang v0.1\n");
-        char line[4096];
+        char buf[65536];
         while (1) {
-            printf("> "); fflush(stdout);
-            if (!fgets(line, sizeof(line), stdin)) { printf("\n"); break; }
-            run(line);
+            printf("> "); fflush(stdout); buf[0] = 0;
+            while (1) {
+                char line[4096];
+                if (!fgets(line, sizeof(line), stdin)) { printf("\n"); goto done; }
+                strcat(buf, line);
+                int op = 0, cl = 0;
+                for (char *p = buf; *p; p++) { if (*p == '{') op++; if (*p == '}') cl++; }
+                if (op == cl) break;
+                printf("  "); fflush(stdout);
+            }
+            run(buf);
         }
+        done:;
     }
     sfree(cs); if (ts) free(ts); return 0;
 }
