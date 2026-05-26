@@ -1,6 +1,6 @@
 # TinyLang — Implementation Guide
 
-Target: **under 1000 lines of C**. Single-pass compiler to bytecode with stack-based VM,
+**715 lines of C.** Single-pass compiler to bytecode with stack-based VM,
 refcount+COW, and tail call optimization.
 
 ---
@@ -43,10 +43,10 @@ void vassign(Value *d, Value s);  // release old, retain new
 
 ## 2. Lexer
 
-Produces a flat `Tok[]` array from source. Same lexer as the original tree-walker:
+Produces a flat `Tok[]` array from source.
 
 - Skip whitespace, handle `//` comments
-- Go-style semicolon insertion: newline after number/identifier/string/nil/`)`/`]`/`}` becomes `T_NL`
+- Every newline becomes `T_NL` (parser skips them at every entry point)
 - Numbers: `5`, `5.0`, `.5`, `5.`
 - Identifiers + keywords (`if`, `elif`, `else`, `while`, `function`, `return`, `nil`, `include`)
 - Strings: `"..."` with escape sequences (`\n`, `\t`, `\\`, `\"`, `\xHH`)
@@ -225,10 +225,10 @@ case OC_CALL: {
     Scp *saved_cs = cs; cs = snew();
     int saved_cur_fi = cur_fi; cur_fi = fi;
     for (int j = 0; j < f->a; j++)
-        sset(cs, f->p[j], (j < ac) ? args[j] : vempty());
+        sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
     int saved_rf = rf; rf = 0; isp = -1;
     exec(f->code);
-    Value result = rf ? rv : vempty();  // no return → vempty()
+    Value result = rf ? rv : nilv();  // no return → nil
     sfree(cs); cs = saved_cs; cur_fi = saved_cur_fi;
     rf = saved_rf; isp = saved_isp;
     for (int j = 0; j <= saved_isp; j++) istk[j] = saved[j];  // restore
@@ -247,7 +247,7 @@ case OC_TCO: {
     for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
     isp = -1; rf = 0;
     for (int j = 0; j < f->a; j++)
-        sset(cs, f->p[j], (j < ac) ? args[j] : vempty());
+        sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
     ip = 0; continue;  // restart function body
 }
 ```
@@ -272,7 +272,7 @@ after. The callee starts with `isp = -1`.
 - Explicit `return expr`: compiles as `[expr] OC_RET`. OC_RET pops the
   expression result, stores it in `rv`, and sets `rf = 1`.
 - No return: the function body ends with `OC_END`. `rf` stays `0`, and
-  `OC_CALL` returns `vempty()` (nil).
+  `OC_CALL` returns `nil` (via `nilv()` macro, typed as `VAL_ARR` with `NULL` arr).
 
 ### `assert()` implementation
 
@@ -301,24 +301,25 @@ files can themselves include other files.
 
 ---
 
-## 6. Line Count Estimate
+## 6. Line Count
+
+**Total:** 715 lines (down from 915 in earlier versions).
 
 | Component | Lines |
 |-----------|-------|
-| Value + ArrayData + refcount helpers | ~60 |
-| Lexer | ~150 |
-| Compiler — primaries + expressions | ~100 |
-| Compiler — statements (if, while, assign) | ~120 |
-| Compiler — functions, return, blocks | ~80 |
-| Compiler — include, program | ~40 |
-| Scope + function table | ~80 |
-| VM — exec loop, all opcodes | ~200 |
-| Built-ins (print, input, assert) | ~60 |
-| Main / REPL | ~40 |
-| Error handling | ~20 |
-| **Total** | **~950** |
+| Value + ArrayData + refcount helpers | ~50 |
+| Lexer | ~130 |
+| Compiler — expressions + primaries | ~70 |
+| Compiler — statements (if, while, assign, block) | ~90 |
+| Compiler — functions, return, TCO | ~55 |
+| Compiler — include, program | ~35 |
+| Scope + function table | ~25 |
+| VM — exec loop, all opcodes | ~170 |
+| Built-ins (print, input, assert) | ~40 |
+| Main / REPL | ~30 |
+| Struct defs + globals + enums | ~20 |
 
-Under 1000 lines.
+**Total:** 715 lines (down from 915 in earlier versions).
 
 ---
 

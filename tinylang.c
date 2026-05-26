@@ -1,4 +1,3 @@
-/* TinyLang — bytecode VM, refcount+COW, TCO */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,7 +7,6 @@
 #include <math.h>
 #include <setjmp.h>
 
-/* ========================== TYPES ========================== */
 typedef enum { VAL_NUM, VAL_ARR } Type;
 typedef struct Arr { int refcount, len, cap; struct Value *items; } Arr;
 typedef struct Value { Type type; union { double num; Arr *arr; } as; } Value;
@@ -26,7 +24,6 @@ typedef enum {
 typedef struct { TK t; double n; char *s; int l; } Tok;
 typedef struct { char **n; Value *v; int c, m; } Scp;
 
-/* ========================== BYTECODE ========================== */
 typedef enum {
     OC_NUM, OC_NIL, OC_STR, OC_MAKE_ARR,
     OC_VAR, OC_STORE,
@@ -40,30 +37,23 @@ typedef enum {
 } OC;
 
 typedef struct Code { struct Instr *code; int len, cap; } Code;
-
 typedef struct Instr {
     OC op; int a, b; double num; Arr *arr; char *name; Code *sub;
 } Instr;
 
-/* ========================== GLOBALS ========================== */
 Tok *ts; int tc, tp;
 Scp *cs;
 int rf; Value rv;
-int cur_fi; int last_tok;
+int cur_fi;
 static char *include_dir;
 jmp_buf assert_jmp; int assert_catching;
 char assert_msg[512];
 
-/* Function table */
 typedef struct { char *n, **p; int a; Code *code; } Fn;
 Fn *fs; int fc, fm;
-
-/* VM stack */
 Value istk[4096]; int isp;
 
-/* ========================== VALUE ========================== */
 Value vnum(double n) { return (Value){ .type = VAL_NUM, .as.num = n }; }
-Value vempty(void) { return (Value){ .type = VAL_ARR, .as.arr = NULL }; }
 
 Arr *aalloc(int c) {
     Arr *a = calloc(1, sizeof(Arr)); a->refcount = 1;
@@ -92,9 +82,7 @@ Arr *adeep_copy(Arr *s) {
 
 void amake_uniq(Value *v) {
     if (v->type != VAL_ARR || !v->as.arr || v->as.arr->refcount <= 1) return;
-    Arr *old = v->as.arr;
-    v->as.arr = adeep_copy(old);
-    arelease(old);
+    Arr *old = v->as.arr; v->as.arr = adeep_copy(old); arelease(old);
 }
 
 void vassign(Value *d, Value s) {
@@ -109,13 +97,14 @@ void print_val(Value v) {
         if (v.as.num == (double)(int64_t)v.as.num) printf("%lld", (int64_t)v.as.num);
         else printf("%g", v.as.num);
     } else if (v.type == VAL_ARR) {
-        int pr = 1;
-        if (v.as.arr) for (int i = 0; i < v.as.arr->len && pr; i++) {
-            if (v.as.arr->items[i].type != VAL_NUM) { pr = 0; break; }
+        int is_str = 1;
+        if (v.as.arr) for (int i = 0; i < v.as.arr->len && is_str; i++) {
+            if (v.as.arr->items[i].type != VAL_NUM) { is_str = 0; break; }
             int c = (int)v.as.arr->items[i].as.num;
-            if (c != 10 && c != 13 && c != 9 && (c < 32 || c > 126)) pr = 0;
+            if (c != 10 && c != 13 && c != 9 && (c < 32 || c > 126)) is_str = 0;
         }
-        if (pr && v.as.arr) for (int i = 0; i < v.as.arr->len; i++) putchar((int)v.as.arr->items[i].as.num);
+        if (is_str && v.as.arr) for (int i = 0; i < v.as.arr->len; i++)
+            putchar((int)v.as.arr->items[i].as.num);
         else {
             putchar('[');
             if (v.as.arr) for (int i = 0; i < v.as.arr->len; i++) {
@@ -139,18 +128,13 @@ int veq(Value a, Value b) {
 }
 
 void die(const char *f, ...) {
-    va_list ap; va_start(ap, f);
-    va_list aq; va_copy(aq, ap);
-    fprintf(stderr, "error: "); vfprintf(stderr, f, ap); fprintf(stderr, "\n");
-    va_end(ap);
-    if (assert_catching) {
-        vsnprintf(assert_msg, sizeof(assert_msg), f, aq);
-        va_end(aq);
-        longjmp(assert_jmp, 1);
-    }
-    va_end(aq);
-    exit(1);
+    va_list ap, aq; va_start(ap, f); va_copy(aq, ap);
+    vfprintf(stderr, f, ap); fputc('\n', stderr);
+    if (assert_catching) { vsnprintf(assert_msg, sizeof(assert_msg), f, aq); longjmp(assert_jmp, 1); }
+    va_end(aq); va_end(ap); exit(1);
 }
+
+#define nilv() ((Value){ .type = VAL_ARR })
 
 Value apply(int op, Value l, Value r) {
     switch (op) {
@@ -168,11 +152,12 @@ Value apply(int op, Value l, Value r) {
         case T_MI:
             if (l.type != VAL_NUM || r.type != VAL_NUM) die("'-' requires numbers");
             return vnum(l.as.num - r.as.num);
+
         case T_ST:
             if (l.type == VAL_NUM && r.type == VAL_NUM) return vnum(l.as.num * r.as.num);
             if (l.type == VAL_ARR && r.type == VAL_NUM) {
                 int bl = l.as.arr ? l.as.arr->len : 0, n = (int)r.as.num;
-                if (n <= 0) return vempty();
+                if (n <= 0) return nilv();
                 Arr *a = aalloc(bl * n); a->len = bl * n;
                 for (int i = 0; i < n; i++)
                     for (int j = 0; j < bl; j++)
@@ -195,49 +180,43 @@ Value apply(int op, Value l, Value r) {
             if (s < 0) { s = -s; if (s > 63) s = 63; return vnum((double)((uint64_t)a >> s)); }
             else { if (s > 63) s = 63; return vnum((double)((uint64_t)a << s)); }
         }
-        case T_EQ: return veq(l, r) ? vnum(1) : vempty();
-        case T_NE: return veq(l, r) ? vempty() : vnum(1);
+        case T_EQ: return veq(l, r) ? vnum(1) : nilv();
+        case T_NE: return veq(l, r) ? nilv() : vnum(1);
         case T_LT:
             if (l.type != VAL_NUM || r.type != VAL_NUM) die("'<' requires numbers");
-            return l.as.num < r.as.num ? vnum(1) : vempty();
+            return l.as.num < r.as.num ? vnum(1) : nilv();
         case T_GT:
             if (l.type != VAL_NUM || r.type != VAL_NUM) die("'>' requires numbers");
-            return l.as.num > r.as.num ? vnum(1) : vempty();
+            return l.as.num > r.as.num ? vnum(1) : nilv();
         case T_LE:
             if (l.type != VAL_NUM || r.type != VAL_NUM) die("'<=' requires numbers");
-            return l.as.num <= r.as.num ? vnum(1) : vempty();
+            return l.as.num <= r.as.num ? vnum(1) : nilv();
         case T_GE:
             if (l.type != VAL_NUM || r.type != VAL_NUM) die("'>=' requires numbers");
-            return l.as.num >= r.as.num ? vnum(1) : vempty();
+            return l.as.num >= r.as.num ? vnum(1) : nilv();
         default: die("unknown op");
-    } return vempty();
+    } return nilv();
 }
 
-/* ========================== LEXER ========================== */
 const char *src; int sl;
 static int pc(void) { return (unsigned char)*src; }
 static int ac(void) { int c = (unsigned char)*src++; if (c == '\n') sl++; return c; }
 
 void lex(const char *s) {
-    src = s; sl = 1; tc = 0; tp = 0; int m = 8192; ts = malloc(m * sizeof(Tok));
+    src = s; sl = 1; tc = 0; tp = 0;
+    int m = 8192; ts = malloc(m * sizeof(Tok));
     for (;;) {
         while (pc() == ' ' || pc() == '\t') ac();
         int c = pc(); Tok tk = { .l = sl };
-        if (c == '\n') {
-            ac();
-            if (last_tok == T_NUM || last_tok == T_ID || last_tok == T_STR ||
-                last_tok == T_NIL || last_tok == T_RP || last_tok == T_RB || last_tok == T_RC)
-                { tk.t = T_NL; last_tok = T_NL; goto em; }
-            continue;
-        }
+        if (c == '\n') { ac(); tk.t = T_NL; goto em; }
         if (c == 0) { tk.t = T_EOF; goto em; }
         if (c == '/' && src[1] == '/') { while (pc() && pc() != '\n') ac(); continue; }
         if (isdigit(c) || (c == '.' && isdigit(src[1]))) {
-            char b[64]; int i = 0, dt = 0;
-            if (c == '.') { dt = 1; b[i++] = '.'; ac(); c = pc(); }
+            char b[64]; int i = 0, dot = 0;
+            if (c == '.') { dot = 1; b[i++] = '.'; ac(); c = pc(); }
             while (isdigit(c)) { b[i++] = c; ac(); c = pc(); }
-            if (c == '.' && !dt) {
-                dt = 1; b[i++] = '.'; ac(); c = pc();
+            if (c == '.' && !dot) {
+                dot = 1; b[i++] = '.'; ac(); c = pc();
                 while (isdigit(c)) { b[i++] = c; ac(); c = pc(); }
             } b[i] = 0; tk.t = T_NUM; tk.n = atof(b); goto em;
         }
@@ -292,34 +271,33 @@ void lex(const char *s) {
             case '>': if (pc()=='='){ac();tk.t=T_GE;}else tk.t=T_GT; break;
             default: { char m[2]={c,0}; die("unexpected '%s'",m); }
         }
-        em: if (tc>=m){m*=2;ts=realloc(ts,m*sizeof(Tok));} ts[tc++]=tk;
-        last_tok = tk.t;
-        if (tk.t==T_EOF) break;
+        em: if (tc>=m){m*=2;ts=realloc(ts,m*sizeof(Tok));} ts[tc++]=tk; if (tk.t==T_EOF) break;
     }
 }
 
-/* ========================== SCOPE ========================== */
 Scp *snew(void) { return calloc(1, sizeof(Scp)); }
+
 void sfree(Scp *s) {
     for (int i = 0; i < s->c; i++) { if (s->v[i].type == VAL_ARR) arelease(s->v[i].as.arr); free(s->n[i]); }
     free(s->n); free(s->v); free(s);
 }
+
 Value sget(Scp *s, const char *n) {
     for (int i = 0; i < s->c; i++) if (!strcmp(s->n[i], n)) return s->v[i];
-    die("undefined '%s'", n); return vempty();
+    die("undefined '%s'", n); return nilv();
 }
+
 void sset(Scp *s, const char *n, Value v) {
     for (int i = 0; i < s->c; i++)
         if (!strcmp(s->n[i], n)) { vassign(&s->v[i], v); return; }
     if (s->c >= s->m) { s->m = s->m ? s->m*2 : 4;
         s->n = realloc(s->n, s->m*sizeof(char*)); s->v = realloc(s->v, s->m*sizeof(Value)); }
-    s->n[s->c] = strdup(n);
-    s->v[s->c] = v; if (v.type == VAL_ARR) aretain(v.as.arr);
-    s->c++;
+    s->n[s->c] = strdup(n); s->v[s->c] = v;
+    if (v.type == VAL_ARR) aretain(v.as.arr); s->c++;
 }
+
 int ffind(const char *n) { for (int i = 0; i < fc; i++) if (!strcmp(fs[i].n, n)) return i; return -1; }
 
-/* ========================== COMPILER ========================== */
 void emit(Code *c, Instr ins) {
     if (c->len >= c->cap) { c->cap = c->cap ? c->cap*2 : 128;
         c->code = realloc(c->code, c->cap * sizeof(Instr)); }
@@ -330,14 +308,18 @@ Code *new_code(void) { return calloc(1, sizeof(Code)); }
 
 void code_free(Code *c) {
     if (!c) return;
-    for (int i = 0; i < c->len; i++) { free(c->code[i].name); code_free(c->code[i].sub); }
+    for (int i = 0; i < c->len; i++) {
+        free(c->code[i].name);
+        if (c->code[i].arr) arelease(c->code[i].arr);
+        code_free(c->code[i].sub);
+    }
     free(c->code); free(c);
 }
 
-/* forward declarations */
 void comp_stmt(Code *c);
 void comp_expr(Code *c);
 void comp_prim(Code *c);
+void comp_block(Code *c);
 
 void comp_prim(Code *c) {
     while (ts[tp].t == T_NL) tp++;
@@ -346,38 +328,26 @@ void comp_prim(Code *c) {
         case T_NUM: tp++; emit(c, (Instr){OC_NUM, 0, 0, .num = t.n}); break;
         case T_NIL: tp++; emit(c, (Instr){OC_NIL, 0, 0}); break;
         case T_STR: {
-            tp++; Arr *orig = (Arr*)t.s;
-            Arr *copy = aalloc(orig->len); copy->len = orig->len;
-            for (int i = 0; i < orig->len; i++) {
-                copy->items[i] = orig->items[i];
-                if (copy->items[i].type == VAL_ARR) aretain(copy->items[i].as.arr);
-            }
-            emit(c, (Instr){OC_STR, 0, 0, .arr = copy}); break;
+            tp++; Arr *o = (Arr*)t.s;
+            emit(c, (Instr){OC_STR, 0, 0, .arr = o});
+            break;
         }
         case T_ID: {
             char *nm = strdup(t.s); tp++;
             if (ts[tp].t == T_LP) {
-                free(nm);
-                /* function call */
-                tp++; /* skip ( */
+                free(nm); tp++;
                 int is_assert = !strcmp(t.s, "assert");
                 if (is_assert) {
-                    Code *arg = new_code();
-                    int ac = 0;
+                    Code *arg = new_code(); int ac = 0;
                     if (ts[tp].t != T_RP) { do { comp_expr(arg); ac++; } while (ts[tp].t == T_CM && (tp++, 1)); }
-                    tp++; /* skip ) */
-                    emit(c, (Instr){OC_ASSERT, ac, 0, .sub = arg});
-                    break;
+                    tp++; emit(c, (Instr){OC_ASSERT, ac, 0, .sub = arg}); break;
                 }
                 int ac = 0;
                 if (ts[tp].t != T_RP) { do { comp_expr(c); ac++; } while (ts[tp].t == T_CM && (tp++, 1)); }
-                tp++; /* skip ) */
-                if (!strcmp(t.s, "print")) {
-                    if (ac < 1) die("print needs 1 arg");
-                    emit(c, (Instr){OC_PRINT, 0, 0});
-                } else if (!strcmp(t.s, "input")) {
-                    emit(c, (Instr){OC_INPUT, 0, 0});
-                } else {
+                tp++;
+                if (!strcmp(t.s, "print")) { if (ac < 1) die("print needs 1 arg"); emit(c, (Instr){OC_PRINT, 0, 0}); }
+                else if (!strcmp(t.s, "input")) emit(c, (Instr){OC_INPUT, 0, 0});
+                else {
                     int fi = ffind(t.s);
                     if (fi < 0) die("undefined function '%s'", t.s);
                     emit(c, (Instr){OC_CALL, fi, ac});
@@ -387,8 +357,7 @@ void comp_prim(Code *c) {
                 while (ts[tp].t == T_LB) {
                     tp++;
                     do { comp_expr(c); emit(c, (Instr){OC_INDEX, 0, 0}); } while (ts[tp].t == T_CM && (tp++, 1));
-                    if (ts[tp].t != T_RB) die("expected ]");
-                    tp++;
+                    if (ts[tp].t != T_RB) die("expected ]"); tp++;
                 }
             }
             break;
@@ -398,10 +367,8 @@ void comp_prim(Code *c) {
             if (ts[tp].t == T_RB) { tp++; emit(c, (Instr){OC_NIL, 0, 0}); break; }
             int n = 0;
             do { comp_expr(c); n++; } while (ts[tp].t == T_CM && (tp++, 1));
-            if (ts[tp].t != T_RB) die("expected ]");
-            tp++;
-            emit(c, (Instr){OC_MAKE_ARR, n, 0});
-            break;
+            if (ts[tp].t != T_RB) die("expected ]"); tp++;
+            emit(c, (Instr){OC_MAKE_ARR, n, 0}); break;
         }
         case T_LP: { tp++; comp_expr(c); if (ts[tp].t != T_RP) die("expected )"); tp++; break; }
         case T_BN: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_BN, 0}); break;
@@ -424,7 +391,7 @@ void comp_expr(Code *c) {
 void comp_block(Code *c) {
     while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
     if (ts[tp].t != T_LC) return;
-    tp++; /* skip { */
+    tp++;
     while (ts[tp].t != T_RC && ts[tp].t != T_EOF) {
         while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
         if (ts[tp].t == T_RC || ts[tp].t == T_EOF) break;
@@ -434,127 +401,99 @@ void comp_block(Code *c) {
 }
 
 void comp_if(Code *c) {
-    int jz_patches[64], np = 0;
-    int jmp_patches[64], nj = 0;
-
-    /* if */
-    tp++; /* skip IF */
-    comp_expr(c);
-    jz_patches[np++] = c->len;
-    emit(c, (Instr){OC_JZ, 0, 0});
+    int jz_patches[64], np = 0, jmp_patches[64], nj = 0;
+    tp++; comp_expr(c);
+    jz_patches[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0});
     comp_block(c);
-    jmp_patches[nj++] = c->len;
-    emit(c, (Instr){OC_JMP, 0, 0});
-
-    /* elif */
+    jmp_patches[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0});
     while (ts[tp].t == T_ELIF) {
-        c->code[jz_patches[np-1]].a = c->len;
-        tp++;
-        comp_expr(c);
-        jz_patches[np++] = c->len;
-        emit(c, (Instr){OC_JZ, 0, 0});
-        comp_block(c);
-        jmp_patches[nj++] = c->len;
-        emit(c, (Instr){OC_JMP, 0, 0});
+        c->code[jz_patches[np-1]].a = c->len; tp++;
+        comp_expr(c); jz_patches[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0});
+        comp_block(c); jmp_patches[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0});
     }
-
-    /* else */
-    if (ts[tp].t == T_ELSE) {
-        c->code[jz_patches[np-1]].a = c->len;
-        tp++;
-        comp_block(c);
-    } else {
-        c->code[jz_patches[np-1]].a = c->len;
-    }
-
+    if (ts[tp].t == T_ELSE) { c->code[jz_patches[np-1]].a = c->len; tp++; comp_block(c); }
+    else c->code[jz_patches[np-1]].a = c->len;
     for (int i = 0; i < nj; i++) c->code[jmp_patches[i]].a = c->len;
 }
 
 void comp_while(Code *c) {
-    int loop_start = c->len;
-    tp++; /* skip WHILE */
-    comp_expr(c);
-    int jz_pos = c->len;
-    emit(c, (Instr){OC_JZ, 0, 0});
+    int loop = c->len; tp++;
+    comp_expr(c); int jz = c->len; emit(c, (Instr){OC_JZ, 0, 0});
     comp_block(c);
-    emit(c, (Instr){OC_JMP, loop_start, 0});
-    c->code[jz_pos].a = c->len;
+    emit(c, (Instr){OC_JMP, loop, 0}); c->code[jz].a = c->len;
+}
+
+void comp_return(Code *c) {
+    tp++;
+    int is_tc = (cur_fi >= 0 && ts[tp].t == T_ID &&
+                 !strcmp(ts[tp].s, fs[cur_fi].n) && ts[tp+1].t == T_LP);
+    comp_expr(c);
+    if (is_tc && c->len > 0 && c->code[c->len-1].op == OC_CALL) {
+        Instr *last = &c->code[c->len-1]; int ac = last->b;
+        last->op = OC_TCO; last->a = ac; last->b = 0;
+    } else if (!is_tc) {
+        emit(c, (Instr){OC_RET, 0, 0});
+    }
 }
 
 void comp_fn(Code *c) {
-    tp++; /* skip FN */
+    tp++;
     if (ts[tp].t != T_ID) die("expected function name");
     char *name = strdup(ts[tp].s); tp++;
-    if (ts[tp].t != T_LP) die("expected (");
-    tp++;
+    if (ts[tp].t != T_LP) die("expected ("); tp++;
     char *params[64]; int pa = 0;
     if (ts[tp].t != T_RP) {
-        do {
-            if (ts[tp].t != T_ID) die("expected param name");
-            params[pa++] = strdup(ts[tp].s); tp++;
-        } while (ts[tp].t == T_CM && (tp++, 1));
+        do { if (ts[tp].t != T_ID) die("expected param name"); params[pa++] = strdup(ts[tp].s); tp++; }
+        while (ts[tp].t == T_CM && (tp++, 1));
     }
-    if (ts[tp].t != T_RP) die("expected )");
-    tp++;
-
+    if (ts[tp].t != T_RP) die("expected )"); tp++;
     if (ffind(name) >= 0) die("'%s' already defined", name);
-
-    /* pre-register function so recursive calls can find it */
     if (fc >= fm) { fm = fm ? fm*2 : 8; fs = realloc(fs, fm*sizeof(Fn)); }
     Fn *f = &fs[fc++]; f->n = name; f->p = malloc(pa*sizeof(char*));
-    for (int i = 0; i < pa; i++) f->p[i] = params[i]; f->a = pa;
-    f->code = NULL;
-
-    /* compile function body */
-    Code *body = new_code();
-    comp_block(body);
-    emit(body, (Instr){OC_END, 0, 0});
-    f->code = body;
-
-    /* check for TCO in last statement (skip past any trailing terminators) */
+    for (int i = 0; i < pa; i++) f->p[i] = params[i]; f->a = pa; f->code = NULL;
+    Code *body = new_code(); comp_block(body); emit(body, (Instr){OC_END, 0, 0}); f->code = body;
     int tco_pos = body->len - 1;
     while (tco_pos >= 0 && (body->code[tco_pos].op == OC_RET || body->code[tco_pos].op == OC_END)) tco_pos--;
     if (tco_pos >= 0 && body->code[tco_pos].op == OC_CALL &&
         body->code[tco_pos].a < fc && !strcmp(fs[body->code[tco_pos].a].n, name)) {
-        int ac = body->code[tco_pos].b;
-        body->code[tco_pos].op = OC_TCO;
-        body->code[tco_pos].a = ac;
-    }
-}
-
-void comp_return(Code *c) {
-    tp++; /* skip RT */
-    /* peek ahead to check for TCO pattern: return self(...) */
-    int is_tc = (cur_fi >= 0 && ts[tp].t == T_ID &&
-                 !strcmp(ts[tp].s, fs[cur_fi].n) && ts[tp+1].t == T_LP);
-    if (is_tc) {
-        comp_expr(c);
-        /* The expression is a function call which emitted OC_CALL.
-           We need to convert it to OC_TCO.
-           But comp_expr compiles the entire expression, not just the call.
-           For "return f()", comp_expr → comp_prim → sees T_ID + T_LP → emits OC_CALL.
-           Then comp_expr returns (no binary op). */
-        if (c->len > 0 && c->code[c->len-1].op == OC_CALL) {
-            Instr *last = &c->code[c->len-1];
-            int ac = last->b;
-            last->op = OC_TCO;
-            last->a = ac;
-            last->b = 0;
-        }
-    } else {
-        comp_expr(c);
-        emit(c, (Instr){OC_RET, 0, 0});
+        int ac = body->code[tco_pos].b; body->code[tco_pos].op = OC_TCO; body->code[tco_pos].a = ac;
     }
 }
 
 char *readf(const char *p);
 
-void comp_include(Code *c);
+void comp_include(Code *c) {
+    tp++;
+    if (ts[tp].t != T_STR) die("include requires a string path");
+    Arr *a = (Arr*)ts[tp].s; tp++;
+    int plen = a ? a->len : 0;
+    if (plen >= 1024) die("include path too long");
+    char path[1024];
+    for (int i = 0; i < plen; i++) path[i] = (char)a->items[i].as.num; path[plen] = '\0';
+    char full[1024];
+    if (include_dir && include_dir[0])
+        snprintf(full, sizeof(full), "%s/%s", include_dir, path);
+    else { size_t nl = strlen(path); if (nl >= sizeof(full)) nl = sizeof(full)-1; memcpy(full, path, nl+1); }
+    char *content = readf(full);
+    if (!content) die("cannot include '%s'", full);
+    Tok *saved_ts = ts; int saved_tc = tc, saved_tp = tp; char *saved_dir = include_dir;
+    char inc_dir[1024] = {0};
+    const char *sl = strrchr(full, '/');
+    if (sl) { memcpy(inc_dir, full, sl - full); inc_dir[sl - full] = '\0'; }
+    include_dir = inc_dir;
+    lex(content);
+    while (ts[tp].t != T_EOF) {
+        while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
+        if (ts[tp].t == T_EOF) break;
+        comp_stmt(c);
+    }
+    free(ts); ts = saved_ts; tc = saved_tc; tp = saved_tp;
+    include_dir = saved_dir; free(content);
+}
 
 void comp_stmt(Code *c) {
     while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
     if (ts[tp].t == T_EOF || ts[tp].t == T_RC) return;
-
     switch (ts[tp].t) {
         case T_IF: comp_if(c); break;
         case T_WH: comp_while(c); break;
@@ -563,7 +502,6 @@ void comp_stmt(Code *c) {
         case T_LC: comp_block(c); break;
         case T_INCLUDE: comp_include(c); break;
         case T_ID: {
-            /* peek ahead: assignment or expression? */
             int pt = tp + 1;
             while (ts[pt].t == T_LB) {
                 pt++; int bd = 1;
@@ -575,74 +513,21 @@ void comp_stmt(Code *c) {
             }
             int is_assign = (ts[pt].t == T_EQ);
             if (is_assign) {
-                /* assignment */
-                char *nm = strdup(ts[tp].s); tp++;
-                int idx_count = 0;
+                char *nm = strdup(ts[tp].s); tp++; int idx_count = 0;
                 while (ts[tp].t == T_LB) {
                     tp++;
                     do { comp_expr(c); idx_count++; } while (ts[tp].t == T_CM && (tp++, 1));
-                    if (ts[tp].t != T_RB) die("expected ]");
-                    tp++;
+                    if (ts[tp].t != T_RB) die("expected ]"); tp++;
                 }
-                if (ts[tp].t != T_EQ) die("expected =");
-                tp++;
+                if (ts[tp].t != T_EQ) die("expected ="); tp++;
                 comp_expr(c);
-                if (idx_count > 0)
-                    emit(c, (Instr){OC_LVALS, idx_count, 0, .name = nm});
-                else
-                    emit(c, (Instr){OC_STORE, 0, 0, .name = nm});
-            } else {
-                comp_expr(c);
-                emit(c, (Instr){OC_POP, 0, 0});
-            }
+                if (idx_count > 0) emit(c, (Instr){OC_LVALS, idx_count, 0, .name = nm});
+                else emit(c, (Instr){OC_STORE, 0, 0, .name = nm});
+            } else { comp_expr(c); emit(c, (Instr){OC_POP, 0, 0}); }
             break;
         }
-        default:
-            comp_expr(c);
-            emit(c, (Instr){OC_POP, 0, 0});
-            break;
+        default: comp_expr(c); emit(c, (Instr){OC_POP, 0, 0}); break;
     }
-}
-
-void comp_include(Code *c) {
-    tp++; /* skip INCLUDE */
-    if (ts[tp].t != T_STR) die("include requires a string path");
-    Arr *a = (Arr*)ts[tp].s; tp++;
-    int plen = a ? a->len : 0;
-    if (plen >= 1024) die("include path too long");
-    char path[1024];
-    for (int i = 0; i < plen; i++) path[i] = (char)a->items[i].as.num;
-    path[plen] = '\0';
-
-    char full[1024];
-    if (include_dir && include_dir[0])
-        snprintf(full, sizeof(full), "%s/%s", include_dir, path);
-    else { size_t nl = strlen(path); if (nl >= sizeof(full)) nl = sizeof(full)-1; memcpy(full, path, nl+1); }
-
-    char *content = readf(full);
-    if (!content) die("cannot include '%s'", full);
-
-    Tok *saved_ts = ts;
-    int saved_tc = tc, saved_tp = tp;
-    char *saved_dir = include_dir;
-
-    char inc_dir[1024] = {0};
-    const char *sl = strrchr(full, '/');
-    if (sl) { memcpy(inc_dir, full, sl - full); inc_dir[sl - full] = '\0'; }
-    include_dir = inc_dir;
-
-    /* Lex and compile the included content */
-    lex(content);
-    while (ts[tp].t != T_EOF) {
-        while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
-        if (ts[tp].t == T_EOF) break;
-        comp_stmt(c);
-    }
-
-    free(ts); /* free included file's tokens */
-    ts = saved_ts; tc = saved_tc; tp = saved_tp;
-    include_dir = saved_dir;
-    free(content);
 }
 
 void comp_program(Code *c) {
@@ -654,46 +539,40 @@ void comp_program(Code *c) {
     emit(c, (Instr){OC_END, 0, 0});
 }
 
-/* ========================== VM ========================== */
 void exec(Code *c) {
     int ip = 0;
     while (ip < c->len && !rf) {
         Instr *ins = &c->code[ip];
         switch (ins->op) {
             case OC_NUM: istk[++isp] = vnum(ins->num); break;
-            case OC_NIL: istk[++isp] = vempty(); break;
+            case OC_NIL: istk[++isp] = nilv(); break;
             case OC_STR:
                 istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = ins->arr };
-                aretain(ins->arr);
-                break;
+                aretain(ins->arr); break;
+
             case OC_MAKE_ARR: {
-                int n = ins->a;
-                Arr *a = aalloc(n); a->len = n;
+                int n = ins->a; Arr *a = aalloc(n); a->len = n;
                 for (int i = n-1; i >= 0; i--) {
                     a->items[i] = istk[isp--];
                     if (a->items[i].type == VAL_ARR) aretain(a->items[i].as.arr);
                 }
-                istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a };
-                break;
+                istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a }; break;
             }
             case OC_VAR: {
                 Value v = sget(cs, ins->name);
-                istk[++isp] = v;
-                if (v.type == VAL_ARR) aretain(v.as.arr);
-                break;
+                istk[++isp] = v; if (v.type == VAL_ARR) aretain(v.as.arr); break;
             }
             case OC_STORE: sset(cs, ins->name, istk[isp--]); break;
+
             case OC_OP: {
-                Value r = istk[isp--], l = istk[isp--];
-                Value res = apply(ins->a, l, r);
-                if (l.type == VAL_ARR) arelease(l.as.arr);
-                if (r.type == VAL_ARR) arelease(r.as.arr);
-                istk[++isp] = res;
-                break;
+                Value r = istk[isp--], l = istk[isp--], res = apply(ins->a, l, r);
+                if (l.type==VAL_ARR) arelease(l.as.arr);
+                if (r.type==VAL_ARR) arelease(r.as.arr);
+                istk[++isp] = res; break;
             }
             case OC_UNARY: {
                 Value v = istk[isp--];
-                if (ins->a == T_BN) { istk[++isp] = truthy(v) ? vempty() : vnum(1); if (v.type==VAL_ARR) arelease(v.as.arr); }
+                if (ins->a == T_BN) { istk[++isp] = truthy(v) ? nilv() : vnum(1); if (v.type==VAL_ARR) arelease(v.as.arr); }
                 else if (ins->a == T_MI) { if (v.type!=VAL_NUM) die("minus on non-number"); istk[++isp] = vnum(-v.as.num); }
                 else if (ins->a == T_HASH) { if (v.type!=VAL_ARR) die("# requires array"); istk[++isp] = vnum((double)(v.as.arr ? v.as.arr->len : 0)); if (v.type==VAL_ARR) arelease(v.as.arr); }
                 break;
@@ -725,8 +604,7 @@ void exec(Code *c) {
                 break;
             }
             case OC_LVALS: {
-                int depth = ins->a;
-                char *name = ins->name;
+                int depth = ins->a; char *name = ins->name;
                 Value val = istk[isp--];
                 Value indices[16];
                 for (int j = depth-1; j >= 0; j--) indices[j] = istk[isp--];
@@ -746,113 +624,80 @@ void exec(Code *c) {
                             int ii = (int)indices[j].as.arr->items[k].as.num;
                             if (slot->type != VAL_ARR || !slot->as.arr || ii < 0 || ii >= slot->as.arr->len)
                                 die("index out of bounds");
-                            amake_uniq(slot);
-                            slot = &slot->as.arr->items[ii];
+                            amake_uniq(slot); slot = &slot->as.arr->items[ii];
                         }
                     } else die("index must be number or array");
                 }
-                vassign(slot, val);
-                break;
+                vassign(slot, val); break;
             }
             case OC_CALL: {
-                int fi = ins->a, ac = ins->b;
-                Fn *f = &fs[fi];
+                int fi = ins->a, ac = ins->b; Fn *f = &fs[fi];
                 Value args[64];
                 for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
                 int saved_isp = isp;
-                /* save caller's stack values the callee might overwrite */
                 Value saved_stack[64];
                 for (int j = 0; j <= saved_isp; j++) saved_stack[j] = istk[j];
                 Scp *saved_cs = cs; cs = snew();
                 int saved_cur_fi = cur_fi; cur_fi = fi;
                 for (int j = 0; j < f->a; j++)
-                    sset(cs, f->p[j], (j < ac) ? args[j] : vempty());
+                    sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
                 int saved_rf = rf; rf = 0; Value saved_rv = rv; isp = -1;
                 exec(f->code);
-                Value result = rf ? rv : vempty();
+                Value result = rf ? rv : nilv();
                 sfree(cs); cs = saved_cs; cur_fi = saved_cur_fi;
                 rf = saved_rf; rv = saved_rv; isp = saved_isp;
                 for (int j = 0; j <= saved_isp; j++) istk[j] = saved_stack[j];
-                istk[++isp] = result;
-                break;
+                istk[++isp] = result; break;
             }
             case OC_TCO: {
-                int ac = ins->a;
-                Fn *f = &fs[cur_fi];
+                int ac = ins->a; Fn *f = &fs[cur_fi];
                 Value args[64];
                 for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
                 isp = -1; rf = 0;
                 for (int j = 0; j < f->a; j++)
-                    sset(cs, f->p[j], (j < ac) ? args[j] : vempty());
-                ip = -1; /* restart from beginning */
-                ip++; continue; /* will become 0 */
+                    sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
+                ip = -1; break;
             }
-            case OC_RET: {
-                rv = istk[isp--];
-                rf = 1;
-                break;
-            }
-            case OC_POP: {
-                if (isp >= 0) {
-                    Value v = istk[isp--];
-                    if (v.type == VAL_ARR) arelease(v.as.arr);
-                }
-                break;
-            }
+            case OC_RET: { rv = istk[isp--]; rf = 1; break; }
+            case OC_POP: { if (isp >= 0) { Value v = istk[isp--]; if (v.type == VAL_ARR) arelease(v.as.arr); } break; }
+
             case OC_JZ: {
-                Value v = istk[isp--];
-                int t = truthy(v);
+                Value v = istk[isp--]; int t = truthy(v);
                 if (v.type == VAL_ARR) arelease(v.as.arr);
-                if (!t) { ip = ins->a; continue; }
-                break;
+                if (!t) { ip = ins->a; continue; } break;
             }
             case OC_JMP: { ip = ins->a; continue; }
-            case OC_PRINT: {
-                print_val(istk[isp--]); printf("\n");
-                break;
-            }
+            case OC_PRINT: { print_val(istk[isp--]); printf("\n"); break; }
             case OC_INPUT: {
-                char buf[1024];
-                if (!fgets(buf, 1024, stdin)) { istk[++isp] = vempty(); break; }
-                int n = strlen(buf); if (n && buf[n-1]=='\n') n--;
+                char buf[1024]; int n;
+                if (!fgets(buf, 1024, stdin)) { n = 0; } else { n = strlen(buf); if (n && buf[n-1]=='\n') n--; }
                 Arr *a = aalloc(n); a->len = n;
                 for (int j = 0; j < n; j++) a->items[j] = vnum((unsigned char)buf[j]);
-                istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a };
-                break;
+                istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a }; break;
             }
             case OC_ASSERT: {
-                Code *sub = ins->sub;
-                int ac = ins->a;
-                int saved_isp = isp;
-                int saved_rf = rf; Value saved_rv = rv;
-                Scp *saved_cs = cs;
-                int saved_ac = assert_catching;
+                Code *sub = ins->sub; int ac = ins->a;
+                int saved_isp = isp, saved_rf = rf; Value saved_rv = rv;
+                Scp *saved_cs = cs; int saved_ac = assert_catching;
                 assert_catching = 1;
                 if (setjmp(assert_jmp)) {
-                    assert_catching = 0;
-                    isp = saved_isp; rf = saved_rf; rv = saved_rv; cs = saved_cs;
+                    assert_catching = 0; isp = saved_isp; rf = saved_rf; rv = saved_rv; cs = saved_cs;
                     assert_catching = saved_ac;
-                    int n = strlen(assert_msg);
-                    Arr *a = aalloc(n); a->len = n;
+                    int n = strlen(assert_msg); Arr *a = aalloc(n); a->len = n;
                     for (int j = 0; j < n; j++) a->items[j] = vnum((unsigned char)assert_msg[j]);
                     istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a };
                 } else {
-                    isp = saved_isp; rf = 0;
-                    Value asv[64]; for (int j=0;j<=saved_isp;j++) asv[j]=istk[j];
-                    exec(sub);
-                    assert_catching = 0;
+                    isp = saved_isp; rf = 0; Value asv[64];
+                    for (int j=0;j<=saved_isp;j++) asv[j]=istk[j];
+                    exec(sub); assert_catching = 0;
                     for (int j=0;j<=saved_isp;j++) istk[j]=asv[j];
                     assert_catching = saved_ac;
-                    Value result = (isp > saved_isp) ? istk[isp--] : vempty();
-                    if (ac >= 1 && truthy(result)) {
-                        istk[++isp] = vempty();
-                    } else {
-                        const char *msg = "assertion failed";
-                        int n = strlen(msg);
+                    Value result = (isp > saved_isp) ? istk[isp--] : nilv();
+                    if (ac >= 1 && truthy(result)) istk[++isp] = nilv();
+                    else { const char *msg = "assertion failed"; int n = strlen(msg);
                         Arr *a = aalloc(n); a->len = n;
                         for (int j = 0; j < n; j++) a->items[j] = vnum((unsigned char)msg[j]);
-                        istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a };
-                    }
+                        istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a }; }
                 }
                 break;
             }
@@ -862,7 +707,6 @@ void exec(Code *c) {
     }
 }
 
-/* ========================== MAIN ========================== */
 char *readf(const char *p) {
     FILE *f = fopen(p, "rb"); if (!f) return NULL;
     fseek(f, 0, SEEK_END); long sz = ftell(f); rewind(f);
@@ -873,19 +717,11 @@ char *readf(const char *p) {
 int main(int a, char **v) {
     cs = snew(); cur_fi = -1;
     if (a >= 2) {
-        char *src = readf(v[1]);
-        if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
-        char dir[1024] = {0};
-        const char *slash = strrchr(v[1], '/');
-        if (slash) { memcpy(dir, v[1], slash - v[1]); }
-        include_dir = dir;
-        lex(src);
-        Code *code = new_code();
-        comp_program(code);
-        free(src);
-        exec(code);
-        code_free(code);
-        if (ts) free(ts);
+        char *src = readf(v[1]); if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
+        char dir[1024] = {0}; const char *slash = strrchr(v[1], '/');
+        if (slash) { memcpy(dir, v[1], slash - v[1]); } include_dir = dir;
+        lex(src); Code *code = new_code(); comp_program(code); free(src); exec(code);
+        code_free(code); free(ts);
     } else {
         printf("TinyLang v0.1\n");
         char buf[65536];
@@ -900,14 +736,8 @@ int main(int a, char **v) {
                 if (op == cl) break;
                 printf("  "); fflush(stdout);
             }
-            lex(buf);
-            Code *code = new_code();
-            comp_program(code);
-            exec(code);
-            code_free(code);
-            free(ts);
-            /* reset for next REPL line */
-            cs = snew();
+            lex(buf); Code *code = new_code(); comp_program(code); exec(code);
+            code_free(code); free(ts); cs = snew();
         }
         done:;
     }
