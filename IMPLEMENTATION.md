@@ -301,9 +301,70 @@ files can themselves include other files.
 
 ---
 
-## 6. Line Count
+## 6. FFI Integration
 
-**Total:** 715 lines (down from 915 in earlier versions).
+FFI is optional and enabled by `-DTL_FFI` at build time, which pulls in
+`<dlfcn.h>` and `<ffi.h>`.
+
+### C Function Registration
+
+```c
+typedef Value (*CFunc)(int, Value*);
+typedef struct { char *name; CFunc func; } CReg;
+static CReg *cregs; static int creg_count, creg_cap;
+
+void tl_register(const char *name, CFunc func);
+```
+
+C functions are registered before compilation. At compile time, `comp_prim()`
+checks the `cregs[]` array before falling through to TL function lookup. If
+a match is found, it emits `OC_CFUNC` with the CReg index.
+
+### OC_CFUNC opcode
+
+```c
+case OC_CFUNC: {
+    int ci = ins->a, ac = ins->b;
+    Value args[64];
+    for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
+    Value result = cregs[ci].func(ac, args);
+    istk[++isp] = result;
+    break;
+}
+```
+
+### Built-in FFI functions (behind TL_FFI)
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `dlopen` | `dlopen(path) → ptr` | Load a shared library |
+| `dlsym` | `dlsym(handle, name) → ptr` | Look up a symbol by name |
+| `dlclose` | `dlclose(handle) → []` | Unload a shared library |
+| `ffi_call` | `ffi_call(fn, sig, ...) → value` | Call a C function by pointer |
+
+`ffi_call` uses a signature string where the first character is the return
+type and the rest are argument types:
+
+| Char | C type |
+|------|--------|
+| `v` | `void` |
+| `i` | `int` |
+| `d` | `double` |
+| `p` | `void*` |
+| `s` | `const char*` (NUL-terminated) |
+
+Example:
+```
+lib = dlopen("libm.so")
+sqrt_fn = dlsym(lib, "sqrt")
+result = ffi_call(sqrt_fn, "dd", 9.0)   // → 3.0
+```
+
+---
+
+## 7. Line Count
+
+**Total:** ~1050 lines.
 
 | Component | Lines |
 |-----------|-------|
@@ -314,16 +375,16 @@ files can themselves include other files.
 | Compiler — functions, return, TCO | ~55 |
 | Compiler — include, program | ~35 |
 | Scope + function table | ~25 |
-| VM — exec loop, all opcodes | ~170 |
+| VM — exec loop, all opcodes | ~190 |
 | Built-ins (print, input, assert) | ~40 |
+| FFI helpers (tl_to_cstring, dlopen, dlsym, dlclose, ffi_call) | ~110 |
 | Main / REPL | ~30 |
 | Struct defs + globals + enums | ~20 |
-
-**Total:** 715 lines (down from 915 in earlier versions).
+| FFI registration (CReg, tl_register) | ~20 |
 
 ---
 
-## 7. Implementation Order
+## 8. Implementation Order
 
 1. `Value` + `Arr` + retain/release/COW
 2. Lexer
@@ -336,3 +397,4 @@ files can themselves include other files.
 9. Built-ins (print, input) + `#` operator
 10. OC_ASSERT with error catching
 11. Main/REPL, compilation to bytecode, execution
+12. FFI: CReg system, `OC_CFUNC` opcode, dlopen/dlsym/dlclose/ffi_call

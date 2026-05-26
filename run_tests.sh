@@ -34,14 +34,43 @@ run_pass() {
     fi
 }
 
-# Run all non-error .tl files in tests/
+# Run all non-error .tl files in tests/ (skip ffi_* tests, run them separately)
 for file in "$TESTDIR"/*.tl; do
     [ -f "$file" ] || continue
     basename="$(basename "$file" .tl)"
-    # Skip error test files
-    case "$basename" in e_*) continue;; esac
+    case "$basename" in e_*|ffi_*) continue;; esac
     run_pass "$basename" "$file"
 done
+
+# FFI tests (requires TL_FFI build)
+FFI_BIN="$DIR/tinylang-ffi"
+if [ -f "$FFI_BIN" ]; then
+    # Build the test shared library
+    echo "  (building ffi_lib for tests)"
+    case "$(uname)" in
+        Darwin) SHLIB="ffi_lib.dylib" ;;
+        *)      SHLIB="ffi_lib.so" ;;
+    esac
+    cc -shared -fPIC -o "$TESTDIR/$SHLIB" "$TESTDIR/ffi_lib.c" 2>/dev/null
+    for file in "$TESTDIR"/ffi_*.tl; do
+        [ -f "$file" ] || continue
+        basename="$(basename "$file" .tl)"
+        run_pass_ffi() {
+            local name="$1" file="$2"
+            printf "  %-12s ... " "$name"
+            if output=$("$FFI_BIN" "$file" 2>&1); then
+                echo "ok"
+            else
+                echo "FAIL"
+                echo "    $(echo "$output" | tail -1)"
+                fail=$((fail + 1))
+            fi
+        }
+        run_pass_ffi "$basename" "$file"
+    done
+else
+    echo "  (ffi tests skipped — build 'tinylang-ffi' to enable)"
+fi
 
 echo ""
 

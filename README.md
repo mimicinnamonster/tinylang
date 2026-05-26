@@ -1,12 +1,12 @@
 # TinyLang
 
-A tiny, statically-typed programming language implemented in ~1000 lines of C.
+A tiny, statically-typed programming language implemented in ~1050 lines of C.
 Single-pass compiler to bytecode with a stack-based VM, refcount+COW, and tail
 call optimization. No AST, no GC, no closures, no pointers.
 
 ## Features
 
-- **Two types:** `number` (all floats) and `array` (heterogeneous, deep equality)
+- **Three types:** `number` (all floats), `array` (heterogeneous, deep equality), and `ptr` (FFI)
 - **Value semantics:** No references, no aliasing, no GC — refcount+COW sharing
 - **Tail call optimization:** Recursive functions don't blow the C stack
 - **No operator precedence:** All binary ops require explicit `()`
@@ -18,6 +18,7 @@ call optimization. No AST, no GC, no closures, no pointers.
 - **Strings:** Syntactic sugar for byte arrays, escape sequences supported
 - **Operators:** `+ - * / %`, `& | ^ @` (shift), `= != < > <= >=`, `!`, `#` (array length prefix)
 - **Built-ins:** `print()`, `input()`, `assert()`
+- **FFI:** `dlopen()`, `dlsym()`, `dlclose()`, `ffi_call()` — optional (requires libffi)
 
 ## Quick start
 
@@ -48,10 +49,20 @@ hi
 
 Errors kill the REPL process — `repl.sh` wraps it in a restart loop.
 
+### FFI build
+
+```sh
+cc -Wall -DTL_FFI `pkg-config --cflags libffi` -o tinylang-ffi tinylang.c `pkg-config --libs libffi` -lm
+```
+
+Requires [libffi](https://github.com/libffi/libffi) (`brew install libffi` on macOS).
+The FFI build registers four built-in functions: `dlopen()`, `dlsym()`, `dlclose()`, and
+`ffi_call()` — enabling dynamic loading and calling of C functions at runtime.
+
 ### Tests
 
 ```sh
-./run_tests.sh      # runs all happy-path + error tests
+./run_tests.sh      # runs all happy-path + error + FFI tests
 ```
 
 All tests must pass before committing.
@@ -88,14 +99,15 @@ print(nodes[0][0])                  // 42
 
 ## Implementation
 
-- ~950 lines of C, single file
-- No external dependencies (ISO C + math.h)
+- ~1050 lines of C, single file
+- Optional FFI extension via libffi
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
-- Stack-based VM: 19 opcodes, `Value istk[4096]` stack
+- Stack-based VM: 21 opcodes, `Value istk[4096]` stack
 - Deep copy on assignment, refcount+COW for arrays
 - Tail call optimization: parameter rebinding + ip reset (no C stack growth)
 - `assert()` error catching via `setjmp`/`longjmp`
-- Comprehensive test suite (34 tests: 13 happy-path + 21 error)
+- FFI via `OC_CFUNC` opcode: registered C functions called at zero dispatch cost
+- Comprehensive test suite (35 tests: 14 happy-path + 21 error)
 
 ## Grammar
 

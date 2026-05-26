@@ -1,9 +1,15 @@
 # Compiled binary
 tinylang
 tinylang.dSYM/
+tinylang-ffi
+tinylang-ffi.dSYM/
 tinylang-asan
 tinylang-asan.dSYM/
 a.out
+
+# FFI test shared library (built at test time)
+tests/ffi_lib.dylib
+tests/ffi_lib.so
 
 # Editor files
 *.swp

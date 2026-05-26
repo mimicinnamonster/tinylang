@@ -4,13 +4,14 @@
 
 ## 1. Type System
 
-- **Two runtime types:** `number` (all floats conceptually) and `array`
+- **Three runtime types:** `number` (all floats conceptually), `array`, and `ptr` (FFI)
 - No null/bool type — `[]` (empty array) serves as nil/false/absence
 - `nil` is syntactic sugar for `[]`
 - First assignment determines variable type permanently
 - `x = 0; x = "hello"` → type error, halts
 - Numbers stored as C `double` internally, with int optimization when no fractional part
 - Arrays are **heterogeneous** — can hold numbers, strings, sub-arrays freely
+- `ptr` holds C `void*` pointers — exclusively for FFI handles from `dlopen`/`dlsym`
 - Array elements accessed by `arr[idx]` — 0-indexed, bounds checked, halts on OOB
 
 ---
@@ -619,6 +620,31 @@ Note: `lvalue` and `primary` both have `identifier "[" index_list "]"`. The pars
 | `assert` | `assert(expr)` | Evaluates `expr` in an error-catching context. If evaluation succeeds and the result is truthy, returns `[]` (nil). If evaluation succeeds but the result is falsy, returns `"assertion failed"`. If evaluation produces a runtime error, the error is caught and the actual error message is returned as a string. |
 
 `print` special-cases arrays whose elements are all printable ASCII or common control characters (10, 13, 9) — these are printed as the text string rather than `[104, 101, ...]`.
+
+## 18. FFI (Optional, requires libffi)
+
+When built with `-DTL_FFI`, four extra built-in functions are registered via
+the CReg system (`tl_register()`), enabling dynamic loading and calling of C
+functions at runtime.
+
+| Function | Description |
+|----------|-------------|
+| `dlopen(path)` | Load a shared library, returns `ptr` handle (or `[]` on failure) |
+| `dlsym(handle, name)` | Look up a symbol in a loaded library, returns `ptr` (or `[]` on failure) |
+| `dlclose(handle)` | Unload a library, returns `[]` |
+| `ffi_call(fn, sig, ...)` | Call a C function pointer with libffi type marshalling |
+
+`ffi_call` expects:
+1. `fn` — a `ptr` from `dlsym`
+2. `sig` — signature string (first char = return type, rest = arg types)
+3. One value per character in the signature (excluding return type)
+
+Signature characters:
+- `v` — `void` (return only, not valid for args)
+- `i` — `int` (marshals from/to TL number)
+- `d` — `double` (marshals from/to TL number)
+- `p` — `void*` (marshals from/to TL ptr)
+- `s` — `const char*` (marshals TL string to NUL-terminated C string)
 
 ---
 

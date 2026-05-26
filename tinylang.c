@@ -7,9 +7,9 @@
 #include <math.h>
 #include <setjmp.h>
 
-typedef enum { VAL_NUM, VAL_ARR } Type;
+typedef enum { VAL_NUM, VAL_ARR, VAL_PTR } Type;
 typedef struct Arr { int refcount, len, cap; struct Value *items; } Arr;
-typedef struct Value { Type type; union { double num; Arr *arr; } as; } Value;
+typedef struct Value { Type type; union { double num; Arr *arr; void *ptr; } as; } Value;
 
 typedef enum {
     T_EOF, T_NUM, T_ID, T_STR, T_NIL,
@@ -32,7 +32,7 @@ typedef enum {
     OC_CALL, OC_TCO,
     OC_JZ, OC_JMP, OC_RET, OC_POP,
     OC_LVALS,
-    OC_PRINT, OC_INPUT, OC_ASSERT,
+    OC_PRINT, OC_INPUT, OC_ASSERT, OC_CFUNC,
     OC_END,
 } OC;
 
@@ -53,7 +53,25 @@ typedef struct { char *n, **p; int a; Code *code; } Fn;
 Fn *fs; int fc, fm;
 Value istk[4096]; int isp;
 
+/* ========================== FFI REGISTRATION ========================== */
+typedef Value (*CFunc)(int, Value*);
+typedef struct { char *name; CFunc func; } CReg;
+static CReg *cregs; static int creg_count, creg_cap;
+
+void tl_register(const char *name, CFunc func) {
+    if (creg_count >= creg_cap) {
+        creg_cap = creg_cap ? creg_cap * 2 : 8;
+        cregs = realloc(cregs, creg_cap * sizeof(CReg));
+    }
+    cregs[creg_count].name = strdup(name);
+    cregs[creg_count].func = func;
+    creg_count++;
+}
+
+/* ========================== VALUE ========================== */
 Value vnum(double n) { return (Value){ .type = VAL_NUM, .as.num = n }; }
+Value vempty(void) { return (Value){ .type = VAL_ARR, .as.arr = NULL }; }
+Value vptr(void *p) { return (Value){ .type = VAL_PTR, .as.ptr = p }; }
 
 Arr *aalloc(int c) {
     Arr *a = calloc(1, sizeof(Arr)); a->refcount = 1;
@@ -94,7 +112,8 @@ void vassign(Value *d, Value s) {
     d->type = s.type;
 
     if (s.type == VAL_NUM) d->as.num = s.as.num;
-    else { d->as.arr = s.as.arr; aretain(d->as.arr); }
+    else if (s.type == VAL_ARR) { d->as.arr = s.as.arr; aretain(d->as.arr); }
+    else d->as.ptr = s.as.ptr;
 }
 
 void print_val(Value v) {
@@ -120,14 +139,20 @@ void print_val(Value v) {
             }
             putchar(']');
         }
+    } else if (v.type == VAL_PTR) {
+        printf("<ptr: %p>", v.as.ptr);
     }
 }
 
-int truthy(Value v) { return !(v.type == VAL_ARR && (!v.as.arr || v.as.arr->len == 0)); }
+int truthy(Value v) {
+    if (v.type == VAL_PTR) return v.as.ptr != NULL;
+    return !(v.type == VAL_ARR && (!v.as.arr || v.as.arr->len == 0));
+}
 
 int veq(Value a, Value b) {
     if (a.type != b.type) return 0;
     if (a.type == VAL_NUM) return a.as.num == b.as.num;
+    if (a.type == VAL_PTR) return a.as.ptr == b.as.ptr;
     if (!a.as.arr && !b.as.arr) return 1;
     if (!a.as.arr || !b.as.arr || a.as.arr->len != b.as.arr->len) return 0;
 
@@ -417,10 +442,18 @@ void comp_prim(Code *c) {
                 if (!strcmp(t.s, "print")) { if (ac < 1) die("print needs 1 arg"); emit(c, (Instr){OC_PRINT, 0, 0}); }
                 else if (!strcmp(t.s, "input")) emit(c, (Instr){OC_INPUT, 0, 0});
                 else {
-                    int fi = ffind(t.s);
-                    if (fi < 0) die("undefined function '%s'", t.s);
-                    emit(c, (Instr){OC_CALL, fi, ac});
+                    int ci = -1;
+                    for (int i = 0; i < creg_count; i++) {
+                        if (!strcmp(t.s, cregs[i].name)) { ci = i; break; }
+                    }
+                    if (ci >= 0) { emit(c, (Instr){OC_CFUNC, ci, ac}); }
+                    else {
+                        int fi = ffind(t.s);
+                        if (fi < 0) die("undefined function '%s'", t.s);
+                        emit(c, (Instr){OC_CALL, fi, ac});
+                    }
                 }
+
             } else {
                 emit(c, (Instr){OC_VAR, 0, 0, .name = nm});
 
@@ -552,6 +585,104 @@ void comp_fn(Code *c) {
         int ac = body->code[tco_pos].b; body->code[tco_pos].op = OC_TCO; body->code[tco_pos].a = ac;
     }
 }
+
+/* ========================== FFI HELPERS ========================== */
+char *tl_to_cstring(Value v) {
+    if (v.type != VAL_ARR || !v.as.arr) return strdup("");
+    char *s = malloc(v.as.arr->len + 1);
+    for (int i = 0; i < v.as.arr->len; i++)
+        s[i] = (char)v.as.arr->items[i].as.num;
+    s[v.as.arr->len] = 0;
+    return s;
+}
+
+#ifdef TL_FFI
+#include <dlfcn.h>
+#include <ffi.h>
+
+Value tl_dlopen(int argc, Value *args) {
+    if (argc < 1) return vptr(NULL);
+    char *path = tl_to_cstring(args[0]);
+    void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    free(path);
+    return vptr(handle);
+}
+
+Value tl_dlsym(int argc, Value *args) {
+    if (argc < 2 || args[0].type != VAL_PTR || !args[0].as.ptr) return vptr(NULL);
+    char *name = tl_to_cstring(args[1]);
+    void *sym = dlsym(args[0].as.ptr, name);
+    free(name);
+    return vptr(sym);
+}
+
+Value tl_dlclose(int argc, Value *args) {
+    if (argc < 1) die("dlclose needs handle");
+    dlclose(args[0].as.ptr);
+    return vempty();
+}
+
+Value tl_ffi_call(int argc, Value *args) {
+    if (argc < 2) die("ffi_call needs fn_ptr, sig, ...");
+
+    void  *fn   = args[0].as.ptr;
+    char  *sig  = tl_to_cstring(args[1]);
+    int    slen = strlen(sig);
+    char   rets = sig[0];
+    int    nargs = slen - 1;
+    if (argc - 2 != nargs)
+        die("ffi_call: sig says %d args, got %d", nargs, argc - 2);
+
+    ffi_type *at[64]; void *av[64];
+    int ib[64], ni=0;
+    double db[64]; int nd=0;
+    void *pb[64]; int np2=0;
+    char *sb[64]; int ns2=0;
+
+    for (int i = 1; i < slen; i++) {
+        switch (sig[i]) {
+            case 'i': at[i-1]=&ffi_type_sint32;  ib[ni]=(int)args[1+i].as.num; av[i-1]=&ib[ni++]; break;
+            case 'd': at[i-1]=&ffi_type_double;  db[nd]=args[1+i].as.num;     av[i-1]=&db[nd++]; break;
+            case 'p': at[i-1]=&ffi_type_pointer;  pb[np2]=args[1+i].as.ptr;   av[i-1]=&pb[np2++]; break;
+            case 's': at[i-1]=&ffi_type_pointer;  sb[ns2]=tl_to_cstring(args[1+i]); av[i-1]=&sb[ns2++]; break;
+            default: die("ffi_call: unknown type '%c'", sig[i]);
+        }
+    }
+
+    ffi_type *rt = NULL;
+    char rbuf[64];
+    switch (rets) {
+        case 'v': rt=&ffi_type_void;   break;
+        case 'i': rt=&ffi_type_sint32;  break;
+        case 'd': rt=&ffi_type_double;  break;
+        case 'p': case 's': rt=&ffi_type_pointer; break;
+        default: die("ffi_call: unknown return '%c'", rets);
+    }
+
+    ffi_cif cif;
+    ffi_prep_cif(&cif, FFI_DEFAULT_ABI, nargs, rt, at);
+    ffi_call(&cif, FFI_FN(fn), rbuf, av);
+
+    for (int i = 0; i < (int)ns2; i++) free(sb[i]);
+    free(sig);
+
+    switch (rets) {
+        case 'v': return vempty();
+        case 'i': return vnum((double)*(int*)rbuf);
+        case 'd': return vnum(*(double*)rbuf);
+        case 'p': return vptr(*(void**)rbuf);
+        case 's': {
+            const char *str = *(const char**)rbuf;
+            if (!str) return vempty();
+            int n = strlen(str);
+            Arr *a = aalloc(n); a->len = n;
+            for (int j = 0; j < n; j++) a->items[j] = vnum((unsigned char)str[j]);
+            return (Value){ .type = VAL_ARR, .as.arr = a };
+        }
+    }
+    return vempty();
+}
+#endif /* TL_FFI */
 
 char *readf(const char *p);
 
@@ -854,6 +985,15 @@ void exec(Code *c) {
                 break;
             }
 
+            case OC_CFUNC: {
+                int ci = ins->a, ac = ins->b;
+                Value args[64];
+                for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
+                Value result = cregs[ci].func(ac, args);
+                istk[++isp] = result;
+                break;
+            }
+
             case OC_END: return;
         }
         ip++;
@@ -871,7 +1011,12 @@ char *readf(const char *p) {
 
 int main(int a, char **v) {
     cs = snew(); cur_fi = -1;
-
+#ifdef TL_FFI
+    tl_register("dlopen",   tl_dlopen);
+    tl_register("dlsym",    tl_dlsym);
+    tl_register("dlclose",  tl_dlclose);
+    tl_register("ffi_call", tl_ffi_call);
+#endif
     if (a >= 2) {
         char *src = readf(v[1]); if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
         char dir[1024] = {0}; const char *slash = strrchr(v[1], '/');
@@ -880,7 +1025,6 @@ int main(int a, char **v) {
         lex(src); Code *code = new_code(); comp_program(code); free(src); exec(code);
         code_free(code); free(ts);
     } else {
-        printf("TinyLang v0.1\n");
         char buf[65536];
 
         while (1) {
