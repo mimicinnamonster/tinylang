@@ -1,6 +1,6 @@
 # TinyLang
 
-A tiny, statically-typed programming language implemented in ~1090 lines of C.
+A tiny, statically-typed programming language implemented in 1701 lines of C.
 Single-pass compiler to bytecode with a stack-based VM, refcount+COW, and tail
 call optimization. No AST, no GC, no closures, no pointers.
 
@@ -9,14 +9,18 @@ call optimization. No AST, no GC, no closures, no pointers.
 - **Three types:** `number` (all floats), `array` (heterogeneous, deep equality), and `ptr` (FFI)
 - **Value semantics:** No references, no aliasing, no GC — refcount+COW sharing
 - **Tail call optimization:** Recursive functions don't blow the C stack
-- **No operator precedence:** All binary ops require explicit `()`
+- **Operator precedence:** Full precedence table with `||` < `&&` < `==`/`!=` < `<`/`>/`<=`/`>=` < `+`/`-` < `*`/`/`/%` (no parens needed)
+- **Logical operators:** `&&` and `||` with short-circuit evaluation
 - **Statement separation:** Newlines (Go-style inference) or explicit `;` separate statements
 - **Functions:** Pure (no globals), define-before-use, no closures, recursion OK
 - **Control flow:** `if`/`elif`/`else`, `while`
 - **Arrays:** Nested, heterogeneous, `[val] * n` repetition, `arr + arr` concatenation
 - **Multi-index:** `arr[i, j, k]` desugars to `arr[i][j][k]`
+- **Array slicing:** `arr[start:stop]` and `arr[start:stop:step]`, with Python-style defaults
 - **Strings:** Syntactic sugar for byte arrays, escape sequences supported
-- **Operators:** `+ - * / %`, `& | ^ @` (shift), `= != < > <= >=`, `!`, `#` (array length prefix)
+- **Number literals:** decimal, `0b` binary, `0x` hex, `0o` octal
+- **REPL:** Expression values auto-printed, `rlwrap` / `repl.sh` for history and arrow keys
+- **Operators:** `+ - * / %`, `& | ^ @` (shift), `= != < > <= >=`, `!`, `#` (array length prefix), `&&` `||`
 - **Built-ins:** `print()`, `input()`, `assert()`, `thispath()`
 - **FFI:** `dlopen()`, `dlsym()`, `dlclose()`, `ffi_call()` — optional (requires libffi)
 
@@ -101,7 +105,7 @@ print(sum([1, [2, [3, nil]]]))     // 6
 
 // factorial (tail-recursive)
 function fact(n, acc) {
-    if n = 0 {
+    if n == 0 {
         return acc
     }
     return fact(n - 1, n * acc)    // TCO: no stack growth
@@ -110,24 +114,72 @@ function fact(n, acc) {
 print(fact(5, 1))                   // 120
 print(fact(1000, 1))                // inf (no stack overflow)
 
+// operator precedence
+function is_power_of_two(x) {
+    return x > 0 && x & (x - 1) == 0
+}
+print(is_power_of_two(8))           // 1 (true)
+print(is_power_of_two(7))           // 0 (false)
+
+// array slicing
+arr = [0, 1, 2, 3, 4, 5]
+print(arr[1:3])                     // [1, 2]
+print(arr[:4:2])                    // [0, 2]
+print(arr[::2])                     // [0, 2, 4]
+
 // manual heap pattern
 nodes = [[0, -1]] * 10
 nodes[0][0] = 42
 print(nodes[0][0])                  // 42
+
+// binary & hex literals
+print(0xFF)                         // 255
+print(0b1010)                       // 10
 ```
 
 ## Implementation
 
-- ~1090 lines of C, single file
+- 1701 lines of C, single file
 - Optional FFI extension via libffi
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
-- Stack-based VM: 22 opcodes, `Value istk[4096]` stack
+- Stack-based VM: 24 opcodes, `Value istk[4096]` stack
 - Deep copy on assignment, refcount+COW arrays with push optimization
   (`x = x + [elem]` compiles to O(1) `OC_PUSH`, no array copy)
 - Tail call optimization: parameter rebinding + ip reset (no C stack growth)
 - `assert()` error catching via `setjmp`/`longjmp`
 - FFI via `OC_CFUNC` opcode: registered C functions called at zero dispatch cost
-- Comprehensive test suite (40+ tests: happy-path, benchmarks, error cases)
+- Comprehensive test suite (40+ tests: happy-path, benchmarks, error cases, FFI demos)
+
+## Benchmarks
+
+[`benchmarks/`](benchmarks/) contains a performance comparison of TinyLang against
+C (Apple Clang `-O2`) and Node.js (V8 JIT) on four benchmarks from the
+[Computer Language Benchmarks Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/):
+
+| Benchmark | Description |
+|-----------|-------------|
+| **spectral-norm** | Matrix eigenvalue via power iteration (float FMA) |
+| **n-body** | Solar system simulation (5 bodies, gravity, sqrt) |
+| **mandelbrot** | Fractal set generation (per-pixel iteration) |
+| **fasta** | Random DNA sequence generation (PRNG + table + I/O) |
+
+### Key Results
+
+- **Node.js is 0.3–1× of C** on these workloads, often faster thanks to V8's
+  JIT inlining, loop vectorization, and typed array optimization
+- **TinyLang is 4–31× slower than Node.js** for the same workloads, dominated
+  by interpreted dispatch vs JIT compilation
+- **TinyLang uses 3–12× less memory** than Node.js (1.2–5.7 MB vs 14–17 MB)
+
+See [`benchmarks/REPORT.md`](benchmarks/REPORT.md) for the full analysis with
+instruction counts, memory usage, and root-cause breakdown.
+
+### Running Benchmarks
+
+```sh
+cd benchmarks
+./run.sh
+```
 
 ## Grammar
 
@@ -135,24 +187,30 @@ print(nodes[0][0])                  // 42
 program       := top-level statements
 
 statement     := assignment | if_stmt | while_stmt | func_def | ret_stmt | include_stmt | expr_stmt
-include_stmt := "include" string
+include_stmt  := "include" string
 
 assignment    := lvalue "=" expr
-lvalue        := identifier ("[" index_list "]")*
+lvalue        := identifier ("[" slice_or_index "]")*
 if_stmt       := "if" expr block ("elif" expr block)* ("else" block)?
 while_stmt    := "while" expr block
 func_def      := "function" identifier "(" params ")" block
 ret_stmt      := "return" expr
 
 block         := "{" stmt_list "}"
-expr          := primary | primary op primary
+expr          := or_expr
+or_expr       := and_expr ("||" and_expr)*
+and_expr      := compare_expr ("&&" compare_expr)*
+compare_expr  := add_expr (("=" | "!=" | "<" | ">" | "<=" | ">=") add_expr)?
+add_expr      := mul_expr (("+" | "-") mul_expr)*
+mul_expr      := primary (("*" | "/" | "%") primary)*
 primary       := number | identifier | "nil" | string | array_literal
-               | call | index | "(" expr ")" | "!" primary | "-" primary
+               | call | index | slice | "(" expr ")" | "!" primary | "-" primary
 
 op            := "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "@"
-               | "=" | "!=" | "<" | ">" | "<=" | ">="
+               | "=" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
 
 index_list    := expr ("," expr)*
+slice         := primary "[" expr? ":" expr? (":" expr?)? "]"
 ```
 
 ## Design

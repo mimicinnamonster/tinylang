@@ -11,6 +11,9 @@ a.out
 tests/ffi_lib.dylib
 tests/ffi_lib.so
 
+# Benchmark compiled binaries
+benchmarks/c_bin/
+
 # Editor files
 *.swp
 *.swo
