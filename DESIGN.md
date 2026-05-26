@@ -495,6 +495,16 @@ mixed = [1, "hello", [], [5, 6]]
 - Dynamic chain: `arr[idx_arr]` where `idx_arr = [i, j, k]` → `arr[i][j][k]` — same as multi-index, but chain depth is runtime
 - Mutation: `arr[idx] = val` or `arr[i, j] = val` (lvalue chain)
 - Nested mutation: `matrix[i][j] = val` (lvalue chain, no intermediate copies)
+- **Any expression that evaluates to an array can be indexed** — not just variables:
+  ```
+  [1, 2, 3][0]               // array literal indexing → 1
+  fn_returning_arr()[i]      // function call result indexing
+  (arr)[i]                   // parenthesized expression indexing
+  "hello"[0]                 // string literal indexing → 104
+  (arr1 + arr2)[i]           // concatenation result indexing
+  ([0] * 10)[i]              // repetition result indexing
+  arr[1:3][0]                // chained slice then index
+  ```
 - **Heterogeneous** — elements can be any type, mixed freely
 - Strings are syntactic sugar: `"abc"` ≡ `[97, 98, 99]`
 - Escape sequences: `\n` (10), `\t` (9), `\\` (92), `\"` (34), `\xHH` (arbitrary byte)
@@ -780,8 +790,8 @@ expr_stmt     := expr
 block         := "{" stmt_list "}"
 stmt_list     := (statement newline+)*
 
-expr          := primary
-               | primary op primary       // exactly one binary op
+expr          := primary_index
+               | primary_index op primary_index       // exactly one binary op
 
 primary       := number_literal
                | identifier
@@ -790,23 +800,48 @@ primary       := number_literal
                | "[" "]"                              // empty array
                | "[" expr ("," expr)* "]"             // array literal
                | identifier "(" args ")"              // function call
-               | identifier "[" index_list "]"          // rvalue array index chain
                | "(" expr ")"                         // grouping
                | "!" primary                          // negation
                | "-" primary                          // unary minus
                | "#" primary                          // array length
+
+primary_index := primary ("[" index_list "]")*       // any primary followed by indexing or slicing
 
 op            := "+" | "-" | "*" | "/" | "%"
                | "&" | "|" | "^" | "@"
                | "=" | "!=" | "<" | ">"
 
 index_list    := expr ("," expr)*                    // comma-separated indices: arr[i,j,k]
+               | expr? ":" expr? (":" expr?)?        // slice: arr[i:j] or arr[i:j:k]
 
 params        := /* empty */ | identifier ("," identifier)*
 args          := /* empty */ | expr ("," expr)*
 ```
 
-Note: `lvalue` and `primary` both have `identifier "[" index_list "]"`. The parser distinguishes them by context: if followed by `"=""`, it's an lvalue; otherwise it's an rvalue.
+Note: `lvalue` (see §6) uses `identifier "[" index_list "]"` for assignment targets.
+The parser distinguishes lvalue from rvalue by context: if `identifier [...]` is followed by `=`, it's an lvalue; otherwise it's an rvalue on the primary.
+
+### Expression indexing examples
+
+Any expression that produces an array can be followed by `[...]` for indexing or slicing:
+
+```
+[1, 2, 3][0]               // literal index → 1
+fn()[i]                    // function call index
+(arr)[i]                   // parenthesized index
+"hello"[0]                 // string literal index → 104
+([1,2] + [3,4])[i]         // binary op result index
+([0] * 10)[i]              // repetition result index
+[1, 2, 3, 4][1:3]          // slice on literal → [2, 3]
+get_vals()[0:2]            // slice on function result
+
+// Chained indexing works as expected
+[1, [2, 3]][1][0]          // → 2
+fn_grid()[i, j]            // multi-index on function result
+arr[1:3][0]                // slice then index
+```
+
+*Note: lvalue chains (`arr[i] = val`) are restricted to identifiers — only variable-based arrays can be mutated, not expression results.*
 
 ---
 

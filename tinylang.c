@@ -697,53 +697,6 @@ void comp_prim(Code *c) {
                 }
             } else {
                 emit(c, (Instr){OC_VAR, 0, 0, .name = nm});
-                while (ts[tp].t == T_LB) {
-                    tp++;
-                    /* Check if this is a slice [start:stop:step] */
-                    int is_slice = 0;
-                    if (ts[tp].t == T_COLON) {
-                        is_slice = 1;
-                    } else if (ts[tp].t != T_RB) {
-                        int depth = 0;
-                        for (int p = tp; p < tc; p++) {
-                            if (depth == 0 && (ts[p].t == T_RB || ts[p].t == T_CM)) break;
-                            if (depth == 0 && ts[p].t == T_COLON) { is_slice = 1; break; }
-                            if (ts[p].t == T_LB || ts[p].t == T_LP) depth++;
-                            if (ts[p].t == T_RB || ts[p].t == T_RP) depth--;
-                        }
-                    }
-                    if (is_slice) {
-                        /* start */
-                        if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
-                            comp_expr(c);
-                        } else {
-                            emit(c, (Instr){OC_NIL, 0, 0});
-                        }
-                        if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
-                        /* stop */
-                        if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
-                            comp_expr(c);
-                        } else {
-                            emit(c, (Instr){OC_NIL, 0, 0});
-                        }
-                        /* step */
-                        if (ts[tp].t == T_COLON) {
-                            tp++;
-                            if (ts[tp].t != T_RB) {
-                                comp_expr(c);
-                            } else {
-                                emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
-                            }
-                        } else {
-                            emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
-                        }
-                        if (ts[tp].t != T_RB) die("expected ]"); tp++;
-                        emit(c, (Instr){OC_SLICE, 0, 0});
-                    } else {
-                        do { comp_expr(c); emit(c, (Instr){OC_INDEX, 0, 0}); } while (ts[tp].t == T_CM && (tp++, 1));
-                        if (ts[tp].t != T_RB) die("expected ]"); tp++;
-                    }
-                }
             }
             break;
         }
@@ -760,6 +713,54 @@ void comp_prim(Code *c) {
         case T_MI: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_MI, 0}); break;
         case T_HASH: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_HASH, 0}); break;
         default: die("unexpected token at line %d", t.l);
+    }
+    /* General array indexing/slicing for any primary expression */
+    while (ts[tp].t == T_LB) {
+        tp++;
+        /* Check if this is a slice [start:stop:step] */
+        int is_slice = 0;
+        if (ts[tp].t == T_COLON) {
+            is_slice = 1;
+        } else if (ts[tp].t != T_RB) {
+            int depth = 0;
+            for (int p = tp; p < tc; p++) {
+                if (depth == 0 && (ts[p].t == T_RB || ts[p].t == T_CM)) break;
+                if (depth == 0 && ts[p].t == T_COLON) { is_slice = 1; break; }
+                if (ts[p].t == T_LB || ts[p].t == T_LP) depth++;
+                if (ts[p].t == T_RB || ts[p].t == T_RP) depth--;
+            }
+        }
+        if (is_slice) {
+            /* start */
+            if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
+                comp_expr(c);
+            } else {
+                emit(c, (Instr){OC_NIL, 0, 0});
+            }
+            if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
+            /* stop */
+            if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
+                comp_expr(c);
+            } else {
+                emit(c, (Instr){OC_NIL, 0, 0});
+            }
+            /* step */
+            if (ts[tp].t == T_COLON) {
+                tp++;
+                if (ts[tp].t != T_RB) {
+                    comp_expr(c);
+                } else {
+                    emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+                }
+            } else {
+                emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+            }
+            if (ts[tp].t != T_RB) die("expected ]"); tp++;
+            emit(c, (Instr){OC_SLICE, 0, 0});
+        } else {
+            do { comp_expr(c); emit(c, (Instr){OC_INDEX, 0, 0}); } while (ts[tp].t == T_CM && (tp++, 1));
+            if (ts[tp].t != T_RB) die("expected ]"); tp++;
+        }
     }
 }
 
@@ -1386,8 +1387,7 @@ void exec(Code *c) {
                     if (start <= stop) count = 0;
                     else count = (start - stop + (-step) - 1) / (-step);
                 }
-                arelease(arr_v.as.arr);
-                if (count == 0) { istk[++isp] = nilv(); break; }
+                if (count == 0) { arelease(arr_v.as.arr); istk[++isp] = nilv(); break; }
                 ArrKind k = src ? src->kind : ARR_VAL;
                 Arr *result = aalloc(count, k);
                 result->len = count;
@@ -1431,6 +1431,7 @@ void exec(Code *c) {
                         idx++;
                     }
                 }
+                arelease(arr_v.as.arr);
                 istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = result };
                 break;
             }
