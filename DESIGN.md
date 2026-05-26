@@ -663,9 +663,53 @@ Signature characters:
 - `p` — `void*` (marshals from/to TL ptr)
 - `s` — `const char*` (marshals TL string to NUL-terminated C string)
 
+### Real-world FFI example — SDL2 window
+
+See `tests/ffi_sdl_window.tl` for a complete working example that creates
+an actual desktop window using the SDL2 library:
+
+```
+lib = dlopen("/opt/homebrew/lib/libSDL2-2.0.0.dylib")
+
+sdl_init = dlsym(lib, "SDL_Init")
+result = ffi_call(sdl_init, "ii", 32)       // SDL_INIT_VIDEO = 0x20
+assert(result = 0)
+
+sdl_create_window = dlsym(lib, "SDL_CreateWindow")
+window = ffi_call(sdl_create_window, "psiiiii", "Hello", 200, 200, 640, 480, 0)
+// sig: p=return ptr, s=title, i=x, i=y, i=w, i=h, i=flags
+
+sdl_pump = dlsym(lib, "SDL_PumpEvents")
+sdl_delay = dlsym(lib, "SDL_Delay")
+
+i = 0
+while i < 10 {
+    ffi_call(sdl_pump, "v")        // keep window responsive
+    ffi_call(sdl_delay, "vi", 500)  // wait 500ms
+    i = i + 1
+}
+
+sdl_destroy_window = dlsym(lib, "SDL_DestroyWindow")
+ffi_call(sdl_destroy_window, "vp", window)
+
+sdl_quit = dlsym(lib, "SDL_Quit")
+ffi_call(sdl_quit, "v")            // just "v" — no args, void return
+```
+
+Key observations from real-world FFI usage:
+- The `!= nil` check compares types, not pointer values — a `VAL_PTR` null
+  and `VAL_ARR` nil are always "not equal" because their types differ, so
+  this is not a reliable null check for pointers.
+- macOS windowing requires `SDL_PumpEvents()` to be called regularly for the
+  window to remain interactive.
+- Strings (`s` sig) are automatically marshalled from TL byte arrays to
+  NUL-terminated C strings and freed after the call.
+- Use `SDL_GetWindowID()` (sig `"ip"`) to verify a window pointer — returns
+  0 for null/invalid, positive integer otherwise.
+
 ---
 
-## 18. JIT-Ability Summary
+## 19. JIT-Ability Summary
 
 Properties that make a future vectorizing JIT simpler than typical dynamic languages:
 

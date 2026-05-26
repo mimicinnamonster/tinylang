@@ -59,13 +59,32 @@ Requires [libffi](https://github.com/libffi/libffi) (`brew install libffi` on ma
 The FFI build registers four built-in functions: `dlopen()`, `dlsym()`, `dlclose()`, and
 `ffi_call()` — enabling dynamic loading and calling of C functions at runtime.
 
+The FFI tests include a demo that creates an actual SDL2 window:
+
+```sh
+./tinylang-ffi tests/ffi_sdl_window.tl
+```
+
+This requires [SDL2](https://www.libsdl.org/) (`brew install sdl2` on macOS).
+The test loads SDL2 at runtime via `dlopen`, initializes the video subsystem,
+creates a 640×480 window titled "TinyLang SDL Test", keeps it visible for 5
+seconds with event pumping, then cleans up.
+
 ### Tests
 
 ```sh
 ./run_tests.sh      # runs all happy-path + error + FFI tests
 ```
 
+- **Happy-path tests** — `tests/test_*.tl` (assertions, function calls, linked lists, TCO, arrays)
+- **Benchmarks** — `tests/bench_*.tl` (backwards traversal, COW, push optimization)
+- **Error tests** — `tests/e_*.tl` (expected runtime errors, each tested individually)
+- **FFI tests** — `tests/ffi_*.tl` (library loading, symbol lookup, C function calls, SDL2 window demo)
+
 All tests must pass before committing.
+
+> **Note:** The SDL window test (`ffi_sdl_window.tl`) requires SDL2 to be installed.
+> It is skipped automatically when SDL2 is not available (dlopen returns nil).
 
 ## Example
 
