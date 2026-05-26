@@ -1,6 +1,8 @@
 # Compiled binary
 tinylang
 tinylang.dSYM/
+tinylang-asan
+tinylang-asan.dSYM/
 a.out
 
 # Editor files
