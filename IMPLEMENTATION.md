@@ -7,36 +7,132 @@ refcount+COW, tail call optimization, and array push optimization.
 
 ## 1. Value Representation
 
+### Type system (three independent axes)
+
+- **Size:** 8 → 16 → 32 → 64 bit
+- **Signedness:** unsigned (preferred) → signed
+- **Kind:** integer (precise) → float (F32/F64) → VAL (Value[])
+
 ```c
-typedef enum { VAL_NUM, VAL_ARR } Type;
-typedef struct Arr { int refcount, len, cap; struct Value *items; } Arr;
-typedef struct Value { Type type; union { double num; Arr *arr; } as; } Value;
+typedef enum { VAL_NUM, VAL_ARR, VAL_PTR } Type;
+
+typedef enum {
+    NK_U8, NK_U16, NK_U32, NK_U64,
+    NK_I8, NK_I16, NK_I32, NK_I64,
+    NK_F32, NK_F64
+} NumKind;
+
+typedef enum {
+    ARR_U8, ARR_U16, ARR_U32, ARR_U64,
+    ARR_I8, ARR_I16, ARR_I32, ARR_I64,
+    ARR_F32, ARR_F64, ARR_VAL
+} ArrKind;
 ```
 
-Numbers: `type = VAL_NUM`, `as.num = double`.
-Arrays: `type = VAL_ARR`, `as.arr = malloc'd Arr` with len/cap and flexible `items[]`.
+### Structs (16 bytes each, no waste)
+
+```c
+typedef struct Arr {
+    int refcount, len, cap;
+    ArrKind kind;
+    union {
+        struct Value *val;    // ARR_VAL: heterogeneous Value[]
+        uint8_t *u8;          // ARR_U8:  raw uint8_t[]
+        uint16_t *u16;        // ARR_U16: raw uint16_t[]
+        uint32_t *u32;        // ARR_U32: raw uint32_t[]
+        uint64_t *u64;        // ARR_U64: raw uint64_t[]
+        int8_t *i8;           // ARR_I8:  raw int8_t[]
+        int16_t *i16;         // ARR_I16: raw int16_t[]
+        int32_t *i32;         // ARR_I32: raw int32_t[]
+        int64_t *i64;         // ARR_I64: raw int64_t[]
+        float *f32;           // ARR_F32: raw float[]
+        double *f64;          // ARR_F64: raw double[]
+    } as;
+} Arr;
+
+typedef struct Value {
+    Type type;
+    NumKind nkind;           // fits in what was padding
+    union {
+        uint8_t u8; int8_t i8;
+        uint16_t u16; int16_t i16;
+        uint32_t u32; int32_t i32;
+        uint64_t u64; int64_t i64;
+        float f32; double f64;
+        Arr *arr;
+        void *ptr;
+    } as;
+} Value;  // still 16 bytes
+```
+
+### Key: `vnum()` compresses, `val_num()` widens
+
+```c
+Value vnum(double n) {
+    Value v = { .type = VAL_NUM, .nkind = NK_F64, .as.f64 = n };
+    v.nkind = detect_num_kind(n);  // find narrowest fit
+    switch (v.nkind) {             // store compactly
+        case NK_I8:  v.as.i8 = (int8_t)n; break;
+        case NK_F32: v.as.f32 = (float)n; break;
+        // ...
+    }
+    return v;
+}
+
+double val_num(Value v) {
+    switch (v.nkind) {
+        case NK_I8:  return v.as.i8;
+        case NK_F32: return v.as.f32;
+        case NK_F64: return v.as.f64;
+        // ...
+    }
+}
+```
+
+Every operation site in the VM and `apply()` uses `val_num()` to read
+numbers transparently. `vassign()` uses a `*d = s` struct copy which
+carries `nkind` automatically.
+
+### Compact Array Detection (`detect_kind`)
+
+At `OC_MAKE_ARR` runtime, the values on the stack are inspected:
+
+1. All non-negative integers → narrowest unsigned (U8→U16→U32→U64)
+2. Any negative integers → narrowest signed (I8→I16→I32→I64)
+3. Non-integer → F32 if exact in float, else F64
+4. Non-numeric → ARR_VAL
+
+### Promotion Between Kinds (`promote_kind`)
+
+`kind_exactly_covers()` checks whether one kind can losslessly represent
+another. `promote_kind(a, b)` finds the smallest kind covering both by
+iterating candidates from smallest to largest:
+
+```
+U8 → I8 → U16 → I16 → U32 → I32 → F32 → U64 → I64 → F64 → VAL
+```
+
+This correctly handles cross-type scenarios:
+- U8 + I8 → I16 (neither can hold the other)
+- U16 + I8 → I32 (I16 max 32767 < U16 max 65535)
+- I32 + F32 → F64 (F32 can't exactly hold all I32 values)
+- U64 + I64 → VAL (neither fits in the other)
+
+### On mutation → VAL promotion
+
+`amake_uniq()` promotes any compact array to ARR_VAL before writing.
+This means compact types are a read-only optimization — writes always
+fall back to heterogeneous Value[] storage.
 
 ### Refcount helpers
 
 ```c
-Arr *aalloc(int cap) {
-    Arr *a = calloc(1, sizeof(Arr));
-    a->refcount = 1;
-    a->cap = cap;
-    a->items = cap ? calloc(cap, sizeof(Value)) : NULL;
-    return a;
-}
-void aretain(Arr *a) { if (a) a->refcount++; }
-void arelease(Arr *a) {
-    if (!a) return;
-    if (--a->refcount > 0) return;
-    for (int i = 0; i < a->len; i++)
-        if (a->items[i].type == VAL_ARR) arelease(a->items[i].as.arr);
-    free(a->items); free(a);
-}
-Arr *adeep_copy(Arr *s);  // full tree copy for COW
-void amake_uniq(Value *v); // COW: deep copy if refcount > 1
-void vassign(Value *d, Value s);  // release old, retain new
+Arr *aalloc(int cap, ArrKind k);  // kind-aware allocation
+void aretain(Arr *a);
+void arelease(Arr *a);            // kind-aware free
+Arr *adeep_copy(Arr *s);          // kind-aware memcpy
+void amake_uniq(Value *v);        // + promotes compact to VAL
+void vassign(Value *d, Value s);  // struct copy (carries nkind)
 ```
 
 ---
@@ -62,7 +158,7 @@ A single-pass recursive descent compiler that walks the token array and emits
 `Instr[]` bytecode. No intermediate AST — each parser function emits instructions
 directly.
 
-### Instruction Set (22 opcodes)
+### Instruction Set (23 opcodes)
 
 ```c
 typedef enum {
@@ -87,6 +183,7 @@ typedef enum {
     OC_ASSERT,   // built-in assert (error-catching)
     OC_CFUNC,    // call registered C function (FFI)
     OC_PUSH,     // x = x + [elem]: pop elem, append to var array in-place
+    OC_TYPE,     // built-in type(): pop, inspect nkind/arrkind, push result
     OC_END,      // terminator
 } OC;
 ```
@@ -276,6 +373,32 @@ after. The callee starts with `isp = -1`.
 - No return: the function body ends with `OC_END`. `rf` stays `0`, and
   `OC_CALL` returns `nil` (via `nilv()` macro, typed as `VAL_ARR` with `NULL` arr).
 
+### `type()` built-in
+
+The `type()` built-in is handled directly in the compiler (before CReg and
+function table lookup) and compiled to the `OC_TYPE` opcode. At runtime, it
+pops one value from the stack and pushes a number representing the storage
+kind:
+
+```c
+case OC_TYPE: {
+    Value v = istk[isp--];
+    if (v.type == VAL_NUM)
+        istk[++isp] = vnum((double)v.nkind);          // 0-9
+    else if (v.type == VAL_ARR) {
+        if (v.as.arr)
+            istk[++isp] = vnum((double)(100 + v.as.arr->kind));  // 100-110
+        else
+            istk[++isp] = vnum(-1);                    // nil
+    } else
+        istk[++isp] = vnum(-2);                        // ptr
+    break;
+}
+```
+
+This is purely for testing and debugging — it exposes the internal type
+hierarchy that is otherwise invisible to the user.
+
 ### `assert()` implementation
 
 The assert built-in compiles its argument expression into a separate `Code`
@@ -405,7 +528,7 @@ result = ffi_call(sqrt_fn, "dd", 9.0)   // → 3.0
 
 ## 7. Line Count
 
-**Total:** ~1090 lines.
+**Total:** ~1160 lines.
 
 | Component | Lines |
 |-----------|-------|

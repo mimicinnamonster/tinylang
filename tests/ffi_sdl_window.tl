@@ -1,54 +1,82 @@
-// ffi_sdl_window.tl — Create an SDL2 window via FFI
-// Requires: SDL2 (libSDL2-2.0.0.dylib installed via brew)
-//
-// Tests: dlopen, dlsym, ffi_call with real-world SDL2 functions
-// Displays a 640x480 window for 5 seconds, then cleans up.
+// ffi_sdl_window.tl — OpenGL 3.3 rotating textured cube via SDL2 + FFI
+// Requires: libffi (brew install libffi), SDL2 (brew install sdl2)
+//   Build helper: cc -shared -fPIC -o tests/ffi_cube_helper.dylib tests/ffi_cube_helper.c \
+//                        -framework OpenGL -framework Cocoa -lm
 
 lib = dlopen("/opt/homebrew/lib/libSDL2-2.0.0.dylib")
-if lib = [] {
-    lib = dlopen("/usr/local/lib/libSDL2-2.0.0.dylib")
-}
-if lib = [] {
-    lib = dlopen("libSDL2-2.0.0.dylib")
-}
+if lib = [] { lib = dlopen("/usr/local/lib/libSDL2-2.0.0.dylib") }
+if lib = [] { lib = dlopen("libSDL2-2.0.0.dylib") }
 assert(lib != [])
 
-// SDL_Init with SDL_INIT_VIDEO (0x20 = 32)
+// Init SDL video
 sdl_init = dlsym(lib, "SDL_Init")
-assert(sdl_init != [])
-result = ffi_call(sdl_init, "ii", 32)
-assert(result = 0)
+ffi_call(sdl_init, "ii", 32)   // SDL_INIT_VIDEO
 
-// SDL_CreateWindow(title, x, y, w, h, flags)
-// Returns SDL_Window*, args: string, int × 5
-// Sig: p = return pointer, s = title, i = x, i = y, i = w, i = h, i = flags
-sdl_create_window = dlsym(lib, "SDL_CreateWindow")
-assert(sdl_create_window != [])
+// OpenGL 3.3 core profile
+// SDL_GLattr: DOUBLEBUFFER=5, DEPTH_SIZE=6, CONTEXT_MAJOR=17, CONTEXT_MINOR=18, CONTEXT_PROFILE=21
+sgl = dlsym(lib, "SDL_GL_SetAttribute")
+ffi_call(sgl, "iii", 5, 1)     // double buffer
+ffi_call(sgl, "iii", 6, 24)    // depth size
+ffi_call(sgl, "iii", 17, 3)    // major
+ffi_call(sgl, "iii", 18, 3)    // minor
+ffi_call(sgl, "iii", 21, 1)    // core profile
 
-window = ffi_call(sdl_create_window, "psiiiii", "TinyLang SDL Test", 200, 200, 640, 480, 0)
-print("window created")
+// Window with OpenGL flag (SDL_WINDOW_OPENGL = 2)
+scw = dlsym(lib, "SDL_CreateWindow")
+window = ffi_call(scw, "psiiiii", "Rotating Cube", 200, 100, 800, 600, 2)
 
-// Keep the window visible for 5 seconds with event pumping
-sdl_pump = dlsym(lib, "SDL_PumpEvents")
-assert(sdl_pump != [])
-sdl_delay = dlsym(lib, "SDL_Delay")
-assert(sdl_delay != [])
+// OpenGL context
+sgcc = dlsym(lib, "SDL_GL_CreateContext")
+context = ffi_call(sgcc, "pp", window)
 
-print("showing window for 5 seconds...")
-i = 0
-while i < 10 {
-    ffi_call(sdl_pump, "v")
-    ffi_call(sdl_delay, "vi", 500)
-    i = i + 1
+// Load helper
+helper = dlopen("tests/ffi_cube_helper.dylib")
+if helper = [] { helper = dlopen("ffi_cube_helper.dylib") }
+assert(helper != [])
+
+ci  = dlsym(helper, "cube_init")
+cr  = dlsym(helper, "cube_render")
+cc  = dlsym(helper, "cube_cleanup")
+cge = dlsym(helper, "cube_get_error")
+
+state = ffi_call(ci, "p")
+
+err = ffi_call(cge, "s")
+if #err > 0 {
+    print("cube init failed: ")
+    print(#err)
+    ffi_call(cc, "vp", state)
+    sgdc = dlsym(lib, "SDL_GL_DeleteContext")
+    ffi_call(sgdc, "vp", context)
+    sdw = dlsym(lib, "SDL_DestroyWindow")
+    ffi_call(sdw, "vp", window)
+    sq = dlsym(lib, "SDL_Quit")
+    ffi_call(sq, "v")
+    assert([] != [])
 }
 
-// Clean up
-sdl_destroy_window = dlsym(lib, "SDL_DestroyWindow")
-assert(sdl_destroy_window != [])
-ffi_call(sdl_destroy_window, "vp", window)
+// Render loop
+ssw = dlsym(lib, "SDL_GL_SwapWindow")
+sp  = dlsym(lib, "SDL_PumpEvents")
+sd  = dlsym(lib, "SDL_Delay")
 
-sdl_quit = dlsym(lib, "SDL_Quit")
-assert(sdl_quit != [])
-ffi_call(sdl_quit, "v")
+angle = 0
+f = 0
+while f < 300 {
+    ffi_call(cr, "vpdii", state, angle, 800, 600)
+    ffi_call(ssw, "vp", window)
+    ffi_call(sp, "v")
+    ffi_call(sd, "vi", 33)
+    angle = angle + 2
+    f = f + 1
+}
 
-print("sdl window test ok")
+// Cleanup
+ffi_call(cc, "vp", state)
+sgdc = dlsym(lib, "SDL_GL_DeleteContext")
+ffi_call(sgdc, "vp", context)
+sdw = dlsym(lib, "SDL_DestroyWindow")
+ffi_call(sdw, "vp", window)
+sq = dlsym(lib, "SDL_Quit")
+ffi_call(sq, "v")
+print("rotating cube test ok")

@@ -23,23 +23,108 @@ Arrays are shared via reference counting. A deep copy only happens when someone 
 ### Internal structure
 
 ```c
-struct ArrayData {
-    int refcount;      // how many Values point to this
-    int len;
-    int cap;
-    Value items[];     // flexible array member
-};
+typedef enum {
+    NK_U8, NK_U16, NK_U32, NK_U64,
+    NK_I8, NK_I16, NK_I32, NK_I64,
+    NK_F32, NK_F64
+} NumKind;
 
-typedef struct {
-    ValueType type;    // VAL_NUM or VAL_ARR
+typedef enum {
+    ARR_U8, ARR_U16, ARR_U32, ARR_U64,
+    ARR_I8, ARR_I16, ARR_I32, ARR_I64,
+    ARR_F32, ARR_F64, ARR_VAL
+} ArrKind;
+
+typedef struct Arr {
+    int refcount, len, cap;
+    ArrKind kind;
     union {
-        double num;
-        struct ArrayData *data;  // pointer to heap-allocated array
+        struct Value *val;   // ARR_VAL: heterogeneous Value[]
+        uint8_t *u8;         // ARR_U8:  raw uint8_t[]
+        int16_t *i16;        // ARR_I16: raw int16_t[]
+        float *f32;          // ARR_F32: raw float[]
+        double *f64;         // ARR_F64: raw double[]
+        /* ... all 11 pointer types */
     } as;
-} Value;
+} Arr;
+
+typedef struct Value {
+    Type type;           // VAL_NUM, VAL_ARR, or VAL_PTR
+    NumKind nkind;       // storage kind (meaningful for VAL_NUM)
+    union {
+        uint8_t u8; int8_t i8;      // compact number storage
+        uint16_t u16; int16_t i16;
+        uint32_t u32; int32_t i32;
+        uint64_t u64; int64_t i64;
+        float f32; double f64;
+        Arr *arr;                    // array pointer
+        void *ptr;                   // FFI pointer
+    } as;
+} Value;  // 16 bytes (same as before)
 ```
 
-Numbers own no heap memory — they're just a `double` in the Value struct. Arrays point to a shared `ArrayData` with a refcount.
+The `nkind` field fits in what was padding — the struct stays 16 bytes.
+`vnum()` detects the narrowest kind on creation, `val_num()` widens to
+`double` on every read through the VM and `apply()` operators.
+
+Numbers own no heap memory — they're inline in the Value union.
+Arrays point to a shared `Arr` with a refcount.
+
+### Compact Array Promotion
+
+Arrays are created with a `kind` determined by `detect_kind()` at runtime:
+- All non-negative integers → unsigned: U8 → U16 → U32 → U64
+- Any negative integers → signed: I8 → I16 → I32 → I64
+- Non-integer numbers → F32 if exact, else F64
+- Non-numeric → ARR_VAL (heterogeneous)
+
+Concatenation (`+`) and repetition (`*`) propagate and promote types
+via `promote_kind()`, which finds the smallest type that can exactly
+represent both inputs:
+
+| Left | Right | Result | Why |
+|------|-------|--------|-----|
+| U8 `[200]` | I8 `[-50]` | **I16** | I8 can't hold 200, U8 can't hold -50 |
+| U16 `[50000]` | I8 | **I32** | I16 max 32767 < 50000 |
+| I32 `[2e9]` | F32 `[1.5]` | **F64** | F32's 24-bit mantissa can't hold 2e9 exactly |
+| F32 | F64 | **F64** | Wider float wins |
+| U64 | I64 | **VAL** | Neither fits in the other |
+
+On mutation (`arr[i] = val`), compact arrays are promoted to ARR_VAL in
+place via `amake_uniq()` — the compact layout is a read-only optimization.
+This keeps the write path simple while making iteration and copying
+maximally compact.
+
+### Inspecting storage kinds with `type()`
+
+The built-in `type(x)` function exposes the internal storage kind for
+testing and debugging:
+
+```tl
+// Numbers: nkind (0-9)
+type(5)              // 0  = NK_U8   (1 byte)
+type(300)            // 1  = NK_U16  (2 bytes)
+type(5000000000)     // 3  = NK_U64  (8 bytes)
+type(-100)           // 4  = NK_I8
+type(-30000)         // 5  = NK_I16
+type(1.5)            // 8  = NK_F32  (4 bytes)
+type(3.14159265358979) // 9 = NK_F64 (8 bytes)
+
+// Arrays: 100 + ArrKind
+type([1, 2, 3])          // 100 = ARR_U8
+type([-100, 0])          // 104 = ARR_I8
+type([1.5, 2.5])         // 108 = ARR_F32
+type([1, "hello"])       // 110 = ARR_VAL (heterogeneous)
+
+// nil / empty
+type([])             // -1
+
+// Mutation promotes to VAL
+x = [1, 2, 3]
+type(x)              // 100 = ARR_U8
+x[0] = 99
+type(x)              // 110 = ARR_VAL (promoted on write)
+```
 
 ### Rules
 
@@ -444,6 +529,26 @@ while ptr != -1 {
 }
 ```
 
+### Compact array backing stores
+
+When an array literal contains only numbers of a uniform type, the VM
+selects a compact backing store instead of `Value[]`. This is transparent
+— all reads return numbers as usual — but memory drops 2–16× and iteration
+is cache-friendly.
+
+| Literal | Backing store | Bytes vs `Value[]` |
+|---------|--------------|:------------------:|
+| `[1, 2, 3]` | `int8_t[3]` | 48 → 3 (**16×**) |
+| `[1000, 2000]` | `int16_t[2]` | 32 → 4 (**8×**) |
+| `[70000, 80000]` | `uint32_t[2]` | 32 → 8 (**4×**) |
+| `[1.5, 2.5]` | `float[2]` | 32 → 8 (**4×**) |
+| `[1, "hello"]` | `Value[2]` | 32 → 32 (no savings) |
+
+Promotion follows a one-way chain **I8 → I32 → F64 → VAL** during
+mutation. Reading from a compact array wraps elements into Values on
+the fly (`arr_item()` helper) — the overhead of constructing a Value
+is negligible compared to the cache win from dense storage.
+
 ### Array creation: repetition with `*`
 
 ```
@@ -635,6 +740,7 @@ Note: `lvalue` and `primary` both have `identifier "[" index_list "]"`. The pars
 | `print` | `print(x)` | Writes `x` to stdout. Numbers: decimal (no `.0` if integer). Arrays: `[e1, e2, ...]`. Empty array: `[]`. Strings (printed as text, not byte arrays). |
 | `input` | `input()` | Reads a line from stdin, returns as byte array (string) |
 | `assert` | `assert(expr)` | Evaluates `expr` in an error-catching context. If evaluation succeeds and the result is truthy, returns `[]` (nil). If evaluation succeeds but the result is falsy, returns `"assertion failed"`. If evaluation produces a runtime error, the error is caught and the actual error message is returned as a string. |
+| `type` | `type(x)` | Returns a number representing the internal storage kind of `x`. For numbers: 0=U8, 1=U16, 2=U32, 3=U64, 4=I8, 5=I16, 6=I32, 7=I64, 8=F32, 9=F64. For arrays: 100+ArrKind (0=U8…10=VAL). For nil/`[]`: -1. For ptr: -2. Useful for testing that the compact type system selected the expected backing store. |
 
 `print` special-cases arrays whose elements are all printable ASCII or common control characters (10, 13, 9) — these are printed as the text string rather than `[104, 101, ...]`.
 
@@ -721,7 +827,7 @@ Properties that make a future vectorizing JIT simpler than typical dynamic langu
 | Monomorphic call sites | No first-class functions — every call targets one definition |
 | Shallow expressions | No chaining without `()` — IR is small and local |
 | `[]` = nil | Single concrete sentinel — one null check, cheap |
-| Pre-allocation | `[0] * n` + refcount 1 = known-size flat buffer, exclusive ownership — JIT relayouts to `double[]` with zero guarding |
+| Pre-allocation | `[0] * n` produces a compact `int8_t[]` backing store — known-size flat buffer, exclusive ownership, no type tags per element. JIT sees raw C arrays directly. |
 | No closures | Scope is flat per function — no captured environment |
 | Simple CFG | Only `if`/`elif`/`else`/`while` — no switch, goto, exceptions |
 | Error = halt | JIT can speculate without having to recover on error — just deopt to interpreter |
