@@ -211,6 +211,7 @@ void lex(const char *s) {
         if (c == '\n') { ac(); tk.t = T_NL; goto em; }
         if (c == 0) { tk.t = T_EOF; goto em; }
         if (c == '/' && src[1] == '/') { while (pc() && pc() != '\n') ac(); continue; }
+
         if (isdigit(c) || (c == '.' && isdigit(src[1]))) {
             char b[64]; int i = 0, dot = 0;
             if (c == '.') { dot = 1; b[i++] = '.'; ac(); c = pc(); }
@@ -220,6 +221,7 @@ void lex(const char *s) {
                 while (isdigit(c)) { b[i++] = c; ac(); c = pc(); }
             } b[i] = 0; tk.t = T_NUM; tk.n = atof(b); goto em;
         }
+
         if (isalpha(c) || c == '_') {
             char b[64]; int i = 0;
             while (isalnum(c) || c == '_') { b[i++] = c; ac(); c = pc(); }
@@ -234,6 +236,7 @@ void lex(const char *s) {
             else if (!strcmp(b,"include")){tk.t=T_INCLUDE;free(tk.s);}
             goto em;
         }
+
         if (c == '"') {
             ac(); char b[8192]; int i = 0;
             for (;;) {
@@ -253,6 +256,7 @@ void lex(const char *s) {
             for (int j = 0; j < i; j++) a->items[j] = vnum((unsigned char)b[j]);
             tk.t = T_STR; tk.s = (char*)a; goto em;
         }
+
         ac();
         switch (c) {
             case '(': tk.t=T_LP; break; case ')': tk.t=T_RP; break;
@@ -577,6 +581,7 @@ void exec(Code *c) {
                 else if (ins->a == T_HASH) { if (v.type!=VAL_ARR) die("# requires array"); istk[++isp] = vnum((double)(v.as.arr ? v.as.arr->len : 0)); if (v.type==VAL_ARR) arelease(v.as.arr); }
                 break;
             }
+
             case OC_INDEX: {
                 Value idx = istk[isp--], arr = istk[isp--];
                 if (arr.type != VAL_ARR) die("cannot index into non-array");
@@ -630,6 +635,7 @@ void exec(Code *c) {
                 }
                 vassign(slot, val); break;
             }
+
             case OC_CALL: {
                 int fi = ins->a, ac = ins->b; Fn *f = &fs[fi];
                 Value args[64];
@@ -667,6 +673,7 @@ void exec(Code *c) {
                 if (!t) { ip = ins->a; continue; } break;
             }
             case OC_JMP: { ip = ins->a; continue; }
+
             case OC_PRINT: { print_val(istk[isp--]); printf("\n"); break; }
             case OC_INPUT: {
                 char buf[1024]; int n;
@@ -675,6 +682,7 @@ void exec(Code *c) {
                 for (int j = 0; j < n; j++) a->items[j] = vnum((unsigned char)buf[j]);
                 istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a }; break;
             }
+
             case OC_ASSERT: {
                 Code *sub = ins->sub; int ac = ins->a;
                 int saved_isp = isp, saved_rf = rf; Value saved_rv = rv;
@@ -723,7 +731,6 @@ int main(int a, char **v) {
         lex(src); Code *code = new_code(); comp_program(code); free(src); exec(code);
         code_free(code); free(ts);
     } else {
-        printf("TinyLang v0.1\n");
         char buf[65536];
         while (1) {
             printf("> "); fflush(stdout); buf[0] = 0;
