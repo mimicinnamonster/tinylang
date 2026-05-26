@@ -1,691 +1,337 @@
 # TinyLang — Implementation Guide
 
-Target: **under 1000 lines of C**. Single-pass tree-walk interpreter with refcount+COW.
+Target: **under 1000 lines of C**. Single-pass compiler to bytecode with stack-based VM,
+refcount+COW, and tail call optimization.
 
 ---
 
 ## 1. Value Representation
 
 ```c
-typedef enum { VAL_NUM, VAL_ARR } ValueType;
-
-// Heap-allocated array data — shared via refcount
-typedef struct ArrayData {
-    int refcount;
-    int len;
-    int cap;
-    struct Value items[];   // flexible array member
-} ArrayData;
-
-// A single value — 16 bytes on x86-64
-typedef struct Value {
-    ValueType type;
-    union {
-        double num;
-        ArrayData *data;    // owns a refcounted reference
-    } as;
-} Value;
+typedef enum { VAL_NUM, VAL_ARR } Type;
+typedef struct Arr { int refcount, len, cap; struct Value *items; } Arr;
+typedef struct Value { Type type; union { double num; Arr *arr; } as; } Value;
 ```
 
 Numbers: `type = VAL_NUM`, `as.num = double`.
-Arrays: `type = VAL_ARR`, `as.data = malloc'd ArrayData`.
+Arrays: `type = VAL_ARR`, `as.arr = malloc'd Arr` with len/cap and flexible `items[]`.
 
 ### Refcount helpers
 
 ```c
-ArrayData *array_alloc(int cap) {
-    ArrayData *d = malloc(sizeof(ArrayData) + cap * sizeof(Value));
-    d->refcount = 1;
-    d->len = 0;
-    d->cap = cap;
-    return d;
+Arr *aalloc(int cap) {
+    Arr *a = calloc(1, sizeof(Arr));
+    a->refcount = 1;
+    a->cap = cap;
+    a->items = cap ? calloc(cap, sizeof(Value)) : NULL;
+    return a;
 }
-
-void array_retain(ArrayData *d) {
-    if (d) d->refcount++;
+void aretain(Arr *a) { if (a) a->refcount++; }
+void arelease(Arr *a) {
+    if (!a) return;
+    if (--a->refcount > 0) return;
+    for (int i = 0; i < a->len; i++)
+        if (a->items[i].type == VAL_ARR) arelease(a->items[i].as.arr);
+    free(a->items); free(a);
 }
-
-void array_release(ArrayData *d) {
-    if (!d) return;
-    if (--d->refcount > 0) return;
-    // Recursively release sub-arrays
-    for (int i = 0; i < d->len; i++)
-        if (d->items[i].type == VAL_ARR)
-            array_release(d->items[i].as.data);
-    free(d);
-}
-
-// Deep copy for COW — duplicates the entire tree
-ArrayData *array_deep_copy(ArrayData *src) {
-    ArrayData *d = array_alloc(src->cap);
-    d->len = src->len;
-    for (int i = 0; i < src->len; i++) {
-        d->items[i] = src->items[i];
-        if (d->items[i].type == VAL_ARR)
-            array_retain(d->items[i].as.data);     // share sub-arrays (they'll COW on their own mutation)
-    }
-    return d;
-}
-```
-
-### Value lifecycle
-
-```c
-// Assign one Value to another — manages refcounts
-void val_assign(Value *dst, Value src) {
-    if (dst->type == VAL_ARR)
-        array_release(dst->as.data);
-    *dst = src;
-    if (src.type == VAL_ARR)
-        array_retain(src.as.data);
-}
-
-// Ensure dst has exclusive ownership — COW
-void val_make_unique(Value *dst) {
-    if (dst->type != VAL_ARR || dst->as.data->refcount <= 1)
-        return;
-    ArrayData *old = dst->as.data;
-    dst->as.data = array_deep_copy(old);
-    array_release(old);    // decrement old — may free if we had the last ref
-}
+Arr *adeep_copy(Arr *s);  // full tree copy for COW
+void amake_uniq(Value *v); // COW: deep copy if refcount > 1
+void vassign(Value *d, Value s);  // release old, retain new
 ```
 
 ---
 
-## 2. Token Types
+## 2. Lexer
+
+Produces a flat `Tok[]` array from source. Same lexer as the original tree-walker:
+
+- Skip whitespace, handle `//` comments
+- Go-style semicolon insertion: newline after number/identifier/string/nil/`)`/`]`/`}` becomes `T_NL`
+- Numbers: `5`, `5.0`, `.5`, `5.`
+- Identifiers + keywords (`if`, `elif`, `else`, `while`, `function`, `return`, `nil`, `include`)
+- Strings: `"..."` with escape sequences (`\n`, `\t`, `\\`, `\"`, `\xHH`)
+- Single-char tokens: `( ) [ ] { } , ; + - * / % & | ^ @ ! = < > #`
+
+The token array is the sole input to the compiler phase.
+
+---
+
+## 3. Bytecode Compiler
+
+A single-pass recursive descent compiler that walks the token array and emits
+`Instr[]` bytecode. No intermediate AST — each parser function emits instructions
+directly.
+
+### Instruction Set (19 opcodes)
 
 ```c
 typedef enum {
-    TOK_EOF,
-    TOK_NUMBER, TOK_IDENT, TOK_STRING,
-    TOK_NIL,
-    TOK_LPAREN, TOK_RPAREN,
-    TOK_LBRACK, TOK_RBRACK,
-    TOK_LBRACE, TOK_RBRACE,
-    TOK_COMMA,
-    TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_PERCENT,
-    TOK_AMPERSAND, TOK_PIPE, TOK_CARET, TOK_AT,
-    TOK_EQ, TOK_NEQ, TOK_LT, TOK_GT,
-    TOK_BANG,
-    TOK_ASSIGN,
-    TOK_IF, TOK_ELIF, TOK_ELSE, TOK_WHILE,
-    TOK_FUNCTION, TOK_RETURN,
-    TOK_NEWLINE,
-} TokenType;
-
-typedef struct {
-    TokenType type;
-    union { double num; char *str; } val;
-    int line;
-} Token;
+    OC_NUM,      // push number constant
+    OC_NIL,      // push empty array (nil)
+    OC_STR,      // push pre-lexed string array
+    OC_MAKE_ARR, // pop N values, build array, push
+    OC_VAR,      // push variable value (by name)
+    OC_STORE,    // pop and assign to variable (by name)
+    OC_OP,       // pop r, pop l, apply binary op, push result
+    OC_UNARY,    // pop, apply unary op (!, -, #), push
+    OC_INDEX,    // pop idx, pop arr, push arr[idx]
+    OC_LVALS,    // lvalue store: walk COW chain, assign
+    OC_CALL,     // function call: pop args, exec body, push result
+    OC_TCO,      // tail call: rebind params, restart body
+    OC_JZ,       // pop, jump if falsy
+    OC_JMP,      // unconditional jump
+    OC_RET,      // set return flag and value, exit function
+    OC_POP,      // discard top of stack
+    OC_PRINT,    // built-in print
+    OC_INPUT,    // built-in input
+    OC_ASSERT,   // built-in assert (error-catching)
+    OC_END,      // terminator
+} OC;
 ```
 
-Note: `TOK_EQ` is `=` (comparison). `TOK_ASSIGN` is also `=` but emitted by the statement parser when `=` appears at statement-start context. Actually — simpler: the parser knows context. The lexer returns `TOK_EQ` for `=` always. The parser knows: "if I'm at statement-start and see `identifier TOK_EQ`, this is assignment."
-
-### Semicolon insertion (Go-style)
-
-In the lexer, after emitting any token that can end a statement, check if the next character is a newline. If so, emit `TOK_NEWLINE`.
-
-Tokens that trigger semicolon insertion: `TOK_NUMBER`, `TOK_IDENT`, `TOK_STRING`, `TOK_RPAREN`, `TOK_RBRACK`, `TOK_RBRACE`, `TOK_NIL`.
-
-Tokens that DO NOT trigger it (expression continues): operators like `TOK_PLUS`, `TOK_MINUS`, etc., and opening `(` `[` `{`.
-
-### Explicit semicolons
-
-Explicit `;` tokens (`TOK_SEMI`) are also supported as statement separators, treated equivalently to `TOK_NEWLINE` wherever the parser expects a statement separator. This allows multiple statements on a single line:
-
-```
-x = 5; y = 10; print(x + y)
-```
-
-### Lexer functions
+### Instruction format
 
 ```c
-Token lex_next();                // returns next token
-void lex_init(const char *src); // set up lexer state
+typedef struct Instr {
+    OC op; int a, b; double num; Arr *arr; char *name; Code *sub;
+} Instr;
+
+typedef struct Code { Instr *code; int len, cap; } Code;
 ```
 
-Lexer handles:
-- Skipping whitespace (spaces, tabs)
-- Newline → maybe TOK_NEWLINE (based on semicolon rule)
-- `//` → skip to end of line
-- Digits → TOK_NUMBER (handles `5`, `5.0`, `.5`, `5.`)
-- `[a-zA-Z_]` → keyword or TOK_IDENT
-- `"` → TOK_STRING with escape processing
-- Single-char tokens by character
+- `a`, `b`: general-purpose (jump targets, argument counts, operator types)
+- `num`: for `OC_NUM`
+- `arr`: for `OC_STR` (pre-lexed string data)
+- `name`: for `OC_VAR`/`OC_STORE`/`OC_LVALS` (variable name)
+- `sub`: for `OC_ASSERT` (sub-code for the assertion expression)
 
-Keywords: `if`, `elif`, `else`, `while`, `function`, `return`, `nil`.
+### Compiler functions
 
-Identifiers: `[a-zA-Z_][a-zA-Z0-9_]*`.
+| Function | Compiles |
+|----------|----------|
+| `comp_program(c)` | Top-level statement loop |
+| `comp_stmt(c)` | One statement (if, while, fn, return, assign, expr) |
+| `comp_block(c)` | `{ stmt_list }` |
+| `comp_expr(c)` | Expression (leaves one value on stack) |
+| `comp_prim(c)` | Primary expression (literal, ident, call, array, unary) |
+| `comp_if(c)` | `if`/`elif`/`else` with backpatching |
+| `comp_while(c)` | `while` with loop/exit jumps |
+| `comp_fn(c)` | Function definition + body compilation |
 
-String escapes: `\n` → 10, `\t` → 9, `\\` → 92, `\"` → 34, `\xHH` → hex byte.
+### Control flow compilation
+
+**While loop:**
+```
+  [condition]       ← comp_expr
+  JZ exit           ← placeholder, patched later
+  [body]            ← comp_block
+  JMP loop          ← jump back to condition
+exit:               ← JZ target patched here
+```
+
+**If/elif/else:**
+```
+  [cond1]
+  JZ elif1          ← patch to elif1 condition
+  [body1]
+  JMP end
+elif1:
+  [cond2]
+  JZ else           ← or to end if no else
+  [body2]
+  JMP end
+else:
+  [body_else]
+end:
+```
+
+### Function compilation
+
+Functions are **pre-registered** in the function table before body compilation,
+enabling recursive self-calls. Body is compiled to its own `Code` object:
+
+```c
+Fn *f = &fs[fc++];
+f->n = name; f->p = params; f->a = arity;
+f->code = NULL;              // placeholder
+
+Code *body = new_code();
+comp_block(body);
+emit(body, OC_END);          // terminator (not OC_RET — see §4)
+f->code = body;
+```
+
+Tail call optimization is detected by scanning backwards past `OC_END`/`OC_RET`
+in the compiled body for a trailing `OC_CALL` to the same function. If found,
+the `OC_CALL` is mutated to `OC_TCO`.
 
 ---
 
-## 3. Parser / Interpreter
+## 4. Stack-Based VM
 
-### Environment (Scope)
-
-```c
-typedef struct {
-    char **names;
-    Value *values;
-    int count, cap;
-} Scope;
-
-Scope *scope_new();
-void scope_free(Scope *s);
-Value  scope_get(Scope *s, const char *name);
-void   scope_set(Scope *s, const char *name, Value val);  // O(1) overwrite or add
-```
-
-Simple dynamic arrays. Linear scan for lookups — fine for <1000 lines.
-
-### Function table
+### Execution loop
 
 ```c
-typedef struct {
-    char *name;
-    char **params;
-    int arity;
-    // Store source to re-parse on call
-    // Option A: token stream (pre-lexed)
-    // Option B: source position (start_line, start_col)
-} Function;
-```
-
-Functions are stored in a global linked list or dynamic array.
-
-**Storage choice:** Since we're single-pass, when we see `function foo(x, y) { ... }`, we:
-1. Note the function name and parameter list
-2. Store the position (line+col) of the `{` and `}` in the source
-3. Skip the body (don't execute it yet)
-4. On call: jump back to that source position, parse + execute the body with a fresh scope
-
-Or simpler: store the tokenized body as a buffer of Tokens:
-
-```c
-typedef struct {
-    char *name;
-    char **params;
-    int arity;
-    Token *body;        // tokenized body
-    int body_len;
-} Function;
-```
-
-### Expression parser (typed by context)
-
-```c
-Value parse_expr();              // normal expression — = is comparison
-Value parse_primary();           // literal, identifier, array literal, function call, (expr), unary
-Value parse_condition();         // for if/while — same as expr but stops at { or }
-```
-
-`parse_expr`:
-```
-expr := primary
-      | primary op primary       // exactly one binary op
-```
-
-After parsing `primary op primary`, check if another `op` follows → error (chaining requires `()`).
-
-### Statement parser
-
-```c
-void parse_statement();
-    // dispatches by current token:
-    // TOK_IF        → parse_if()
-    // TOK_WHILE     → parse_while()
-    // TOK_FUNCTION  → parse_function()
-    // TOK_RETURN    → parse_return()
-    // TOK_LBRACE    → parse_block()
-    // TOK_IDENT     → peek ahead: if followed by TOK_EQ or TOK_LBRACK → parse_assignment()
-    //                   else → parse_expr() as expression statement
-    // TOK_NEWLINE   → skip
-    // else           → parse_expr() as expression statement
-```
-
-### Lvalue parsing
-
-```c
-typedef struct { Value *slot; } LValue;
-
-LValue parse_lvalue();
-    // Consumes identifier + optional index chain
-    // Returns pointer to the slot that would be written to
-    // For simple variable: &scope->values[idx]
-    // For arr[i][j]: walks through ArrayData->items pointers
-```
-
-`parse_assignment()`:
-```c
-LValue target = parse_lvalue();     // identifier ([" index_list "])*
-expect(TOK_ASSIGN);                 // consume =
-Value val = parse_expr();
-val_assign(target.slot, val);
-```
-
-### Lvalue index chain (COW-safe)
-
-When walking `arr[i][j]` as an lvalue:
-
-```c
-Value *walk_lvalue_chain(Value *root) {
-    // root = pointer to the array Value in scope
-    while (peek() == TOK_LBRACK) {
-        advance(); // consume [
-        Value idx = parse_expr();
-        expect(TOK_RBRACK);
-        
-        // COW: ensure the array we're about to index is uniquely owned
-        val_make_unique(root);
-        if (root->type != VAL_ARR) error("not an array");
-        int i = (int)num_val(idx);
-        if (i < 0 || i >= root->as.data->len) error("index out of bounds");
-        
-        root = &root->as.data->items[i];  // pointer into the array's buffer
-    }
-    return root;
-}
-```
-
-Each level of the chain triggers COW independently. After walking `matrix[i][j]`, if `matrix` was shared, `matrix`'s data is deep-copied before any mutation.
-
-### Index expression (rvalue)
-
-```c
-Value parse_index_expr(Value arr) {
-    // We've already consumed the identifier and are inside [...]
-    // Parse index_list
-    Value indices[256];
-    int n = 0;
-    
-    do {
-        indices[n++] = parse_expr();
-    } while (match(TOK_COMMA));
-    
-    expect(TOK_RBRACK);
-    
-    if (n == 1) {
-        // Single index: might be number or array (dynamic chain)
-        if (indices[0].type == VAL_NUM) {
-            return array_index(arr, (int)num_val(indices[0]));
-        } else if (indices[0].type == VAL_ARR) {
-            Value cur = arr;
-            for (int i = 0; i < indices[0].as.data->len; i++) {
-                Value idx = indices[0].as.data->items[i];
-                cur = array_index(cur, (int)num_val(idx));
+void exec(Code *c) {
+    int ip = 0;
+    while (ip < c->len && !rf) {     // rf checked each iteration
+        Instr *ins = &c->code[ip];
+        switch (ins->op) {
+            case OC_NUM:  istk[++isp] = vnum(ins->num); break;
+            case OC_VAR:  istk[++isp] = sget(cs, ins->name); break;
+            case OC_STORE: sset(cs, ins->name, istk[isp--]); break;
+            case OC_OP: {
+                Value r = istk[isp--], l = istk[isp--];
+                Value res = apply(ins->a, l, r);
+                if (l.type==VAL_ARR) arelease(l.as.arr);
+                if (r.type==VAL_ARR) arelease(r.as.arr);
+                istk[++isp] = res;
+                break;
             }
-            return cur;
-        } else {
-            error("index must be number or array");
-        }
-    }
-    
-    // Multiple indices: chain them (static depth)
-    Value cur = arr;
-    for (int i = 0; i < n; i++) {
-        cur = array_index(cur, (int)num_val(indices[i]));
-    }
-    return cur;
-}
-```
-
-### Single element access
-
-```c
-Value array_index(Value arr, int idx) {
-    if (arr.type != VAL_ARR) error("not an array");
-    if (idx < 0 || idx >= arr.as.data->len) error("index out of bounds");
-    return arr.as.data->items[idx];  // returns by value, refcount already correct
-}
-```
-
-Returns a borrowed Value — the caller is responsible for calling `array_retain` if they store it.
-
-### Safety: index guard on non-array values
-
-When indexing through a chain (e.g. `arr[0,0,0]` or `arr[0][0][0]`), each step may
-produce a number (e.g. ASCII value from a string), and the next index would try to
-access `v.as.arr` on a `VAL_NUM` — reading the raw `double` bytes as a pointer and
-causing a segfault. The interpreter guards against this:
-
-```c
-if (v.type != VAL_ARR) die("cannot index into non-array");
-```
-
-This check is applied before every index access in the chain, both for numeric indices
-and dynamic slice indices.
-
----
-
-## 4. Binary Operations
-
-```c
-Value apply_op(Token op, Value left, Value right) {
-    switch (op.type) {
-        case TOK_PLUS:
-            if (left.type == VAL_NUM && right.type == VAL_NUM)
-                return val_num(left.as.num + right.as.num);
-            if (left.type == VAL_ARR && right.type == VAL_ARR)
-                return array_concat(left, right);
-            error("'+' on mismatched types");
-        case TOK_STAR:
-            if (left.type == VAL_NUM && right.type == VAL_NUM)
-                return val_num(left.as.num * right.as.num);
-            if (left.type == VAL_ARR && right.type == VAL_NUM)
-                return array_repeat(left, (int)num_val(right));
-            error("'*' on mismatched types");
-        case TOK_EQ:
-            return val_bool(val_equal(left, right));
-        case TOK_NEQ:
-            return val_bool(!val_equal(left, right));
-        // ... etc for all ops
-    }
-}
-```
-
-`val_bool(x)`: returns `val_num(1.0)` if x is truthy, `val_empty_array()` if falsy.
-
-Array equality: recursive deep comparison. Two arrays are equal if they have the same length and every element is equal.
-
-### Array concatenation
-
-```c
-Value array_concat(Value a, Value b) {
-    int new_len = a.as.data->len + b.as.data->len;
-    ArrayData *d = array_alloc(new_len);
-    d->len = new_len;
-    for (int i = 0; i < a.as.data->len; i++)
-        val_assign(&d->items[i], a.as.data->items[i]);
-    for (int i = 0; i < b.as.data->len; i++)
-        val_assign(&d->items[i + a.as.data->len], b.as.data->items[i]);
-    Value result = { .type = VAL_ARR, .as.data = d };
-    return result;
-}
-```
-
-### Array repeat
-
-```c
-Value array_repeat(Value arr, int count) {
-    if (count <= 0) return val_empty_array();
-    int base_len = arr.as.data->len;
-    int new_len = base_len * count;
-    ArrayData *d = array_alloc(new_len);
-    d->len = new_len;
-    for (int i = 0; i < count; i++)
-        for (int j = 0; j < base_len; j++)
-            val_assign(&d->items[i * base_len + j], arr.as.data->items[j]);
-    Value result = { .type = VAL_ARR, .as.data = d };
-    return result;
-}
-```
-
----
-
-## 5. If / While Parsing
-
-```c
-void parse_if() {
-    expect(TOK_IF);
-    Value cond = parse_condition();  // reads until {
-    expect(TOK_LBRACE);
-    parse_block();
-    expect(TOK_RBRACE);
-    
-    while (match(TOK_ELIF)) {
-        Value elif_cond = parse_condition();
-        expect(TOK_LBRACE);
-        parse_block();
-        expect(TOK_RBRACE);
-    }
-    
-    if (match(TOK_ELSE)) {
-        expect(TOK_LBRACE);
-        parse_block();
-        expect(TOK_RBRACE);
-    }
-}
-
-void parse_while() {
-    expect(TOK_WHILE);
-    Value cond = parse_condition();
-    expect(TOK_LBRACE);
-    
-    while (is_truthy(cond)) {   // loop: re-check condition each iteration
-        // Execute body
-        // But wait — in a single-pass interpreter, how do we loop?
-    }
-}
-```
-
-Wait — `while` is tricky in a single-pass tree-walk. The body needs to be re-executed. Options:
-
-**Option A: store the body tokens.** When entering `while`, record the body's token stream. Execute it in a loop, re-checking the condition each time.
-
-```c
-void parse_while() {
-    expect(TOK_WHILE);
-    Value cond = parse_condition();  // evaluate condition once
-    expect(TOK_LBRACE);
-    
-    // Save position for re-execution
-    int body_start = token_pos;
-    int brace_depth = 1;
-    // Count tokens until matching }
-    while (brace_depth > 0) { ... }
-    int body_end = token_pos;
-    
-    // Loop
-    while (is_truthy(cond)) {
-        execute_tokens(body_start, body_end);
-        cond = re_eval_condition();  // need to store the condition expression too
-    }
-}
-```
-
-**Option B: store the condition as a token stream too.** Both condition and body are tokenized regions that get re-executed.
-
-Simpler: store everything as token positions:
-
-```c
-int while_cond_start, while_cond_end;
-int while_body_start, while_body_end;
-
-// Parse condition: record start, parse tokens until {, record end
-while_cond_start = token_pos;
-cond = parse_condition();   // parses tokens, advancing token_pos
-while_cond_end = token_pos;
-expect(TOK_LBRACE);
-
-// Parse body: record start, skip balanced braces, record end
-while_body_start = token_pos;
-skip_balanced_block();
-while_body_end = token_pos;
-
-// Loop: re-execute condition + body
-while (1) {
-    Token saved = set_token_pos(while_cond_start);
-    Value c = parse_condition();
-    set_token_pos(saved);
-    if (!is_truthy(c)) break;
-    
-    saved = set_token_pos(while_body_start);
-    execute_block();
-    set_token_pos(saved);
-}
-```
-
-Function bodies work the same way — store token positions for the body, parse+execute on call.
-
----
-
-## 6. Function Call
-
-```c
-Value call_function(const char *name, Value *args, int argc) {
-    Function *f = func_table_lookup(name);
-    if (!f) error("undefined function '%s'", name);
-    
-    // Check built-ins first
-    if (is_builtin(name)) return call_builtin(name, args, argc);
-    
-    // Create new scope
-    Scope *scope = scope_new();
-    
-    // Bind parameters
-    for (int i = 0; i < f->arity; i++) {
-        Value v = (i < argc) ? args[i] : val_empty_array();
-        scope_set(scope, f->params[i], v);  // v is already retained by caller
-    }
-    
-    // Execute body
-    Value result = execute_tokens(f->body_start, f->body_end, scope);
-    
-    scope_free(scope);
-    return result;
-}
-```
-
----
-
-## 7. Built-in Functions
-
-```c
-Value call_builtin(const char *name, Value *args, int argc) {
-    if (!strcmp(name, "print")) {
-        if (argc < 1) error("print requires 1 argument");
-        print_value(args[0]);
-        return val_empty_array();
-    }
-    if (!strcmp(name, "input")) {
-        char buf[1024];
-        if (!fgets(buf, sizeof(buf), stdin)) return val_empty_array();
-        int len = strlen(buf);
-        if (len > 0 && buf[len-1] == '\n') len--;   // strip newline
-        // Build byte array
-        ArrayData *d = array_alloc(len);
-        d->len = len;
-        for (int i = 0; i < len; i++)
-            d->items[i] = val_num((unsigned char)buf[i]);
-        return (Value){ .type = VAL_ARR, .as.data = d };
-    }
-    error("unknown built-in '%s'", name);
-}
-```
-
-### print_value
-
-```c
-void print_value(Value v) {
-    if (v.type == VAL_NUM) {
-        if (v.as.num == (double)(int64_t)v.as.num)
-            printf("%lld", (int64_t)v.as.num);    // no .0 for integers
-        else
-            printf("%g", v.as.num);
-    } else if (v.type == VAL_ARR) {
-        // Check if all elements are printable ASCII
-        int all_printable = 1;
-        for (int i = 0; i < v.as.data->len; i++) {
-            if (v.as.data->items[i].type != VAL_NUM) { all_printable = 0; break; }
-            int c = (int)v.as.data->items[i].as.num;
-            if (c < 32 && c != '\n' && c != '\t' && c != '\r') { all_printable = 0; break; }
-            if (c > 126) { all_printable = 0; break; }
-        }
-        
-        if (all_printable) {
-            for (int i = 0; i < v.as.data->len; i++)
-                putchar((int)v.as.data->items[i].as.num);
-        } else {
-            putchar('[');
-            for (int i = 0; i < v.as.data->len; i++) {
-                if (i > 0) printf(", ");
-                print_value(v.as.data->items[i]);
+            case OC_JZ: {
+                Value v = istk[isp--];
+                if (!truthy(v)) { ip = ins->a; continue; }
+                break;
             }
-            putchar(']');
+            case OC_JMP: { ip = ins->a; continue; }
+            case OC_RET: rv = istk[isp--]; rf = 1; break;
+            case OC_END: return;
+            // ...
         }
+        ip++;
     }
 }
 ```
 
----
+- `istk[4096]`: Value stack with `isp` pointer
+- `cs`: current scope (dynamic, name-based lookup via sset/sget)
+- `rf`/`rv`: return flag and value
+- Jumps use `continue` to skip the `ip++` at the bottom of the while loop
+- Stack values are saved/restored around function calls to prevent callee
+  overwrites (§5)
 
-## 8. Main / REPL
+### Function calls
 
 ```c
-int main(int argc, char **argv) {
-    if (argc >= 2) {
-        // Run file
-        char *src = read_file(argv[1]);
-        lex_init(src);
-        execute_program();
-        free(src);
-    } else {
-        // REPL
-        printf("TinyLang v0.1\n");
-        char line[4096];
-        while (1) {
-            printf("> ");
-            if (!fgets(line, sizeof(line), stdin)) break;
-            lex_init(line);
-            execute_program();
-        }
-    }
-    return 0;
+case OC_CALL: {
+    int fi = ins->a, ac = ins->b;
+    Fn *f = &fs[fi];
+    Value args[64];
+    for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
+    int saved_isp = isp;
+    /* save caller's stack below saved_isp */
+    Value saved[64];
+    for (int j = 0; j <= saved_isp; j++) saved[j] = istk[j];
+    Scp *saved_cs = cs; cs = snew();
+    int saved_cur_fi = cur_fi; cur_fi = fi;
+    for (int j = 0; j < f->a; j++)
+        sset(cs, f->p[j], (j < ac) ? args[j] : vempty());
+    int saved_rf = rf; rf = 0; isp = -1;
+    exec(f->code);
+    Value result = rf ? rv : vempty();  // no return → vempty()
+    sfree(cs); cs = saved_cs; cur_fi = saved_cur_fi;
+    rf = saved_rf; isp = saved_isp;
+    for (int j = 0; j <= saved_isp; j++) istk[j] = saved[j];  // restore
+    istk[++isp] = result;
+    break;
 }
 ```
 
-`execute_program()` loops calling `parse_statement()` until `TOK_EOF`, maintaining the global scope.
-
----
-
-## 9. Error Handling
+### Tail Call Optimization (TCO)
 
 ```c
-void error(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    fprintf(stderr, "error: ");
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, " at line %d\n", current_line);
-    va_end(args);
-    exit(1);
+case OC_TCO: {
+    int ac = ins->a;
+    Fn *f = &fs[cur_fi];
+    Value args[64];
+    for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
+    isp = -1; rf = 0;
+    for (int j = 0; j < f->a; j++)
+        sset(cs, f->p[j], (j < ac) ? args[j] : vempty());
+    ip = 0; continue;  // restart function body
 }
 ```
 
+Instead of recursive C calls, TCO rebinds parameters in the current scope and
+resets the instruction pointer to 0. No C stack growth.
+
 ---
 
-## 10. Line Count Estimate
+## 5. Key Implementation Details
+
+### Stack save/restore around calls
+
+The VM uses a single global `istk` array. When a function call is made, the
+callee's `exec` pushes/pops on the same array, potentially overwriting the
+caller's stack values below `saved_isp`. To prevent this, the caller saves
+all values at indices `0..saved_isp` before calling `exec` and restores them
+after. The callee starts with `isp = -1`.
+
+### `return` vs implicit function exit
+
+- Explicit `return expr`: compiles as `[expr] OC_RET`. OC_RET pops the
+  expression result, stores it in `rv`, and sets `rf = 1`.
+- No return: the function body ends with `OC_END`. `rf` stays `0`, and
+  `OC_CALL` returns `vempty()` (nil).
+
+### `assert()` implementation
+
+The assert built-in compiles its argument expression into a separate `Code`
+sub-block. At runtime, `OC_ASSERT` sets up `setjmp`/`longjmp` around
+`exec(sub)`. If the sub-expression triggers `die()`, the error is caught,
+and the error message string is pushed as the result.
+
+### Array mutation (COW)
+
+Array lvalue assignment (`arr[i] = val`, `matrix[i][j] = val`) is handled by
+`OC_LVALS`. The instruction stores the root variable name and the number of
+index expressions. At runtime, it walks the chain:
+
+1. Start with root variable slot
+2. For each index: `amake_uniq(slot)` (COW if shared), then
+   `slot = &slot->as.arr->items[idx]`
+3. `vassign(slot, val)` — write the value into the final (private) slot
+
+### Include handling
+
+`include "path"` is handled at compile time. The compiler saves its token
+state, lexes the included file, compiles its statements into the current
+`Code`, then restores the previous token state. This is recursive — included
+files can themselves include other files.
+
+---
+
+## 6. Line Count Estimate
 
 | Component | Lines |
 |-----------|-------|
 | Value + ArrayData + refcount helpers | ~60 |
-| Lexer (tokenizer + semicolon inference) | ~150 |
-| Parser — primary expressions | ~80 |
-| Parser — binary ops + index chain | ~80 |
-| Parser — statements (if, while, function, return) | ~120 |
-| Parser — lvalue/assignment | ~60 |
-| Parser — block + program | ~40 |
+| Lexer | ~150 |
+| Compiler — primaries + expressions | ~100 |
+| Compiler — statements (if, while, assign) | ~120 |
+| Compiler — functions, return, blocks | ~80 |
+| Compiler — include, program | ~40 |
 | Scope + function table | ~80 |
-| Built-in functions + print_value | ~100 |
+| VM — exec loop, all opcodes | ~200 |
+| Built-ins (print, input, assert) | ~60 |
 | Main / REPL | ~40 |
 | Error handling | ~20 |
-| **Total** | **~830** |
+| **Total** | **~950** |
 
-Well under 1000 lines.
+Under 1000 lines.
 
 ---
 
-## 11. Implementation Order
+## 7. Implementation Order
 
-1. `Value` struct + `ArrayData` + retain/release/COW — test with ad-hoc calls
-2. Lexer — test by printing token stream
-3. Scope + function table — test with hardcoded values
-4. Expression parser (numbers, identifiers, binary ops, unary) — test eval
-5. Array expressions (literals, index, multi-index) — test creation + access
-6. Statements (assignment, if, while, blocks) — test control flow
-7. Functions (definition + call, return) — test recursion
-8. Built-in functions (print, input) + `#` array-length operator — test I/O
-9. Main/REPL — wire everything together
+1. `Value` + `Arr` + retain/release/COW
+2. Lexer
+3. Scope + function table
+4. Compiler: expressions (numbers, identifiers, binary ops, unary)
+5. Compiler: array expressions (literals, index, multi-index)
+6. Compiler: statements (assignment, if, while, blocks)
+7. Compiler: function definitions + return
+8. VM: exec loop with basic opcodes
+9. Built-ins (print, input) + `#` operator
+10. OC_ASSERT with error catching
+11. Main/REPL, compilation to bytecode, execution

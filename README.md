@@ -1,8 +1,8 @@
 # TinyLang
 
-A tiny, statically-typed programming language implemented in ~560 lines of C. No AST, no
-GC, no closures, no pointers — just a single-pass tree-walk interpreter with
-refcount+COW and tail call optimization.
+A tiny, statically-typed programming language implemented in ~950 lines of C.
+Single-pass compiler to bytecode with a stack-based VM, refcount+COW, and tail
+call optimization. No AST, no GC, no closures, no pointers.
 
 ## Features
 
@@ -17,7 +17,7 @@ refcount+COW and tail call optimization.
 - **Multi-index:** `arr[i, j, k]` desugars to `arr[i][j][k]`
 - **Strings:** Syntactic sugar for byte arrays, escape sequences supported
 - **Operators:** `+ - * / %`, `& | ^ @` (shift), `= != < > <= >=`, `!`, `#` (array length prefix)
-- **Built-ins:** `print()`, `input()`
+- **Built-ins:** `print()`, `input()`, `assert()`
 
 ## Quick start
 
@@ -54,12 +54,6 @@ Errors kill the REPL process — `repl.sh` wraps it in a restart loop.
 ./run_tests.sh      # runs all happy-path + error tests
 ```
 
-Tests live in `tests/`:
-- `test_*.tl` — happy-path tests covering all features
-- `e_*.tl` — individual error tests (each triggers one error condition)
-- `run_errors.sh` — error test runner
-- `run.sh` — alias for run_tests.sh
-
 All tests must pass before committing.
 
 ## Example
@@ -92,29 +86,16 @@ nodes[0][0] = 42
 print(nodes[0][0])                  // 42
 ```
 
-## Features
+## Implementation
 
-### File includes
-
-```
-include "path/to/file.tl"
-```
-
-The `include "path"` directive splices the contents of another source file into the current file before lexing. Paths are resolved relative to the directory of the including file (or the current working directory for bare filenames). Nested includes work — included files can themselves include other files.
-
-```
-// lib.tl
-function greet(name) {
-    print("hello, ")
-    print(name)
-}
-
-// main.tl
-include "lib.tl"
-greet("world")
-```
-
-`include` is a language keyword. When encountered during execution, the referenced file is read, lexed, and executed inline before continuing. Paths are relative to the including file's directory. The interpreter saves and restores its token stream around the recursive call, so functions defined in included files work transparently.
+- ~950 lines of C, single file
+- No external dependencies (ISO C + math.h)
+- Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
+- Stack-based VM: 19 opcodes, `Value istk[4096]` stack
+- Deep copy on assignment, refcount+COW for arrays
+- Tail call optimization: parameter rebinding + ip reset (no C stack growth)
+- `assert()` error catching via `setjmp`/`longjmp`
+- Comprehensive test suite (34 tests: 13 happy-path + 21 error)
 
 ## Grammar
 
@@ -145,14 +126,4 @@ index_list    := expr ("," expr)*
 ## Design
 
 - [`DESIGN.md`](DESIGN.md) — Language design, types, semantics
-- [`IMPLEMENTATION.md`](IMPLEMENTATION.md) — C implementation details, data structures
-
-## Implementation
-
-- ~570 lines of C, single file
-- No external dependencies (ISO C + math.h)
-- Pre-lexed token array, single-pass recursive descent parser
-- Deep copy on assignment, refcount+COW for arrays
-- Token-stream replay for while/function bodies
-- TCO via parameter rebinding in tail position
-- Comprehensive test suite (24 tests: 4 happy-path + 20 error)
+- [`IMPLEMENTATION.md`](IMPLEMENTATION.md) — C implementation details, bytecode VM
