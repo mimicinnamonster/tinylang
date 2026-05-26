@@ -184,6 +184,8 @@ typedef enum {
     OC_CFUNC,    // call registered C function (FFI)
     OC_PUSH,     // x = x + [elem]: pop elem, append to var array in-place
     OC_TYPE,     // built-in type(): pop, inspect nkind/arrkind, push result
+    OC_SLICE,    // pop arr, start, stop, step; push new sliced array
+    OC_SLICE_ASSIGN, // pop start, stop, step; slice var[name] in-place or copy
     OC_END,      // terminator
 } OC;
 ```
@@ -441,6 +443,31 @@ concatenation copy. The `x = x + [elem]` pattern runs in O(1) per element
 instead of O(len(x)). Value semantics are preserved because the optimization
 only fires when the destination variable matches the source — `y = x + [1]`
 falls through to the general `+` path.
+
+### Slice compilation (`OC_SLICE` and `OC_SLICE_ASSIGN`)
+
+The compiler detects Python-style slice syntax (`arr[start:stop]` or
+`arr[start:stop:step]`) by scanning the tokens inside `[...]` for a `:` at
+depth 0. The scan checks for stop conditions (`]` or `,` at depth 0) before
+decrmenting depth, preventing false positives from a `:` in a later statement.
+
+When a slice is detected, the compiler emits:
+1. The array reference (via `OC_VAR`)
+2. The `start`, `stop`, and `step` expressions (or defaults: `OC_NIL` for
+   omitted bounds, `OC_NUM 1` for omitted step)
+3. `OC_SLICE` — pops all four operands, pushes a new array with the sliced
+   elements
+
+**Slice assignment optimization:** The compiler also detects `x = x[slice]`
+(same variable on both sides) before compiling the rvalue. Instead of
+`OC_VAR x + slice operands + OC_SLICE + OC_STORE`, it emits the slice
+operands directly followed by `OC_SLICE_ASSIGN name`. At runtime,
+`OC_SLICE_ASSIGN` checks refcount:
+- If `refcount == 1 && step == 1`: modifies the array in-place (memmove
+  elements, adjust `len`) — O(1) for truncation, O(N) for shift but no
+  allocation.
+- Otherwise: allocates a new array (same as `OC_SLICE`) and assigns it to
+  the variable via `vassign`, preserving value semantics.
 
 ### Refcount leak fixes
 

@@ -41,6 +41,7 @@ typedef enum {
     T_AM, T_PI, T_CA, T_AT, T_BN,
     T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
     T_HASH,
+    T_COLON,
     T_NL, T_IF, T_ELIF, T_ELSE, T_WH, T_FN, T_RT, T_INCLUDE,
 } TK;
 
@@ -56,6 +57,7 @@ typedef enum {
     OC_JZ, OC_JMP, OC_RET, OC_POP,
     OC_LVALS,
     OC_PRINT, OC_INPUT, OC_ASSERT, OC_CFUNC, OC_PUSH, OC_TYPE,
+    OC_SLICE, OC_SLICE_ASSIGN,
     OC_END,
 } OC;
 
@@ -601,6 +603,7 @@ void lex(const char *s) {
             case '&': tk.t=T_AM; break; case '|': tk.t=T_PI; break;
             case '^': tk.t=T_CA; break; case '@': tk.t=T_AT; break;
             case '#': tk.t=T_HASH; break;
+            case ':': tk.t=T_COLON; break;
             case '!': if (pc()=='='){ac();tk.t=T_NE;}else tk.t=T_BN; break;
             case '=': tk.t=T_EQ; break;
             case '<': if (pc()=='='){ac();tk.t=T_LE;}else tk.t=T_LT; break;
@@ -696,8 +699,50 @@ void comp_prim(Code *c) {
                 emit(c, (Instr){OC_VAR, 0, 0, .name = nm});
                 while (ts[tp].t == T_LB) {
                     tp++;
-                    do { comp_expr(c); emit(c, (Instr){OC_INDEX, 0, 0}); } while (ts[tp].t == T_CM && (tp++, 1));
-                    if (ts[tp].t != T_RB) die("expected ]"); tp++;
+                    /* Check if this is a slice [start:stop:step] */
+                    int is_slice = 0;
+                    if (ts[tp].t == T_COLON) {
+                        is_slice = 1;
+                    } else if (ts[tp].t != T_RB) {
+                        int depth = 0;
+                        for (int p = tp; p < tc; p++) {
+                            if (depth == 0 && (ts[p].t == T_RB || ts[p].t == T_CM)) break;
+                            if (depth == 0 && ts[p].t == T_COLON) { is_slice = 1; break; }
+                            if (ts[p].t == T_LB || ts[p].t == T_LP) depth++;
+                            if (ts[p].t == T_RB || ts[p].t == T_RP) depth--;
+                        }
+                    }
+                    if (is_slice) {
+                        /* start */
+                        if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
+                            comp_expr(c);
+                        } else {
+                            emit(c, (Instr){OC_NIL, 0, 0});
+                        }
+                        if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
+                        /* stop */
+                        if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
+                            comp_expr(c);
+                        } else {
+                            emit(c, (Instr){OC_NIL, 0, 0});
+                        }
+                        /* step */
+                        if (ts[tp].t == T_COLON) {
+                            tp++;
+                            if (ts[tp].t != T_RB) {
+                                comp_expr(c);
+                            } else {
+                                emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+                            }
+                        } else {
+                            emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+                        }
+                        if (ts[tp].t != T_RB) die("expected ]"); tp++;
+                        emit(c, (Instr){OC_SLICE, 0, 0});
+                    } else {
+                        do { comp_expr(c); emit(c, (Instr){OC_INDEX, 0, 0}); } while (ts[tp].t == T_CM && (tp++, 1));
+                        if (ts[tp].t != T_RB) die("expected ]"); tp++;
+                    }
                 }
             }
             break;
@@ -985,6 +1030,25 @@ void comp_stmt(Code *c) {
                         }
                     }
                 }
+                int is_slice_opt = 0;
+                if (!is_push && idx_count == 0) {
+                    int pn = tp;
+                    while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                    if (ts[pn].t == T_ID && !strcmp(ts[pn].s, nm)) {
+                        pn++;
+                        while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                        if (ts[pn].t == T_LB) {
+                            pn++;
+                            int depth = 0;
+                            for (int p = pn; p < tc; p++) {
+                                if (depth == 0 && (ts[p].t == T_RB || ts[p].t == T_CM)) break;
+                                if (depth == 0 && ts[p].t == T_COLON) { is_slice_opt = 1; break; }
+                                if (ts[p].t == T_LB || ts[p].t == T_LP) depth++;
+                                if (ts[p].t == T_RB || ts[p].t == T_RP) depth--;
+                            }
+                        }
+                    }
+                }
                 if (is_push) {
                     tp++; tp++; tp++;
                     comp_expr(c);
@@ -992,6 +1056,36 @@ void comp_stmt(Code *c) {
                     if (ts[tp].t != T_RB) die("expected ]");
                     tp++;
                     emit(c, (Instr){OC_PUSH, 0, 0, .name = nm});
+                } else if (is_slice_opt) {
+                    /* x = x[start:stop:step] — emit OC_SLICE_ASSIGN for in-place optimization */
+                    tp++; while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
+                    if (ts[tp].t != T_LB) die("expected ["); tp++;
+                    /* start */
+                    if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
+                        comp_expr(c);
+                    } else {
+                        emit(c, (Instr){OC_NIL, 0, 0});
+                    }
+                    if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
+                    /* stop */
+                    if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
+                        comp_expr(c);
+                    } else {
+                        emit(c, (Instr){OC_NIL, 0, 0});
+                    }
+                    /* step */
+                    if (ts[tp].t == T_COLON) {
+                        tp++;
+                        if (ts[tp].t != T_RB) {
+                            comp_expr(c);
+                        } else {
+                            emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+                        }
+                    } else {
+                        emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+                    }
+                    if (ts[tp].t != T_RB) die("expected ]"); tp++;
+                    emit(c, (Instr){OC_SLICE_ASSIGN, 0, 0, .name = strdup(nm)});
                 } else {
                     comp_expr(c);
                     if (idx_count > 0) emit(c, (Instr){OC_LVALS, idx_count, 0, .name = nm});
@@ -1254,6 +1348,206 @@ void exec(Code *c) {
                 vassign(&slot->as.arr->as.val[len], elem);
                 slot->as.arr->len = len + 1;
                 if (elem.type == VAL_ARR) arelease(elem.as.arr);
+                break;
+            }
+
+            case OC_SLICE: {
+                Value step_v = istk[isp--];
+                Value stop_v = istk[isp--];
+                Value start_v = istk[isp--];
+                Value arr_v = istk[isp--];
+                if (arr_v.type != VAL_ARR) die("slice requires array");
+                Arr *src = arr_v.as.arr;
+                int len = src ? src->len : 0;
+                int step = (int)val_num(step_v);
+                if (step == 0) die("slice step cannot be 0");
+                int start, stop;
+                if (start_v.type == VAL_ARR && !start_v.as.arr)
+                    start = (step > 0) ? 0 : len - 1;
+                else {
+                    start = (int)val_num(start_v);
+                    if (start < 0) start += len;
+                    if (step > 0) { if (start < 0) start = 0; if (start > len) start = len; }
+                    else { if (start < 0) start = 0; if (start >= len) start = len - 1; }
+                }
+                if (stop_v.type == VAL_ARR && !stop_v.as.arr)
+                    stop = (step > 0) ? len : -1;
+                else {
+                    stop = (int)val_num(stop_v);
+                    if (stop < 0) stop += len;
+                    if (step > 0) { if (stop < 0) stop = 0; if (stop > len) stop = len; }
+                    else { if (stop < -1) stop = -1; if (stop > len) stop = len; }
+                }
+                int count;
+                if (step > 0) {
+                    if (start >= stop) count = 0;
+                    else count = (stop - start + step - 1) / step;
+                } else {
+                    if (start <= stop) count = 0;
+                    else count = (start - stop + (-step) - 1) / (-step);
+                }
+                arelease(arr_v.as.arr);
+                if (count == 0) { istk[++isp] = nilv(); break; }
+                ArrKind k = src ? src->kind : ARR_VAL;
+                Arr *result = aalloc(count, k);
+                result->len = count;
+                if (step == 1 && k == ARR_VAL) {
+                    for (int i = 0; i < count; i++) {
+                        result->as.val[i] = src->as.val[start + i];
+                        if (result->as.val[i].type == VAL_ARR) aretain(result->as.val[i].as.arr);
+                    }
+                } else if (step == 1 && k != ARR_VAL) {
+                    int esize = 0;
+                    switch (k) {
+                        case ARR_U8:  case ARR_I8:  esize = 1; break;
+                        case ARR_U16: case ARR_I16: esize = 2; break;
+                        case ARR_U32: case ARR_I32: case ARR_F32: esize = 4; break;
+                        case ARR_U64: case ARR_I64: case ARR_F64: esize = 8; break;
+                        default: break;
+                    }
+                    if (esize) memcpy(result->as.i8, src->as.i8 + start * esize, count * esize);
+                } else {
+                    int idx = 0;
+                    for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
+                        Value elem = arr_item(src, i);
+                        if (k == ARR_VAL) {
+                            vassign(&result->as.val[idx], elem);
+                        } else {
+                            double d = val_num(elem);
+                            switch (k) {
+                                case ARR_U8:  result->as.u8[idx]  = (uint8_t)d; break;
+                                case ARR_U16: result->as.u16[idx] = (uint16_t)d; break;
+                                case ARR_U32: result->as.u32[idx] = (uint32_t)d; break;
+                                case ARR_U64: result->as.u64[idx] = (uint64_t)d; break;
+                                case ARR_I8:  result->as.i8[idx]  = (int8_t)d; break;
+                                case ARR_I16: result->as.i16[idx] = (int16_t)d; break;
+                                case ARR_I32: result->as.i32[idx] = (int32_t)d; break;
+                                case ARR_I64: result->as.i64[idx] = (int64_t)d; break;
+                                case ARR_F32: result->as.f32[idx] = (float)d; break;
+                                case ARR_F64: result->as.f64[idx] = d; break;
+                                default: break;
+                            }
+                        }
+                        idx++;
+                    }
+                }
+                istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = result };
+                break;
+            }
+
+            case OC_SLICE_ASSIGN: {
+                Value step_v = istk[isp--];
+                Value stop_v = istk[isp--];
+                Value start_v = istk[isp--];
+                char *name = ins->name;
+                int si = -1;
+                for (int i = 0; i < cs->c; i++) if (!strcmp(cs->n[i], name)) { si = i; break; }
+                if (si < 0) die("undefined '%s'", name);
+                Value *slot = &cs->v[si];
+                if (slot->type != VAL_ARR) die("cannot slice non-array");
+                Arr *src = slot->as.arr;
+                if (!src) break;
+                int len = src->len;
+                int step = (int)val_num(step_v);
+                if (step == 0) die("slice step cannot be 0");
+                int start, stop;
+                if (start_v.type == VAL_ARR && !start_v.as.arr)
+                    start = (step > 0) ? 0 : len - 1;
+                else {
+                    start = (int)val_num(start_v);
+                    if (start < 0) start += len;
+                    if (step > 0) { if (start < 0) start = 0; if (start > len) start = len; }
+                    else { if (start < 0) start = 0; if (start >= len) start = len - 1; }
+                }
+                if (stop_v.type == VAL_ARR && !stop_v.as.arr)
+                    stop = (step > 0) ? len : -1;
+                else {
+                    stop = (int)val_num(stop_v);
+                    if (stop < 0) stop += len;
+                    if (step > 0) { if (stop < 0) stop = 0; if (stop > len) stop = len; }
+                    else { if (stop < -1) stop = -1; if (stop > len) stop = len; }
+                }
+                int count;
+                if (step > 0) {
+                    if (start >= stop) count = 0;
+                    else count = (stop - start + step - 1) / step;
+                } else {
+                    if (start <= stop) count = 0;
+                    else count = (start - stop + (-step) - 1) / (-step);
+                }
+                if (count == 0) {
+                    arelease(slot->as.arr);
+                    slot->as.arr = NULL;
+                    slot->type = VAL_ARR;
+                    break;
+                }
+                if (src->refcount == 1 && step == 1) {
+                    ArrKind k = src->kind;
+                    if (k == ARR_VAL) {
+                        for (int i = 0; i < start; i++)
+                            if (src->as.val[i].type == VAL_ARR) arelease(src->as.val[i].as.arr);
+                        for (int i = stop; i < len; i++)
+                            if (src->as.val[i].type == VAL_ARR) arelease(src->as.val[i].as.arr);
+                        if (start > 0) memmove(src->as.val, src->as.val + start, count * sizeof(Value));
+                        src->len = count;
+                    } else {
+                        int esize = 0;
+                        switch (k) {
+                            case ARR_U8:  case ARR_I8:  esize = 1; break;
+                            case ARR_U16: case ARR_I16: esize = 2; break;
+                            case ARR_U32: case ARR_I32: case ARR_F32: esize = 4; break;
+                            case ARR_U64: case ARR_I64: case ARR_F64: esize = 8; break;
+                            default: break;
+                        }
+                        if (start > 0) memmove(src->as.i8, src->as.i8 + start * esize, count * esize);
+                        src->len = count;
+                    }
+                } else {
+                    ArrKind k = src->kind;
+                    Arr *result = aalloc(count, k);
+                    result->len = count;
+                    if (step == 1 && k == ARR_VAL) {
+                        for (int i = 0; i < count; i++) {
+                            result->as.val[i] = src->as.val[start + i];
+                            if (result->as.val[i].type == VAL_ARR) aretain(result->as.val[i].as.arr);
+                        }
+                    } else if (step == 1 && k != ARR_VAL) {
+                        int esize = 0;
+                        switch (k) {
+                            case ARR_U8:  case ARR_I8:  esize = 1; break;
+                            case ARR_U16: case ARR_I16: esize = 2; break;
+                            case ARR_U32: case ARR_I32: case ARR_F32: esize = 4; break;
+                            case ARR_U64: case ARR_I64: case ARR_F64: esize = 8; break;
+                            default: break;
+                        }
+                        if (esize) memcpy(result->as.i8, src->as.i8 + start * esize, count * esize);
+                    } else {
+                        int idx = 0;
+                        for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
+                            Value elem = arr_item(src, i);
+                            if (k == ARR_VAL) {
+                                vassign(&result->as.val[idx], elem);
+                            } else {
+                                double d = val_num(elem);
+                                switch (k) {
+                                    case ARR_U8:  result->as.u8[idx]  = (uint8_t)d; break;
+                                    case ARR_U16: result->as.u16[idx] = (uint16_t)d; break;
+                                    case ARR_U32: result->as.u32[idx] = (uint32_t)d; break;
+                                    case ARR_U64: result->as.u64[idx] = (uint64_t)d; break;
+                                    case ARR_I8:  result->as.i8[idx]  = (int8_t)d; break;
+                                    case ARR_I16: result->as.i16[idx] = (int16_t)d; break;
+                                    case ARR_I32: result->as.i32[idx] = (int32_t)d; break;
+                                    case ARR_I64: result->as.i64[idx] = (int64_t)d; break;
+                                    case ARR_F32: result->as.f32[idx] = (float)d; break;
+                                    case ARR_F64: result->as.f64[idx] = d; break;
+                                    default: break;
+                                }
+                            }
+                            idx++;
+                        }
+                    }
+                    vassign(slot, (Value){ .type = VAL_ARR, .as.arr = result });
+                }
                 break;
             }
 

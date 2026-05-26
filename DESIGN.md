@@ -529,6 +529,63 @@ while ptr != -1 {
 }
 ```
 
+### Slice syntax: `arr[i:j]`, `arr[i:j:k]`
+
+Colons inside `[]` denote a **slice** — creating a new array from a
+contiguous or strided range. The syntax follows Python semantics:
+
+| Expression | Meaning |
+|------------|---------|
+| `arr[start:stop]` | Elements from `start` (inclusive) to `stop` (exclusive) |
+| `arr[start:stop:step` | Elements from `start` to `stop` with step `step` |
+| `arr[:stop]` | From beginning to `stop` |
+| `arr[start:]` | From `start` to end |
+| `arr[:]` | Full copy of array |
+| `arr[::step]` | Full array with step |
+| `arr[::-1]` | Reverse array |
+
+**Slice rules:**
+- **Negative indices** count from the end: `-1` is the last element, `-2` second-to-last, etc.
+- **Omitted bounds** default to `0` (start) and `len(arr)` (stop) for positive step, or `len-1` (start) and `-1` (stop) for negative step.
+- **Out-of-bounds** values are clamped to the array bounds — never an error.
+- **Step must be non-zero** — a zero step halts with a runtime error.
+- The result is a **new array** with the same backing kind as the source (compact kinds preserved).
+
+**Disambiguation with multi-index:**
+A `:` at the top level inside `[...]` triggers slice mode. Commas still denote
+multi-index chains. They are mutually exclusive per bracket group:
+
+```
+arr[1:5]       // slice: elements 1 through 4
+arr[1, 2]      // multi-index: arr[1][2]
+arr[1:5, 2]    // error: `,` and `:` conflict in same bracket group
+```
+
+### Slice assignment optimization: `x = x[start:stop:step]`
+
+Similar to the push optimization (`x = x + [elem]`), the compiler detects the
+pattern `x = x[slice]` (same variable on both sides) and emits the specialised
+`OC_SLICE_ASSIGN` opcode instead of `OC_SLICE + OC_STORE`. This enables
+two optimisations:
+
+1. **Exclusive ownership + step=1:** The array is modified in-place. Truncation
+   (`x = x[:n]`) is O(1) — it just adjusts `len`. Shift (`x = x[n:]` or
+   `x = x[n:m]`) uses `memmove` to shift elements, avoiding allocation.
+2. **Shared or step≠1:** Falls through to a copy — the result is a new array,
+   assigned via `vassign`, preserving value semantics.
+
+This makes heavily slice-oriented code efficient without sacrificing
+correctness:
+
+```
+arr = build_large_array()    // some big list
+arr = arr[:len(arr)/2]       // O(1) — just truncate
+y = arr                      // share
+arr = arr[:10]               // O(1) in-place (exclusive after y was created? No,
+                              // y shares → copy path triggered)
+print(#y)                    // still len/2 — y's copy unaffected
+```
+
 ### Compact array backing stores
 
 When an array literal contains only numbers of a uniform type, the VM
