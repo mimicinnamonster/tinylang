@@ -36,9 +36,9 @@ run_test() {
         e_undef_fn)       expected_msg="undefined function";;
         e_index_nonarr)   expected_msg="cannot index into non-array";;
         e_index_type)     expected_msg="unterminated string";;
-        e_chain_ops)      expected_msg="chaining ops needs";;
         e_minus_nonnum)   expected_msg="minus on non-number";;
         e_hash_nonarr)    expected_msg="# requires array";;
+        e_hash_index)      expected_msg="# requires array";;
         e_print_noargs)   expected_msg="print needs 1 arg";;
         e_fn_redef)       expected_msg="already defined";;
         e_include_missing) expected_msg="cannot include";;

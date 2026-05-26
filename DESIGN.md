@@ -363,6 +363,23 @@ concatenation path, preserving value semantics.
 - Array equality is **deep** — element-by-element recursive comparison. `[] = []` returns `1`.
 - Mixed-type comparison (`5 = "hello"`) returns `[]` (not equal), not an error.
 
+### Logical (binary, infix, short-circuit)
+
+`&&`  `||`
+
+- `&&`: evaluates left operand first. If falsy (`[]`), returns it without evaluating the right. If truthy, evaluates and returns the right operand.
+- `||`: evaluates left operand first. If truthy (not `[]`), returns it without evaluating the right. If falsy, evaluates and returns the right operand.
+- Both operators **short-circuit** — the right operand is only evaluated when necessary.
+
+| Expression | Result | Why |
+|------------|--------|-----|
+| `[] && x` | `[]` | Short-circuit: left is falsy, right never evaluated |
+| `1 && []` | `[]` | Left truthy, eval right → `[]` |
+| `1 && 2` | `2` | Both truthy, result is second operand |
+| `1 \|\| x` | `1` | Short-circuit: left is truthy, right never evaluated |
+| `[] \|\| 2` | `2` | Left falsy, eval right → `2` |
+| `[] \|\| []` | `[]` | Both falsy, result is second operand |
+
 ### Unary
 
 - `!`  negation (prefix): `[]` → `1`, anything else → `[]`
@@ -378,6 +395,7 @@ concatenation path, preserving value semantics.
 | `print(x = 5)` inside `()` | **comparison** |
 | `[x = 5]` inside `[]` | **comparison** |
 | `y = x = 5` right-side `=` | **comparison** (result assigned to `y`) |
+| `x = 5 && y = 6` both sides | **comparison** (precedence: `=` above `&&`) |
 
 ### Modulo / Remainder
 
@@ -388,27 +406,39 @@ concatenation path, preserving value semantics.
 
 ---
 
-## 7. Binary Ops and Parens — Unified Rule
+## 7. Operator Precedence
 
-**A single binary operation `expr op expr` is valid at any expression level without `()`.**
-**Two or more binary ops in sequence require `()` for disambiguation.**
+Binary operators chain with standard precedence (highest to lowest, all left-associative):
+
+| Level | Operators | Category |
+|-------|-----------|----------|
+| 9 | `*` `/` `%` | Multiplicative |
+| 8 | `+` `-` | Additive |
+| 7 | `@` | Shift |
+| 6 | `<` `>` `<=` `>=` | Relational |
+| 5 | `=` `!=` | Equality |
+| 4 | `&` | Bitwise AND |
+| 3 | `^` | Bitwise XOR |
+| 2 | `\|` | Bitwise OR |
+| 1 | `&&` | Logical AND |
+| 0 | `\|\|` | Logical OR |
+
+Unary operators (`!` `-` `#`) and array indexing `[]` bind **tighter than any binary operator**.
+
+### Examples
 
 ```
-x = x + y           // valid: one binary op
-x = x + y * z       // ERROR: two binary ops in sequence
-x = (x + y) * z     // valid
-x = x + (y * z)     // valid
+5 + 3 * 2          // 5 + (3 * 2) = 11
+10 - 5 - 2         // (10 - 5) - 2 = 3 (left-assoc)
+(5 + 3) * 2        // 16 (parens override)
+16 @ 2 + 1         // 16 @ (2 + 1) = 128  (+ tighter than @)
+5 + 3 > 2 * 3      // (5+3) > (2*3) = 1
+1 | 2 & 4           // 1 | (2 & 4) = 1  (& tighter than |)
+1 || 0 && []        // 1 || (0 && []) = 1  (&& tighter than ||)
 
-print(x + y)        // valid
-print(x + y * z)    // ERROR
-print(x + (y * z))  // valid
-
-if x + y { }        // valid
-if x + y * z { }    // ERROR
-if x + (y * z) { }  // valid
-
-arr = [x + y]       // valid
-arr = [x + y * z]   // ERROR
+print(5 + 3 * 2)    // 11 — works, precedence handles it
+if x + y > z { }    // works — (x+y) > z
+arr = [x + y * z]   // works — [x + (y*z)]
 ```
 
 ### Gotcha: `y = x = 5` is not chained assignment
@@ -825,8 +855,23 @@ expr_stmt     := expr
 block         := "{" stmt_list "}"
 stmt_list     := (statement newline+)*
 
-expr          := primary_index
-               | primary_index op primary_index       // exactly one binary op
+expr          := logical_or
+
+logical_or    := logical_and ("||" logical_and)*
+logical_and   := bitwise_or ("&&" bitwise_or)*
+bitwise_or    := bitwise_xor ("|" bitwise_xor)*
+bitwise_xor   := bitwise_and ("^" bitwise_and)*
+bitwise_and   := equality ("&" equality)*
+equality      := relational (("=" | "!=") relational)*
+relational    := shift (("<" | ">" | "<=" | ">=") shift)*
+shift         := additive ("@" additive)*
+additive      := multiplicative (("+" | "-") multiplicative)*
+multiplicative := unary (("*" | "/" | "%") unary)*
+
+unary         := primary_index
+               | "!" unary                            // negation
+               | "-" unary                            // unary minus
+               | "#" unary                            // array length
 
 primary       := number_literal
                | identifier
@@ -836,15 +881,8 @@ primary       := number_literal
                | "[" expr ("," expr)* "]"             // array literal
                | identifier "(" args ")"              // function call
                | "(" expr ")"                         // grouping
-               | "!" primary                          // negation
-               | "-" primary                          // unary minus
-               | "#" primary                          // array length
 
 primary_index := primary ("[" index_list "]")*       // any primary followed by indexing or slicing
-
-op            := "+" | "-" | "*" | "/" | "%"
-               | "&" | "|" | "^" | "@"
-               | "=" | "!=" | "<" | ">"
 
 index_list    := expr ("," expr)*                    // comma-separated indices: arr[i,j,k]
                | expr? ":" expr? (":" expr?)?        // slice: arr[i:j] or arr[i:j:k]
@@ -973,7 +1011,7 @@ Properties that make a future vectorizing JIT simpler than typical dynamic langu
 | Fixed variable types | First assignment locks type — no polymorphic guards |
 | Pure functions | No global access — side-effect analysis is trivial |
 | Monomorphic call sites | No first-class functions — every call targets one definition |
-| Shallow expressions | No chaining without `()` — IR is small and local |
+| Shallow expressions | Precedence climbing handles chaining — IR still compact (no intermediate AST) |
 | `[]` = nil | Single concrete sentinel — one null check, cheap |
 | Pre-allocation | `[0] * n` produces a compact `int8_t[]` backing store — known-size flat buffer, exclusive ownership, no type tags per element. JIT sees raw C arrays directly. |
 | No closures | Scope is flat per function — no captured environment |

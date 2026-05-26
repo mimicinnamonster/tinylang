@@ -43,6 +43,7 @@ typedef enum {
     T_HASH,
     T_COLON,
     T_NL, T_IF, T_ELIF, T_ELSE, T_WH, T_FN, T_RT, T_INCLUDE,
+    T_AND, T_OR,
 } TK;
 
 typedef struct { TK t; double n; char *s; int l; } Tok;
@@ -58,6 +59,7 @@ typedef enum {
     OC_LVALS,
     OC_PRINT, OC_INPUT, OC_ASSERT, OC_CFUNC, OC_PUSH, OC_TYPE,
     OC_SLICE, OC_SLICE_ASSIGN,
+    OC_DUP, OC_JNZ,
     OC_END,
 } OC;
 
@@ -639,7 +641,8 @@ void lex(const char *s) {
             case '+': tk.t=T_PL; break; case '-': tk.t=T_MI; break;
             case '*': tk.t=T_ST; break; case '/': tk.t=T_SL; break;
             case '%': tk.t=T_PC; break;
-            case '&': tk.t=T_AM; break; case '|': tk.t=T_PI; break;
+            case '&': if (pc()=='&'){ac();tk.t=T_AND;}else tk.t=T_AM; break;
+            case '|': if (pc()=='|'){ac();tk.t=T_OR;}else tk.t=T_PI; break;
             case '^': tk.t=T_CA; break; case '@': tk.t=T_AT; break;
             case '#': tk.t=T_HASH; break;
             case ':': tk.t=T_COLON; break;
@@ -803,14 +806,55 @@ void comp_prim(Code *c) {
     }
 }
 
-void comp_expr(Code *c) {
-    comp_prim(c);
-    if (ts[tp].t >= T_PL && ts[tp].t <= T_GE) {
-        int op = ts[tp].t; tp++;
-        comp_prim(c);
-        if (ts[tp].t >= T_PL && ts[tp].t <= T_GE) die("chaining ops needs ()");
-        emit(c, (Instr){OC_OP, op, 0});
+static int op_prec(TK t) {
+    switch (t) {
+        case T_ST: case T_SL: case T_PC: return 9;  /* * / % */
+        case T_PL: case T_MI: return 8;              /* + - */
+        case T_AT: return 7;                          /* shift @ */
+        case T_LT: case T_GT: case T_LE: case T_GE: return 6;  /* < > <= >= */
+        case T_EQ: case T_NE: return 5;              /* = != */
+        case T_AM: return 4;                          /* & */
+        case T_CA: return 3;                          /* ^ */
+        case T_PI: return 2;                          /* | */
+        case T_AND: return 1;                         /* && */
+        case T_OR:  return 0;                         /* || */
+        default: return 0;
     }
+}
+
+static int is_binary_op(TK t) {
+    switch (t) {
+        case T_PL: case T_MI: case T_ST: case T_SL: case T_PC:
+        case T_AM: case T_PI: case T_CA: case T_AT:
+        case T_EQ: case T_NE:
+        case T_LT: case T_GT: case T_LE: case T_GE:
+        case T_AND: case T_OR:
+            return 1;
+        default: return 0;
+    }
+}
+
+static void comp_expr_prec(Code *c, int min_prec) {
+    comp_prim(c);
+    while (is_binary_op(ts[tp].t) && op_prec(ts[tp].t) >= min_prec) {
+        int op = ts[tp].t; tp++;
+        if (op == T_AND || op == T_OR) {
+            /* Short-circuit: && and || need conditional evaluation */
+            emit(c, (Instr){ OC_DUP, 0, 0 });
+            int jmp_patch = c->len;
+            emit(c, (Instr){ op == T_AND ? OC_JZ : OC_JNZ, 0, 0 });
+            emit(c, (Instr){ OC_POP, 0, 0 });
+            comp_expr_prec(c, op_prec(op) + 1);
+            c->code[jmp_patch].a = c->len;
+        } else {
+            comp_expr_prec(c, op_prec(op) + 1);
+            emit(c, (Instr){OC_OP, op, 0});
+        }
+    }
+}
+
+void comp_expr(Code *c) {
+    comp_expr_prec(c, 0);
 }
 
 void comp_block(Code *c) {
@@ -1303,10 +1347,21 @@ void exec(Code *c) {
             case OC_RET: { rv = istk[isp--]; rf = 1; break; }
             case OC_POP: { if (isp >= 0) { Value v = istk[isp--]; if (v.type == VAL_ARR) arelease(v.as.arr); } break; }
 
+            case OC_DUP: {
+                if (isp < 0) die("stack underflow");
+                Value v = istk[isp];
+                if (v.type == VAL_ARR) aretain(v.as.arr);
+                istk[++isp] = v; break;
+            }
             case OC_JZ: {
                 Value v = istk[isp--]; int t = truthy(v);
                 if (v.type == VAL_ARR) arelease(v.as.arr);
                 if (!t) { ip = ins->a; continue; } break;
+            }
+            case OC_JNZ: {
+                Value v = istk[isp--]; int t = truthy(v);
+                if (v.type == VAL_ARR) arelease(v.as.arr);
+                if (t) { ip = ins->a; continue; } break;
             }
             case OC_JMP: { ip = ins->a; continue; }
 
