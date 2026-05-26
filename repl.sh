@@ -1,7 +1,7 @@
 #!/bin/bash
-# Persistent REPL wrapper — restarts on error
-DIR="$(cd "$(dirname "$0")" && pwd)"
+DIR="$(dirname "$0")"
 while true; do
     rlwrap "$DIR/tinylang"
+    [ $? -eq 0 ] && break
     echo "(restarting...)"
 done
