@@ -1,6 +1,6 @@
 # TinyLang
 
-A tiny, statically-typed programming language implemented in ~950 lines of C.
+A tiny, statically-typed programming language implemented in ~1000 lines of C.
 Single-pass compiler to bytecode with a stack-based VM, refcount+COW, and tail
 call optimization. No AST, no GC, no closures, no pointers.
 
