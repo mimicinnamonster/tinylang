@@ -28,20 +28,13 @@ cc -Wall -Wextra -o tinylang tinylang.c
 
 ### REPL
 
-Run without arguments for an interactive REPL:
-
 ```sh
-./tinylang
+./tinylang          # bare REPL, no line editing
+rlwrap ./tinylang   # with history and arrow keys (brew install rlwrap)
+./repl.sh           # restarts on error (Ctrl+C to exit)
 ```
 
-For line editing, history, and arrow keys, wrap with `rlwrap`:
-
-```sh
-brew install rlwrap   # if not installed
-rlwrap ./tinylang
-```
-
-The REPL handles multi-line input (functions, if/while blocks) — it reads until braces balance before executing:
+The REPL reads until braces balance before executing, so multi-line functions and blocks work naturally:
 
 ```
 > function hello() {
@@ -51,13 +44,7 @@ The REPL handles multi-line input (functions, if/while blocks) — it reads unti
 hi
 ```
 
-Errors in the REPL kill the process. Use the included `repl.sh` wrapper to keep it running:
-
-```sh
-./repl.sh
-```
-
-This restarts the REPL immediately after any error (Ctrl+C to exit).
+Errors kill the REPL process — `repl.sh` wraps it in a restart loop.
 
 ## Example
 
