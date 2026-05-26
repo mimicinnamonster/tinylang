@@ -70,6 +70,7 @@ int rf; Value rv;
 int cur_fi;
 static char *include_dir;
 jmp_buf assert_jmp; int assert_catching;
+jmp_buf repl_jmp; int repl_catching;
 char assert_msg[512];
 int comp_line; char *comp_file;
 int err_line; char *err_file;
@@ -394,18 +395,51 @@ int veq(Value a, Value b) {
 
 void die(const char *f, ...) {
     va_list ap, aq; va_start(ap, f); va_copy(aq, ap);
-    if (assert_catching) { vsnprintf(assert_msg, sizeof(assert_msg), f, aq); longjmp(assert_jmp, 1); }
-    if (err_file) fprintf(stderr, "%s:%d: ", err_file, err_line);
-    vfprintf(stderr, f, ap); fputc('\n', stderr);
-    fprintf(stderr, "stack trace:\n");
-    for (int i = 0; i <= call_depth; i++) {
-        if (call_stack[i].file) fprintf(stderr, "  %s:%d: ", call_stack[i].file, call_stack[i].line);
-        if (call_stack[i].fi >= 0) fprintf(stderr, "%s()\n", fs[call_stack[i].fi].n);
-        else fprintf(stderr, "<top-level>\n");
+    if (assert_catching) {
+        vsnprintf(assert_msg, sizeof(assert_msg), f, aq);
+        va_end(aq); va_end(ap); longjmp(assert_jmp, 1);
     }
-    if (err_file) fprintf(stderr, "  %s:%d: ", err_file, err_line);
-    if (cur_fi >= 0) fprintf(stderr, "%s()\n", fs[cur_fi].n);
-    else fprintf(stderr, "<top-level>\n");
+    if (repl_catching) {
+        vfprintf(stderr, f, ap); fputc('\n', stderr);
+        for (int i = 0; i <= call_depth; i++) {
+            if (call_stack[i].fi >= 0) {
+                fprintf(stderr, "in ");
+                if (call_stack[i].file) fprintf(stderr, "%s:%d: ", call_stack[i].file, call_stack[i].line);
+                fprintf(stderr, "%s()\n", fs[call_stack[i].fi].n);
+            } else if (call_stack[i].file)
+                fprintf(stderr, "in %s:%d\n", call_stack[i].file, call_stack[i].line);
+            else
+                fprintf(stderr, "in <top-level>\n");
+        }
+        if (cur_fi >= 0) {
+            fprintf(stderr, "in ");
+            if (err_file) fprintf(stderr, "%s:%d: ", err_file, err_line);
+            fprintf(stderr, "%s()\n", fs[cur_fi].n);
+        } else if (err_file)
+            fprintf(stderr, "in %s:%d\n", err_file, err_line);
+        else
+            fprintf(stderr, "in <top-level>\n");
+        va_end(aq); va_end(ap); longjmp(repl_jmp, 1);
+    }
+    vfprintf(stderr, f, ap); fputc('\n', stderr);
+    for (int i = 0; i <= call_depth; i++) {
+            if (call_stack[i].fi >= 0) {
+                fprintf(stderr, "in ");
+                if (call_stack[i].file) fprintf(stderr, "%s:%d: ", call_stack[i].file, call_stack[i].line);
+                fprintf(stderr, "%s()\n", fs[call_stack[i].fi].n);
+            } else if (call_stack[i].file)
+                fprintf(stderr, "in %s:%d\n", call_stack[i].file, call_stack[i].line);
+            else
+                fprintf(stderr, "in <top-level>\n");
+        }
+        if (cur_fi >= 0) {
+            fprintf(stderr, "in ");
+            if (err_file) fprintf(stderr, "%s:%d: ", err_file, err_line);
+            fprintf(stderr, "%s()\n", fs[cur_fi].n);
+        } else if (err_file)
+            fprintf(stderr, "in %s:%d\n", err_file, err_line);
+        else
+            fprintf(stderr, "in <top-level>\n");
     va_end(aq); va_end(ap); exit(1);
 }
 
@@ -1266,10 +1300,10 @@ int main(int a, char **v) {
             }
             comp_file = NULL;
             lex(buf); Code *code = new_code(); comp_program(code);
-            { int _sac = assert_catching; assert_catching = 1;
-              if (setjmp(assert_jmp)) { isp = -1; rf = 0; call_depth = -1; }
+            { int _sr = repl_catching; repl_catching = 1;
+              if (setjmp(repl_jmp)) { isp = -1; rf = 0; call_depth = -1; }
               else { exec(code); }
-              assert_catching = _sac; }
+              repl_catching = _sr; }
             code_free(code); free(ts);
         }
         done:;

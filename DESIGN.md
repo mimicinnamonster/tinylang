@@ -664,14 +664,22 @@ Built-in function names (`print`, `input`) are NOT keywords — they live in the
 
 Runtime errors halt execution of the current input with a message to stderr. In script mode, the process exits with status 1. In the REPL, errors are caught and the REPL continues with the next input, preserving the current scope.
 
-Every runtime error prints a stack trace showing the call chain from top-level to the error site:
+Every runtime error prints the error message followed by the call chain, each frame prefixed with `in `:
 
 ```
 '+' type mismatch
-stack trace:
-  <top-level>
-  foo()
-  bar()
+in script.tl:3
+in script.tl:5: foo()
+in script.tl:2: bar()
+```
+
+In the REPL, file paths are omitted and the default `<top-level>` label is shown instead:
+
+```
+'+' type mismatch
+in <top-level>
+in foo()
+in bar()
 ```
 
 No recovery, no try/catch — except for the built-in `assert()` function (see §17), which wraps a single expression in an error-catching context and returns the error message as a string instead of halting.
