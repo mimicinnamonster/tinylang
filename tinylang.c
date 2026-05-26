@@ -332,7 +332,11 @@ Value prim(void) {
                 for (int i = 0; i < f->a; i++)
                     sset(cs, f->p[i], (i < ac2) ? as[i] : vempty());
                 tp = f->bs; int sr = rf; rf = 0;
-                while (tp < f->be && !rf) stmt();
+                while (tp < f->be && !rf) {
+                    while (peek().t == T_NL) adv();
+                    if (peek().t == T_RC) break;
+                    stmt();
+                }
                 Value r = rf ? rv : vempty(); rf = sr;
                 sfree(cs); cs = ss; tp = sp; cur_fi = sf; ts = st;
                 return r;
@@ -439,8 +443,9 @@ void fn_def(void) {
     xpct(T_LP); char *ps[64]; int pa = 0;
     if (peek().t != T_RP) do { Tok p = adv(); if (p.t != T_ID) die("expected param");
         ps[pa++] = strdup(p.s); } while (mtch(T_CM));
-    xpct(T_RP); int bs = tp, depth = 1;
+    xpct(T_RP);
     while (peek().t == T_NL) adv(); xpct(T_LC);
+    int bs = tp, depth = 1;
     while (depth > 0) {
         if (peek().t == T_EOF) die("unterminated function body");
         if (peek().t == T_LC) depth++; if (peek().t == T_RC) depth--; adv();
