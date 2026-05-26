@@ -22,9 +22,11 @@ refcount+COW and tail call optimization.
 ## Quick start
 
 ```sh
-cc -Wall -Wextra -o tinylang tinylang.c
+cc -Wall -Wextra -lm -o tinylang tinylang.c
 ./tinylang test.tl
 ```
+
+> **Note:** `-lm` is required on Linux and Android/Termux to link the math library (`fmod`). On macOS it links automatically and can be omitted.
 
 ### REPL
 
