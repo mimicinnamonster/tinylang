@@ -336,6 +336,20 @@ Value array_index(Value arr, int idx) {
 
 Returns a borrowed Value — the caller is responsible for calling `array_retain` if they store it.
 
+### Safety: index guard on non-array values
+
+When indexing through a chain (e.g. `arr[0,0,0]` or `arr[0][0][0]`), each step may
+produce a number (e.g. ASCII value from a string), and the next index would try to
+access `v.as.arr` on a `VAL_NUM` — reading the raw `double` bytes as a pointer and
+causing a segfault. The interpreter guards against this:
+
+```c
+if (v.type != VAL_ARR) die("cannot index into non-array");
+```
+
+This check is applied before every index access in the chain, both for numeric indices
+and dynamic slice indices.
+
 ---
 
 ## 4. Binary Operations

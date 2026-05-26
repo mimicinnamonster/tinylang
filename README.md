@@ -1,6 +1,6 @@
 # TinyLang
 
-A tiny, statically-typed programming language implemented in ~530 lines of C. No AST, no
+A tiny, statically-typed programming language implemented in ~560 lines of C. No AST, no
 GC, no closures, no pointers — just a single-pass tree-walk interpreter with
 refcount+COW and tail call optimization.
 
@@ -23,7 +23,7 @@ refcount+COW and tail call optimization.
 
 ```sh
 cc -Wall -Wextra -lm -o tinylang tinylang.c
-./tinylang test.tl
+./tinylang tests/test.tl
 ```
 
 > **Note:** `-lm` is required on Linux and Android/Termux to link the math library (`fmod`). On macOS it links automatically and can be omitted.
@@ -47,6 +47,20 @@ hi
 ```
 
 Errors kill the REPL process — `repl.sh` wraps it in a restart loop.
+
+### Tests
+
+```sh
+./run_tests.sh      # runs all happy-path + error tests
+```
+
+Tests live in `tests/`:
+- `test_*.tl` — happy-path tests covering all features
+- `e_*.tl` — individual error tests (each triggers one error condition)
+- `run_errors.sh` — error test runner
+- `run.sh` — alias for run_tests.sh
+
+All tests must pass before committing.
 
 ## Example
 
@@ -110,9 +124,10 @@ index_list    := expr ("," expr)*
 
 ## Implementation
 
-- ~530 lines of C, single file
+- ~560 lines of C, single file
 - No external dependencies (ISO C + math.h)
 - Pre-lexed token array, single-pass recursive descent parser
 - Deep copy on assignment, refcount+COW for arrays
 - Token-stream replay for while/function bodies
 - TCO via parameter rebinding in tail position
+- Comprehensive test suite (24 tests: 4 happy-path + 20 error)

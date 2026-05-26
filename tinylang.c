@@ -344,10 +344,12 @@ Value prim(void) {
                 xpct(T_RB);
                 for (int i = 0; i < n; i++) {
                     if (is[i].type == VAL_NUM) {
+                        if (v.type != VAL_ARR) die("cannot index into non-array");
                         Arr *a = v.as.arr; int ii = (int)is[i].as.num;
                         if (!a || ii < 0 || ii >= a->len) die("index out of bounds");
                         v = a->items[ii];
                     } else if (is[i].type == VAL_ARR) {
+                        if (v.type != VAL_ARR) die("cannot index into non-array");
                         if (is[i].as.arr) for (int j = 0; j < is[i].as.arr->len; j++) {
                             Arr *a = v.as.arr; int ii = (int)is[i].as.arr->items[j].as.num;
                             if (!a || ii < 0 || ii >= a->len) die("index out of bounds");
