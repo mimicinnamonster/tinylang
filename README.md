@@ -92,12 +92,37 @@ nodes[0][0] = 42
 print(nodes[0][0])                  // 42
 ```
 
+## Features
+
+### File includes
+
+```
+include "path/to/file.tl"
+```
+
+The `include "path"` directive splices the contents of another source file into the current file before lexing. Paths are resolved relative to the directory of the including file (or the current working directory for bare filenames). Nested includes work — included files can themselves include other files.
+
+```
+// lib.tl
+function greet(name) {
+    print("hello, ")
+    print(name)
+}
+
+// main.tl
+include "lib.tl"
+greet("world")
+```
+
+`include` is a language keyword. When encountered during execution, the referenced file is read, lexed, and executed inline before continuing. Paths are relative to the including file's directory. The interpreter saves and restores its token stream around the recursive call, so functions defined in included files work transparently.
+
 ## Grammar
 
 ```
 program       := top-level statements
 
-statement     := assignment | if_stmt | while_stmt | func_def | ret_stmt | expr_stmt
+statement     := assignment | if_stmt | while_stmt | func_def | ret_stmt | include_stmt | expr_stmt
+include_stmt := "include" string
 
 assignment    := lvalue "=" expr
 lvalue        := identifier ("[" index_list "]")*
@@ -124,7 +149,7 @@ index_list    := expr ("," expr)*
 
 ## Implementation
 
-- ~560 lines of C, single file
+- ~605 lines of C, single file
 - No external dependencies (ISO C + math.h)
 - Pre-lexed token array, single-pass recursive descent parser
 - Deep copy on assignment, refcount+COW for arrays

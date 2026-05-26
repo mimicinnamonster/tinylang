@@ -41,6 +41,7 @@ run_test() {
         e_hash_nonarr)    expected_msg="# requires array";;
         e_print_noargs)   expected_msg="print needs 1 arg";;
         e_fn_redef)       expected_msg="already defined";;
+        e_include_missing) expected_msg="cannot include";;
         e_percent_nonnum) expected_msg="'%' requires numbers";;
         *)                expected_msg="error:";;
     esac

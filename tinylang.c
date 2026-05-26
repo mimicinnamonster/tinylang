@@ -21,7 +21,7 @@ typedef enum {
     T_AM, T_PI, T_CA, T_AT, T_BN,
     T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
     T_HASH,
-    T_NL, T_IF, T_ELIF, T_ELSE, T_WH, T_FN, T_RT,
+    T_NL, T_IF, T_ELIF, T_ELSE, T_WH, T_FN, T_RT, T_INCLUDE,
 } TK;
 
 typedef struct { TK t; double n; char *s; int l; } Tok;
@@ -35,6 +35,7 @@ Fn *fs; int fc, fm;
 int rf; Value rv;
 int cur_fi; int last_tok; /* current function index for TCO (-1 = top level) */
 int tco;    /* tail call flag */
+static char *include_dir;
 
 /* ========================== VALUE ========================== */
 Value vnum(double n) { return (Value){ .type = VAL_NUM, .as.num = n }; }
@@ -220,6 +221,7 @@ void lex(const char *s) {
             else if (!strcmp(b,"while")){tk.t=T_WH;free(tk.s);}
             else if (!strcmp(b,"function")){tk.t=T_FN;free(tk.s);}
             else if (!strcmp(b,"return")){tk.t=T_RT;free(tk.s);}
+            else if (!strcmp(b,"include")){tk.t=T_INCLUDE;free(tk.s);}
             goto em;
         }
         if (c == '"') {
@@ -517,6 +519,8 @@ void stmt(void) {
     }
 }
 
+char *readf(const char *p);
+
 /* ========================== MAIN ========================== */
 char *readf(const char *p) {
     FILE *f = fopen(p, "rb"); if (!f) return NULL;
@@ -529,6 +533,41 @@ void run(const char *src) {
     lex(src);
     while (peek().t != T_EOF) {
         if (peek().t == T_NL) { adv(); continue; }
+        if (peek().t == T_INCLUDE) {
+            adv();
+            Tok t = adv();
+            if (t.t != T_STR) die("include requires a string path");
+            Arr *a = (Arr*)t.s;
+            int plen = a ? a->len : 0;
+            if (plen >= 1024) die("include path too long");
+            char path[1024];
+            for (int i = 0; i < plen; i++) path[i] = (char)a->items[i].as.num;
+            path[plen] = '\0';
+
+            char full[1024];
+            if (include_dir && include_dir[0])
+                snprintf(full, sizeof(full), "%s/%s", include_dir, path);
+            else { size_t nl = strlen(path); if (nl >= sizeof(full)) nl = sizeof(full)-1; memcpy(full, path, nl+1); }
+
+            char *content = readf(full);
+            if (!content) die("cannot include '%s'", full);
+
+            Tok *saved_ts = ts;
+            int saved_tc = tc, saved_tp = tp;
+            char *saved_dir = include_dir;
+
+            char inc_dir[1024] = {0};
+            const char *sl = strrchr(full, '/');
+            if (sl) { memcpy(inc_dir, full, sl - full); inc_dir[sl - full] = '\0'; }
+            include_dir = inc_dir;
+
+            run(content);
+            free(content);
+
+            include_dir = saved_dir;
+            ts = saved_ts; tc = saved_tc; tp = saved_tp;
+            continue;
+        }
         stmt();
     }
 }
@@ -538,7 +577,12 @@ int main(int a, char **v) {
     if (a >= 2) {
         char *src = readf(v[1]);
         if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
-        run(src); free(src);
+        char dir[1024] = {0};
+        const char *slash = strrchr(v[1], '/');
+        if (slash) { memcpy(dir, v[1], slash - v[1]); }
+        include_dir = dir;
+        run(src);
+        free(src);
     } else {
         printf("TinyLang v0.1\n");
         char buf[65536];
