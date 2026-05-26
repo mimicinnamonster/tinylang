@@ -662,7 +662,19 @@ Built-in function names (`print`, `input`) are NOT keywords — they live in the
 
 ## 15. Error Handling
 
-Runtime errors halt with a message to stderr. No recovery, no try/catch — except for the built-in `assert()` function (see §17), which wraps a single expression in an error-catching context and returns the error message as a string instead of halting.
+Runtime errors halt execution of the current input with a message to stderr. In script mode, the process exits with status 1. In the REPL, errors are caught and the REPL continues with the next input, preserving the current scope.
+
+Every runtime error prints a stack trace showing the call chain from top-level to the error site:
+
+```
+'+' type mismatch
+stack trace:
+  <top-level>
+  foo()
+  bar()
+```
+
+No recovery, no try/catch — except for the built-in `assert()` function (see §17), which wraps a single expression in an error-catching context and returns the error message as a string instead of halting.
 
 | Error | Message |
 |-------|---------|
@@ -741,6 +753,7 @@ Note: `lvalue` and `primary` both have `identifier "[" index_list "]"`. The pars
 | `input` | `input()` | Reads a line from stdin, returns as byte array (string) |
 | `assert` | `assert(expr)` | Evaluates `expr` in an error-catching context. If evaluation succeeds and the result is truthy, returns `[]` (nil). If evaluation succeeds but the result is falsy, returns `"assertion failed"`. If evaluation produces a runtime error, the error is caught and the actual error message is returned as a string. |
 | `type` | `type(x)` | Returns a number representing the internal storage kind of `x`. For numbers: 0=U8, 1=U16, 2=U32, 3=U64, 4=I8, 5=I16, 6=I32, 7=I64, 8=F32, 9=F64. For arrays: 100+ArrKind (0=U8…10=VAL). For nil/`[]`: -1. For ptr: -2. Useful for testing that the compact type system selected the expected backing store. |
+| `thispath` | `thispath()` | Returns the source file path where the call appears, as a byte array (string). In the REPL, returns `[]` (nil). Works correctly across `include`d files — each call returns that file's own path. Useful for diagnostics and locating resources relative to the script. |
 
 `print` special-cases arrays whose elements are all printable ASCII or common control characters (10, 13, 9) — these are printed as the text string rather than `[104, 101, ...]`.
 

@@ -61,7 +61,7 @@ typedef enum {
 
 typedef struct Code { struct Instr *code; int len, cap; } Code;
 typedef struct Instr {
-    OC op; int a, b; double num; Arr *arr; char *name; Code *sub;
+    OC op; int a, b; double num; Arr *arr; char *name; Code *sub; int line; char *file;
 } Instr;
 
 Tok *ts; int tc, tp;
@@ -71,6 +71,10 @@ int cur_fi;
 static char *include_dir;
 jmp_buf assert_jmp; int assert_catching;
 char assert_msg[512];
+int comp_line; char *comp_file;
+int err_line; char *err_file;
+typedef struct { int fi; int line; char *file; } CallFrame;
+CallFrame call_stack[128]; int call_depth = -1;
 
 typedef struct { char *n, **p; int a; Code *code; } Fn;
 Fn *fs; int fc, fm;
@@ -390,8 +394,18 @@ int veq(Value a, Value b) {
 
 void die(const char *f, ...) {
     va_list ap, aq; va_start(ap, f); va_copy(aq, ap);
-    vfprintf(stderr, f, ap); fputc('\n', stderr);
     if (assert_catching) { vsnprintf(assert_msg, sizeof(assert_msg), f, aq); longjmp(assert_jmp, 1); }
+    if (err_file) fprintf(stderr, "%s:%d: ", err_file, err_line);
+    vfprintf(stderr, f, ap); fputc('\n', stderr);
+    fprintf(stderr, "stack trace:\n");
+    for (int i = 0; i <= call_depth; i++) {
+        if (call_stack[i].file) fprintf(stderr, "  %s:%d: ", call_stack[i].file, call_stack[i].line);
+        if (call_stack[i].fi >= 0) fprintf(stderr, "%s()\n", fs[call_stack[i].fi].n);
+        else fprintf(stderr, "<top-level>\n");
+    }
+    if (err_file) fprintf(stderr, "  %s:%d: ", err_file, err_line);
+    if (cur_fi >= 0) fprintf(stderr, "%s()\n", fs[cur_fi].n);
+    else fprintf(stderr, "<top-level>\n");
     va_end(aq); va_end(ap); exit(1);
 }
 
@@ -589,6 +603,7 @@ int ffind(const char *n) { for (int i = 0; i < fc; i++) if (!strcmp(fs[i].n, n))
 void emit(Code *c, Instr ins) {
     if (c->len >= c->cap) { c->cap = c->cap ? c->cap*2 : 128;
         c->code = realloc(c->code, c->cap * sizeof(Instr)); }
+    ins.line = comp_line; ins.file = comp_file ? strdup(comp_file) : NULL;
     c->code[c->len++] = ins;
 }
 
@@ -597,7 +612,7 @@ Code *new_code(void) { return calloc(1, sizeof(Code)); }
 void code_free(Code *c) {
     if (!c) return;
     for (int i = 0; i < c->len; i++) {
-        free(c->code[i].name);
+        free(c->code[i].name); free(c->code[i].file);
         if (c->code[i].arr) arelease(c->code[i].arr);
         code_free(c->code[i].sub);
     }
@@ -611,7 +626,7 @@ void comp_block(Code *c);
 
 void comp_prim(Code *c) {
     while (ts[tp].t == T_NL) tp++;
-    Tok t = ts[tp];
+    Tok t = ts[tp]; comp_line = t.l; err_line = t.l; err_file = comp_file;
     switch (t.t) {
         case T_NUM: tp++; emit(c, (Instr){OC_NUM, 0, 0, .num = t.n}); break;
         case T_NIL: tp++; emit(c, (Instr){OC_NIL, 0, 0}); break;
@@ -632,7 +647,12 @@ void comp_prim(Code *c) {
                 if (!strcmp(t.s, "print")) { if (ac < 1) die("print needs 1 arg"); emit(c, (Instr){OC_PRINT, 0, 0}); }
                 else if (!strcmp(t.s, "input")) emit(c, (Instr){OC_INPUT, 0, 0});
                 else if (!strcmp(t.s, "type")) emit(c, (Instr){OC_TYPE, 0, 0});
-                else {
+                else if (!strcmp(t.s, "thispath")) {
+                    int n = comp_file ? strlen(comp_file) : 0;
+                    Arr *a = aalloc(n, ARR_I8); a->len = n;
+                    for (int j = 0; j < n; j++) a->as.i8[j] = comp_file[j];
+                    emit(c, (Instr){OC_STR, 0, 0, .arr = a});
+                } else {
                     int ci = -1;
                     for (int i = 0; i < creg_count; i++) if (!strcmp(t.s, cregs[i].name)) { ci = i; break; }
                     if (ci >= 0) { emit(c, (Instr){OC_CFUNC, ci, ac}); }
@@ -688,7 +708,7 @@ void comp_block(Code *c) {
 
 void comp_if(Code *c) {
     int jz_patches[64], np = 0, jmp_patches[64], nj = 0;
-    tp++; comp_expr(c);
+    tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file; comp_expr(c);
     jz_patches[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0});
     comp_block(c);
     jmp_patches[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0});
@@ -703,14 +723,14 @@ void comp_if(Code *c) {
 }
 
 void comp_while(Code *c) {
-    int loop = c->len; tp++;
+    int loop = c->len; tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     comp_expr(c); int jz = c->len; emit(c, (Instr){OC_JZ, 0, 0});
     comp_block(c);
     emit(c, (Instr){OC_JMP, loop, 0}); c->code[jz].a = c->len;
 }
 
 void comp_return(Code *c) {
-    tp++;
+    tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     int is_tc = (cur_fi >= 0 && ts[tp].t == T_ID &&
                  !strcmp(ts[tp].s, fs[cur_fi].n) && ts[tp+1].t == T_LP);
     comp_expr(c);
@@ -721,7 +741,7 @@ void comp_return(Code *c) {
 }
 
 void comp_fn(Code *c) {
-    tp++;
+    tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     if (ts[tp].t != T_ID) die("expected function name");
     char *name = strdup(ts[tp].s); tp++;
     if (ts[tp].t != T_LP) die("expected ("); tp++;
@@ -848,7 +868,7 @@ Value tl_ffi_call(int argc, Value *args) {
 char *readf(const char *p);
 
 void comp_include(Code *c) {
-    tp++;
+    tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     if (ts[tp].t != T_STR) die("include requires a string path");
     Arr *a = (Arr*)ts[tp].s; tp++;
     int plen = a ? a->len : 0;
@@ -862,10 +882,12 @@ void comp_include(Code *c) {
     char *content = readf(full);
     if (!content) die("cannot include '%s'", full);
     Tok *saved_ts = ts; int saved_tc = tc, saved_tp = tp; char *saved_dir = include_dir;
+    char *saved_file = comp_file;
     char inc_dir[1024] = {0};
     const char *sl = strrchr(full, '/');
     if (sl) { memcpy(inc_dir, full, sl - full); inc_dir[sl - full] = '\0'; }
     include_dir = inc_dir;
+    comp_file = strdup(full);
     lex(content);
     while (ts[tp].t != T_EOF) {
         while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
@@ -873,12 +895,13 @@ void comp_include(Code *c) {
         comp_stmt(c);
     }
     free(ts); ts = saved_ts; tc = saved_tc; tp = saved_tp;
-    include_dir = saved_dir; free(content);
+    include_dir = saved_dir; free(comp_file); comp_file = saved_file; free(content);
 }
 
 void comp_stmt(Code *c) {
     while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
     if (ts[tp].t == T_EOF || ts[tp].t == T_RC) return;
+    comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     switch (ts[tp].t) {
         case T_IF: comp_if(c); break;
         case T_WH: comp_while(c); break;
@@ -960,6 +983,7 @@ void exec(Code *c) {
     int ip = 0;
     while (ip < c->len && !rf) {
         Instr *ins = &c->code[ip];
+        err_line = ins->line; err_file = ins->file;
         switch (ins->op) {
             case OC_NUM: istk[++isp] = vnum(ins->num); break;
             case OC_NIL: istk[++isp] = nilv(); break;
@@ -1085,12 +1109,16 @@ void exec(Code *c) {
                 for (int j = 0; j <= saved_isp; j++) saved_stack[j] = istk[j];
                 Scp *saved_cs = cs; cs = snew();
                 int saved_cur_fi = cur_fi; cur_fi = fi;
+                call_stack[++call_depth].fi = saved_cur_fi;
+                call_stack[call_depth].line = err_line;
+                call_stack[call_depth].file = err_file;
                 for (int j = 0; j < f->a; j++)
                     sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
                 int saved_rf = rf; rf = 0; Value saved_rv = rv; isp = -1;
                 exec(f->code);
                 Value result = rf ? rv : nilv();
                 sfree(cs); cs = saved_cs; cur_fi = saved_cur_fi;
+                call_depth--;
                 rf = saved_rf; rv = saved_rv; isp = saved_isp;
                 for (int j = 0; j <= saved_isp; j++) istk[j] = saved_stack[j];
                 istk[++isp] = result; break;
@@ -1136,9 +1164,11 @@ void exec(Code *c) {
                 Code *sub = ins->sub; int ac = ins->a;
                 int saved_isp = isp, saved_rf = rf; Value saved_rv = rv;
                 Scp *saved_cs = cs; int saved_ac = assert_catching;
+                int saved_cd = call_depth;
                 assert_catching = 1;
                 if (setjmp(assert_jmp)) {
                     assert_catching = 0; isp = saved_isp; rf = saved_rf; rv = saved_rv; cs = saved_cs;
+                    call_depth = saved_cd;
                     assert_catching = saved_ac;
                     int n = strlen(assert_msg); Arr *a = aalloc(n, ARR_I8); a->len = n;
                     memcpy(a->as.i8, assert_msg, n);
@@ -1218,8 +1248,9 @@ int main(int a, char **v) {
         char *src = readf(v[1]); if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
         char dir[1024] = {0}; const char *slash = strrchr(v[1], '/');
         if (slash) { memcpy(dir, v[1], slash - v[1]); } include_dir = dir;
-        lex(src); Code *code = new_code(); comp_program(code); free(src); exec(code);
-        code_free(code); free(ts);
+        comp_file = strdup(v[1]);
+        lex(src); Code *code = new_code(); comp_program(code); free(src); free(comp_file); comp_file = NULL;
+        exec(code); code_free(code); free(ts);
     } else {
         char buf[65536];
         while (1) {
@@ -1233,8 +1264,13 @@ int main(int a, char **v) {
                 if (op == cl) break;
                 printf("  "); fflush(stdout);
             }
-            lex(buf); Code *code = new_code(); comp_program(code); exec(code);
-            code_free(code); free(ts); cs = snew();
+            comp_file = NULL;
+            lex(buf); Code *code = new_code(); comp_program(code);
+            { int _sac = assert_catching; assert_catching = 1;
+              if (setjmp(assert_jmp)) { isp = -1; rf = 0; call_depth = -1; }
+              else { exec(code); }
+              assert_catching = _sac; }
+            code_free(code); free(ts);
         }
         done:;
     }
