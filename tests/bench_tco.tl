@@ -1,6 +1,8 @@
 // Benchmark: tail call optimization
 // Verifies that TCO prevents C stack overflow for deep recursion.
 
+function println(x) { print(x) print("\n") }
+
 // Factorial with TCO
 function fact(n, acc) {
     if n = 0 {
@@ -26,13 +28,13 @@ function fib(n, a, b) {
 }
 
 // Test 1: deep countdown (no result accumulation, just recursion depth)
-print("tco countdown:")
-print(countdown(50000))
+println("tco countdown:")
+println(countdown(50000))
 
 // Test 2: factorial with large n
-print("tco fact:")
-print(fact(100, 1))
+println("tco fact:")
+println(fact(100, 1))
 
 // Test 3: fibonacci
-print("tco fib:")
-print(fib(30, 0, 1))
+println("tco fib:")
+println(fib(30, 0, 1))

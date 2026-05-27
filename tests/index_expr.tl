@@ -1,121 +1,123 @@
 // Test: all expressions that evaluate to an array can be indexed with []
 
+function println(x) { print(x) print("\n") }
+
 // --- 1. Array literal indexing ---
-print("--- array literal indexing ---")
-print([1, 2, 3][0])       // 1
-print([1, 2, 3][1])       // 2
-print([10, 20, 30][2])    // 30
+println("--- array literal indexing ---")
+println([1, 2, 3][0])       // 1
+println([1, 2, 3][1])       // 2
+println([10, 20, 30][2])    // 30
 
 // --- 2. Nested array literal indexing ---
-print("--- nested literal indexing ---")
-print([[1, 2], [3, 4]][0][1])  // 2
-print([[1, 2], [3, 4]][1][0])  // 3
+println("--- nested literal indexing ---")
+println([[1, 2], [3, 4]][0][1])  // 2
+println([[1, 2], [3, 4]][1][0])  // 3
 
 // --- 3. Multi-index on array literal ---
-print("--- multi-index on literal ---")
-print([[1, 2], [3, 4]][0, 1])   // 2
-print([[1, 2], [3, 4]][1, 0])   // 3
+println("--- multi-index on literal ---")
+println([[1, 2], [3, 4]][0, 1])   // 2
+println([[1, 2], [3, 4]][1, 0])   // 3
 
 // --- 4. Function call returning array, then index ---
-print("--- function call indexing ---")
+println("--- function call indexing ---")
 function get_arr() { return [10, 20, 30] }
-print(get_arr()[0])       // 10
-print(get_arr()[1])       // 20
-print(get_arr()[2])       // 30
+println(get_arr()[0])       // 10
+println(get_arr()[1])       // 20
+println(get_arr()[2])       // 30
 
 // --- 5. Function call with multi-index ---
-print("--- fn call multi-index ---")
+println("--- fn call multi-index ---")
 function get_mat() { return [[1, 2], [3, 4]] }
-print(get_mat()[0, 1])    // 2
-print(get_mat()[1, 0])    // 3
+println(get_mat()[0, 1])    // 2
+println(get_mat()[1, 0])    // 3
 
 // --- 6. Parenthesized expression indexing ---
-print("--- parenthesized indexing ---")
+println("--- parenthesized indexing ---")
 arr = [5, 10, 15]
-print((arr)[0])           // 5
-print((arr)[1])           // 10
-print((arr)[2])           // 15
+println((arr)[0])           // 5
+println((arr)[1])           // 10
+println((arr)[2])           // 15
 
 // --- 7. String indexing (strings are arrays) ---
-print("--- string indexing on literal ---")
-print("hello"[0])         // 104
-print("abc"[2])           // 99
+println("--- string indexing on literal ---")
+println("hello"[0])         // 104
+println("abc"[2])           // 99
 
 // --- 8. Array concat result indexing ---
-print("--- concat result indexing ---")
+println("--- concat result indexing ---")
 a = [1, 2]
 b = [3, 4]
-print((a + b)[0])         // 1
-print((a + b)[2])         // 3
-print((a + b)[3])         // 4
+println((a + b)[0])         // 1
+println((a + b)[2])         // 3
+println((a + b)[3])         // 4
 
 // --- 9. Array repetition result indexing ---
-print("--- repetition result indexing ---")
-print(([0] * 10)[0])      // 0
-print(([0] * 10)[5])      // 0
-print(([0] * 10)[9])      // 0
-print(([1, 2] * 3)[0])   // 1
-print(([1, 2] * 3)[1])   // 2
-print(([1, 2] * 3)[4])   // 2
-print(([1, 2] * 3)[5])   // 1
+println("--- repetition result indexing ---")
+println(([0] * 10)[0])      // 0
+println(([0] * 10)[5])      // 0
+println(([0] * 10)[9])      // 0
+println(([1, 2] * 3)[0])   // 1
+println(([1, 2] * 3)[1])   // 2
+println(([1, 2] * 3)[4])   // 2
+println(([1, 2] * 3)[5])   // 1
 
 // --- 10. Nested indexing on binary op result ---
-print("--- nested on binop ---")
-print(([1, 2] + [3, 4])[0])     // 1
-print(([1, 2] + [3, 4])[2])     // 3
-print(([[1],[2]]+[[3],[4]])[1][0]) // 2
-print(([[1],[2]]+[[3],[4]])[2][0]) // 3
+println("--- nested on binop ---")
+println(([1, 2] + [3, 4])[0])     // 1
+println(([1, 2] + [3, 4])[2])     // 3
+println(([[1],[2]]+[[3],[4]])[1][0]) // 2
+println(([[1],[2]]+[[3],[4]])[2][0]) // 3
 
 // --- 11. Slice on non-identifier expression ---
-print("--- slice on expression ---")
-print([1, 2, 3, 4, 5][1:3])    // [2, 3]
-print([1, 2, 3, 4, 5][0:2])    // [1, 2]
-print([1, 2, 3, 4, 5][3:])     // [4, 5]
-print([1, 2, 3, 4, 5][:2])     // [1, 2]
-print(([0] * 10)[2:5])         // [0, 0, 0]
-print(([0] * 10)[:3])          // [0, 0, 0]
+println("--- slice on expression ---")
+println([1, 2, 3, 4, 5][1:3])    // [2, 3]
+println([1, 2, 3, 4, 5][0:2])    // [1, 2]
+println([1, 2, 3, 4, 5][3:])     // [4, 5]
+println([1, 2, 3, 4, 5][:2])     // [1, 2]
+println(([0] * 10)[2:5])         // [0, 0, 0]
+println(([0] * 10)[:3])          // [0, 0, 0]
 
 // --- 13. Slice on function call result ---
-print("--- slice on fn call ---")
+println("--- slice on fn call ---")
 function get_vals() { return [10, 20, 30, 40, 50] }
-print(get_vals()[1:4])         // [20, 30, 40]
+println(get_vals()[1:4])         // [20, 30, 40]
 
 // --- 14. Chained: literal index then slice ---
-print("--- chained ---")
-print([1, 2, 3, 4][1:3][0])    // 2
-print([1, 2, 3, 4][0:2][1])    // 2
+println("--- chained ---")
+println([1, 2, 3, 4][1:3][0])    // 2
+println([1, 2, 3, 4][0:2][1])    // 2
 
 // --- 15. Slice on parenthesized expression ---
-print("--- parenthesized slice ---")
+println("--- parenthesized slice ---")
 arr2 = [1, 2, 3, 4, 5]
-print((arr2)[1:3])             // [2, 3]
+println((arr2)[1:3])             // [2, 3]
 
 // --- 16. nil expression indexing (should error - tested separately) ---
-// print(nil[0])  -- runtime error: cannot index into non-array
+// println(nil[0])  -- runtime error: cannot index into non-array
 
 // --- 17. Nested function call with indexing ---
-print("--- nested fn indexing ---")
+println("--- nested fn indexing ---")
 function wrap(x) { return [x] }
 function get_val() { return 42 }
-print(wrap(get_val())[0])       // 42
+println(wrap(get_val())[0])       // 42
 
 // --- 18. Slice with step on expression ---
-print("--- slice with step ---")
-print([1, 2, 3, 4, 5][::2])    // [1, 3, 5]
-print([1, 2, 3, 4, 5][1:4:2])  // [2, 4]
+println("--- slice with step ---")
+println([1, 2, 3, 4, 5][::2])    // [1, 3, 5]
+println([1, 2, 3, 4, 5][1:4:2])  // [2, 4]
 
 // --- 19. Empty array literal with index (OOB) ---
 // error test: [][0] would halt, tested in e_oob_literal.tl
 
 // --- 20. Variable slice bound with expression indexing ---
-print("--- var slice bound ---")
+println("--- var slice bound ---")
 x = [10, 20, 30, 40]
 i = 1
 j = 3
-print(x[i:j])                  // [20, 30]
+println(x[i:j])                  // [20, 30]
 
 // --- 21. Double indexing on function call ---
-print("--- double indexing on fn ---")
+println("--- double indexing on fn ---")
 function make_grid() { return [[1, 2], [3, 4], [5, 6]] }
-print(make_grid()[2][0])       // 5
-print(make_grid()[1, 1])       // 4
+println(make_grid()[2][0])       // 5
+println(make_grid()[1, 1])       // 4

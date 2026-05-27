@@ -2,11 +2,11 @@
 function greet(name) {
     print("hello, ")
     print(name)
-    print("!")
+    print("!\n")
 }
 
 function double(n) {
     return n * 2
 }
 
-message = "included!"
+message = "included!\n"

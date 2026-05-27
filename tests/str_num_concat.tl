@@ -1,48 +1,50 @@
 // Test string + number concatenation
 
-// --- Basic string + number ---
-print("--- string + number ---")
-print("hello" + 42)          // hello42
-print(#("hello" + 42))       // 7 (5 + 2)
+function println(x) { print(x) print("\n") }
 
-print("--- number + string ---")
-print(42 + "hello")          // 42hello
-print(#(42 + "hello"))       // 7
+// --- Basic string + number ---
+println("--- string + number ---")
+println("hello" + 42)          // hello42
+println(#("hello" + 42))       // 7 (5 + 2)
+
+println("--- number + string ---")
+println(42 + "hello")          // 42hello
+println(#(42 + "hello"))       // 7
 
 // String + 0
-print("--- string + 0 ---")
-print("zero: " + 0)          // zero: 0
+println("--- string + 0 ---")
+println("zero: " + 0)          // zero: 0
 
 // String + negative number
-print("--- string + negative ---")
-print("neg: " + (-5))        // neg: -5
+println("--- string + negative ---")
+println("neg: " + (-5))        // neg: -5
 
 // String + float
-print("--- string + float ---")
-print("pi: " + 3.14)         // pi: 3.14
+println("--- string + float ---")
+println("pi: " + 3.14)         // pi: 3.14
 
 // String + large number
-print("--- string + large ---")
-print("big: " + 1000000)     // big: 1000000
+println("--- string + large ---")
+println("big: " + 1000000)     // big: 1000000
 
 // In expressions
-print("--- in expressions ---")
+println("--- in expressions ---")
 s = "value: "
 n = 123
-print(s + n)                 // value: 123
-print(99 + " bottles")       // 99 bottles
-print("a" + 1 + "b")         // a1b
+println(s + n)                 // value: 123
+println(99 + " bottles")       // 99 bottles
+println("a" + 1 + "b")         // a1b
 
 // With function return values
-print("--- with functions ---")
+println("--- with functions ---")
 function greet(name) {
     return "hello " + name
 }
-print(greet("world"))        // hello world
-print(greet(42))             // hello 42
+println(greet("world"))        // hello world
+println(greet(42))             // hello 42
 
 // --- Verify type errors still fire for non-string arrays ---
-print("--- type errors ---")
+println("--- type errors ---")
 
 // Generic array + number should fail
 x = [1, 2, 3]
@@ -52,10 +54,10 @@ x = [1, 2, 3]
 // print(42 + [1, 2, 3])  // '+' type mismatch — uncomment to verify
 
 // --- Verify normal operations still work ---
-print("--- normal ops still work ---")
-print("abc" + "def")        // abcdef
-print(10 + 20)              // 30
-print([1, 2] + [3, 4])      // [1, 2, 3, 4]
+println("--- normal ops still work ---")
+println("abc" + "def")        // abcdef
+println(10 + 20)              // 30
+println([1, 2] + [3, 4])      // [1, 2, 3, 4]
 
 // Array repeat
-print([0] * 5)              // [0, 0, 0, 0, 0]
+println([0] * 5)              // [0, 0, 0, 0, 0]

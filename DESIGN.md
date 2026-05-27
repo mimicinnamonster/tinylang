@@ -307,12 +307,13 @@ No recovery, no try/catch, no assert().
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `print` | `print(x)` | Writes `x` to stdout. Numbers: decimal. Strings: as text. Arrays: `[e1, e2, ...]` |
+| `print` | `print(x)` | Writes `x` to stdout (no trailing newline). Numbers: decimal. Strings: as text. Arrays: `[e1, e2, ...]` |
 | `input` | `input()` | Reads a line from stdin, returns as byte array (string) |
 | `thispath` | `thispath()` | Returns the source file path where the call appears. Inside `include` expressions, returns the directory of the current file |
 
 `print` special-cases arrays whose elements are all printable ASCII — they are
-printed as text strings rather than `[104, 101, ...]`.
+printed as text strings rather than `[104, 101, ...]`. `print` does **not** add
+a trailing newline — include `\n` in your strings to get one.
 
 ---
 

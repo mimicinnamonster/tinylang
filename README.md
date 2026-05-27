@@ -135,7 +135,8 @@ empty = []                   // empty array = nil/false
 Strings are syntactic sugar for arrays of byte values. There is no string type —
 `"abc"` compiles to `[97, 98, 99]`. The `print` function special-cases arrays
 whose elements are all printable ASCII by printing them as readable text rather
-than `[104, 101, 108, 108, 111]`.
+than `[104, 101, 108, 108, 111]`. `print` does **not** add a trailing newline —
+include `\n` in your strings when you want one.
 
 ```tinylang
 s = "hello"
@@ -604,13 +605,17 @@ refcount is decremented. Everything is automatic and transparent.
 
 #### `print(x)`
 
-Writes `x` to stdout. Numbers print in decimal. Arrays whose elements are all
-printable ASCII are printed as text strings rather than `[104, 101, ...]`.
+Writes `x` to stdout with **no trailing newline**. Numbers print in decimal.
+Arrays whose elements are all printable ASCII are printed as text strings rather
+than `[104, 101, ...]`. Use `print("\n")` or embed `\n` in your strings to
+produce newlines — the user is in full control of line breaks.
 
 ```tinylang
-print(42)                // 42
-print(3.14)              // 3.14
-print("hello")           // hello
+print(42)                // 42 (no newline)
+print(3.14)              // 3.14 (no newline)
+print("hello")           // hello (no newline)
+print("hello\n")         // hello (with trailing newline)
+print("line1\nline2\n")  // multi-line output
 print([1, 2, 3])         // [1, 2, 3]
 ```
 

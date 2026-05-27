@@ -1,19 +1,21 @@
 // test.tl — test basic features
 
+function println(x) { print(x) print("\n") }
+
 x = 5
 y = x + 3
-print(y)
+println(y)
 
 // array
 arr = [1, 2, 3]
-print(arr)
+println(arr)
 
 // array index
-print(arr[0])
+println(arr[0])
 
 // lvalue assignment
 arr[0] = 99
-print(arr)
+println(arr)
 
 // function
 function double(n) {
@@ -21,7 +23,7 @@ function double(n) {
 }
 
 result = double(10)
-print(result)
+println(result)
 
 // factorial (recursion)
 function fact(n) {
@@ -31,12 +33,12 @@ function fact(n) {
     return n * fact(n - 1)
 }
 
-print(fact(5))
+println(fact(5))
 
 // multi-index
 matrix = [[1, 2], [3, 4]]
-print(matrix[0][1])
+println(matrix[0][1])
 
 // string
 name = "hello"
-print(name)
+println(name)

@@ -16,4 +16,4 @@ while i {
   len = len + 1
   i = i[1]
 }
-print(len)
+print(len); print("\n")

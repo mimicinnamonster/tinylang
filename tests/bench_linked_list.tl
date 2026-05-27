@@ -2,6 +2,8 @@
 // Builds a linked list of N elements using TCO, then traverses it.
 // Expected: O(N) time, regardless of list depth.
 
+function println(x) { print(x) print("\n") }
+
 function range(n, acc) {
     if n = 0 {
         return acc
@@ -40,9 +42,9 @@ function len_list(lst) {
 
 // Build a list of N elements
 list = range(10000, [])
-print("sum:")
-print(sum_list(list))
-print("max:")
-print(max_list(list))
-print("len:")
-print(len_list(list))
+println("sum:")
+println(sum_list(list))
+println("max:")
+println(max_list(list))
+println("len:")
+println(len_list(list))

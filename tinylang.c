@@ -1252,7 +1252,7 @@ op_jmp:
 
 op_print:
     err_line = c->code[ip].line; err_file = c->code[ip].file;
-    if (isp >= 0) { print_val(istk[isp--]); printf("\n"); }
+    if (isp >= 0) { print_val(istk[isp--]); }
     ip++; goto *dispatch[c->code[ip].op];
 
 op_input: {
@@ -1352,7 +1352,7 @@ int main(int a, char **v) {
                 if (!cs->n[i]) cs->n[i] = strdup(comp_vars[i]);
             { int _sr = repl_catching; repl_catching = 1;
               if (setjmp(repl_jmp)) { isp = -1; rf = 0; call_depth = -1; }
-              else { isp = -1; exec(code); }
+              else { isp = -1; exec(code); printf("\n"); }
               repl_catching = _sr; }
             code_free(code); free(ts);
         }

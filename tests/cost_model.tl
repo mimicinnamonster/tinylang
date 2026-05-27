@@ -20,6 +20,7 @@
 //      concat in hot paths (benchmarks use OC_PUSH loops).
 //
 
+function println(x) { print(x) print("\n") }
 
 function realloc_copies(n) {
     if n <= 4 { return 0 }
@@ -42,9 +43,9 @@ function ceil_div(x, y) {
 }
 
 function show(label, c_total, r_total) {
-    print(label)
-    print(c_total)
-    print(r_total)
+    println(label)
+    println(c_total)
+    println(r_total)
 }
 
 // Scenario B: Append literal [1,2,3] using multi-push fix
@@ -85,58 +86,58 @@ function scenario_build(n, a, C) {
     show("A: " + n + " " + a, c_total, r_total)
 }
 
-// Sweeps: print cost at each a to see crossover
+// Sweeps: show cost at each a to see crossover
 function sweep_append(n, m, C) {
-    print("sweep B n=" + n)
+    println("sweep B n=" + n)
     a = 0
     while a <= 200 {
         total_len = n + m
         chunks = ceil_div(total_len, C)
         c_total = m + a
         r_total = C + m + a * chunks
-        print(a)
-        print(c_total)
-        print(r_total)
+        println(a)
+        println(c_total)
+        println(r_total)
         a = a + 1
     }
-    print("---")
+    println("---")
 }
 
 function sweep_concat(n, m, C) {
-    print("sweep C n=" + n)
+    println("sweep C n=" + n)
     a = 0
     while a <= 200 {
         total_len = n + m
         chunks = ceil_div(total_len, C)
         c_total = n + m + a
         r_total = C + a * chunks
-        print(a)
-        print(c_total)
-        print(r_total)
+        println(a)
+        println(c_total)
+        println(r_total)
         a = a + 1
     }
-    print("---")
+    println("---")
 }
 
 function sweep_build(n, C) {
-    print("sweep A n=" + n)
+    println("sweep A n=" + n)
     a = 0
     while a <= 200 {
         chunks = ceil_div(n, C)
         c_total = n + realloc_copies(n) + a
         r_total = n + chunks * C + a * chunks
-        print(a)
-        print(c_total)
-        print(r_total)
+        println(a)
+        println(c_total)
+        println(r_total)
         a = a + 1
     }
-    print("---")
+    println("---")
 }
 
 // Run
 C = 64
 
-print("===== B: append literal =====")
+println("===== B: append literal =====")
 scenario_append_literal(100, 3, 10, C)
 scenario_append_literal(100, 3, 100, C)
 scenario_append_literal(100, 3, 1000, C)
@@ -144,7 +145,7 @@ scenario_append_literal(1000, 3, 10, C)
 scenario_append_literal(1000, 3, 100, C)
 scenario_append_literal(1000, 3, 1000, C)
 
-print("===== C: array concat =====")
+println("===== C: array concat =====")
 scenario_concat_arrays(100, 100, 10, C)
 scenario_concat_arrays(100, 100, 100, C)
 scenario_concat_arrays(100, 100, 1000, C)
@@ -152,7 +153,7 @@ scenario_concat_arrays(1000, 1000, 10, C)
 scenario_concat_arrays(1000, 1000, 100, C)
 scenario_concat_arrays(1000, 1000, 1000, C)
 
-print("===== A: build =====")
+println("===== A: build =====")
 scenario_build(100, 10, C)
 scenario_build(100, 100, C)
 scenario_build(100, 1000, C)
@@ -164,31 +165,31 @@ scenario_build(1000, 1000, C)
 // Each sweep prints: a, contiguous_total, rope_total for a=0..200
 // We can identify crossover: where contiguous_total becomes less than rope_total
 
-print("===== sweep B: append n=100 =====")
+println("===== sweep B: append n=100 =====")
 sweep_append(100, 3, C)
 
-print("===== sweep B: append n=1000 =====")
+println("===== sweep B: append n=1000 =====")
 sweep_append(1000, 3, C)
 
-print("===== sweep B: append n=10000 =====")
+println("===== sweep B: append n=10000 =====")
 sweep_append(10000, 3, C)
 
-print("===== sweep C: concat n=100 =====")
+println("===== sweep C: concat n=100 =====")
 sweep_concat(100, 100, C)
 
-print("===== sweep C: concat n=1000 =====")
+println("===== sweep C: concat n=1000 =====")
 sweep_concat(1000, 1000, C)
 
-print("===== sweep C: concat n=10000 =====")
+println("===== sweep C: concat n=10000 =====")
 sweep_concat(10000, 10000, C)
 
-print("===== sweep A: build n=100 =====")
+println("===== sweep A: build n=100 =====")
 sweep_build(100, C)
 
-print("===== sweep A: build n=1000 =====")
+println("===== sweep A: build n=1000 =====")
 sweep_build(1000, C)
 
-print("===== sweep A: build n=10000 =====")
+println("===== sweep A: build n=10000 =====")
 sweep_build(10000, C)
 
-print("done")
+println("done")

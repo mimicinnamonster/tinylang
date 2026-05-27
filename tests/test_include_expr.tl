@@ -1,5 +1,7 @@
 // test_include_expr.tl — test include with thispath() expressions
 
+function println(x) { print(x) print("\n") }
+
 // Include using thispath() + relative filename
 // thispath() inside include returns the directory of the current file
 include thispath() + "include_sub.tl"
@@ -8,16 +10,16 @@ include thispath() + "include_sub.tl"
 greet("world")
 
 // Use variable defined in included file
-print(message)
+println(message)
 
 // Use function that returns a value
-print(double(21))
+println(double(21))
 
 // Verify plain string literal includes still work
 // (use a different file to exercise the old code path)
 include "thispath_sub.tl"
 
 sub = get_sub_path()
-print(#sub)
+println(#sub)
 
-print("ok")
+println("ok")

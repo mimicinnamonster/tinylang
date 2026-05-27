@@ -1,4 +1,4 @@
 function hi() {
-  print("hello!")
+  print("hello!\n")
 }
 hi()

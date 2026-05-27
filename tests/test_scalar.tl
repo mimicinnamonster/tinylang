@@ -1,85 +1,87 @@
 // Scalar operations — simplified (no compact types, no bitwise)
 // All numbers are doubles, arrays are Value[]
 
-print("=== 1. Basic numbers ===")
-print(0)
-print(255)
-print(256)
-print(65535)
-print(65536)
-print(1.5)
-print(3.14159265358979)
-print(255 * 255)
-print(0)
+function println(x) { print(x) print("\n") }
 
-print("=== 2. Arithmetic operations ===")
-print(10 + 20)
-print(100 - 30)
-print(5 * 6)
-print(100 / 3)
-print(100 % 3)
-print(-10 + 5)
+println("=== 1. Basic numbers ===")
+println(0)
+println(255)
+println(256)
+println(65535)
+println(65536)
+println(1.5)
+println(3.14159265358979)
+println(255 * 255)
+println(0)
 
-print("=== 3. Negation and sign changes ===")
-print(-5)
-print(-(-5))
-print(-(10 - 15))
-print(-0)
+println("=== 2. Arithmetic operations ===")
+println(10 + 20)
+println(100 - 30)
+println(5 * 6)
+println(100 / 3)
+println(100 % 3)
+println(-10 + 5)
 
-print("=== 4. Mixed operations ===")
-print(10 + 20)
-print(200 + 100)
-print(200 + (-50))
-print(-100 * 3)
-print(200 * 1000)
-print(100 + 0.5)
-print(42 + 1.5)
-print(1.5 + 3.14159265358979)
+println("=== 3. Negation and sign changes ===")
+println(-5)
+println(-(-5))
+println(-(10 - 15))
+println(-0)
 
-print("=== 5. Comparisons ===")
-print(42 = 42)
-print(42 = 43)
-print(200 > -100)
-print(-100 < 50)
-print(50 > -100)
-print(70000 > 100)
+println("=== 4. Mixed operations ===")
+println(10 + 20)
+println(200 + 100)
+println(200 + (-50))
+println(-100 * 3)
+println(200 * 1000)
+println(100 + 0.5)
+println(42 + 1.5)
+println(1.5 + 3.14159265358979)
 
-print("=== 6. Function parameters and returns ===")
+println("=== 5. Comparisons ===")
+println(42 = 42)
+println(42 = 43)
+println(200 > -100)
+println(-100 < 50)
+println(50 > -100)
+println(70000 > 100)
+
+println("=== 6. Function parameters and returns ===")
 function double(x) { return x * 2 }
-print(double(5))
-print(double(-10))
-print(double(1.5))
+println(double(5))
+println(double(-10))
+println(double(1.5))
 
 function half(x) { return x / 2 }
-print(half(10))
-print(half(9))
+println(half(10))
+println(half(9))
 
 function negate(x) { return -x }
-print(negate(42))
-print(negate(-100))
+println(negate(42))
+println(negate(-100))
 
 function add_many(a, b, c) {
     a = a + b
     return a + c
 }
-print(add_many(10, 20, 30))
-print(add_many(-5, 10, -3))
+println(add_many(10, 20, 30))
+println(add_many(-5, 10, -3))
 
 function factorial(n) {
     if n <= 1 { return 1 }
     return n * factorial(n - 1)
 }
-print(factorial(5))
-print(factorial(10))
+println(factorial(5))
+println(factorial(10))
 
-print("=== 7. Loop counters ===")
+println("=== 7. Loop counters ===")
 sum = 0
 i = 0
 while i < 10 {
     sum = sum + i
     i = i + 1
 }
-print(sum)
+println(sum)
 
 m = 1
 i = 0
@@ -87,7 +89,7 @@ while i < 10 {
     m = m * 2
     i = i + 1
 }
-print(m)
+println(m)
 
 // Overflow check — doubles handle large values
 big = 1
@@ -96,34 +98,34 @@ while i < 100 {
     big = big * 2
     i = i + 1
 }
-print(big > 0)
+println(big > 0)
 
-print("=== 8. Complex expressions ===")
-print(1 + 2 * 3)
-print((1 + 2) * 3)
-print(10 / 2 + 3 * 2)
-print((10 / 2 + 3) * 2)
-print(10 / (2 + 3) * 2)
+println("=== 8. Complex expressions ===")
+println(1 + 2 * 3)
+println((1 + 2) * 3)
+println(10 / 2 + 3 * 2)
+println((10 / 2 + 3) * 2)
+println(10 / (2 + 3) * 2)
 
-print("=== 9. Edge cases ===")
-print(0)
-print(-0)
-print(1 / 3)
-print(10 % 3)
-print(-10 % 3)
-print(10 % -3)
+println("=== 9. Edge cases ===")
+println(0)
+println(-0)
+println(1 / 3)
+println(10 % 3)
+println(-10 % 3)
+println(10 % -3)
 
-print("=== 10. Sequence of different operations ===")
+println("=== 10. Sequence of different operations ===")
 balance = 1000
 balance = balance + 500
 balance = balance - 200
 balance = balance * 2
-print(balance)
+println(balance)
 
 rate = 1.5
 time = 10
 distance = rate * time
-print(distance)
+println(distance)
 
 arr = [10, 20, 30, 40, 50]
 sum = 0
@@ -132,6 +134,6 @@ while i < #arr {
     sum = sum + arr[i]
     i = i + 1
 }
-print(sum)
+println(sum)
 
-print("done")
+println("done")

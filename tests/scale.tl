@@ -2,6 +2,8 @@
 // Prints break-even reads (a) for each (n, C) combination
 // 0 = contiguous always wins, -1 = rope always wins
 
+function println(x) { print(x) print("\n") }
+
 function ceil_div(x, y) {
     result = 0
     while result * y < x { result = result + 1 }
@@ -41,11 +43,11 @@ ns = [1, 10, 100, 500, 1000, 5000, 10000, 65000]
 Cs = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
 
 // BUILD TABLE
-print("BUILD: max reads where rope wins (0=never)")
+println("BUILD: max reads where rope wins (0=never)")
 h = "" + Cs[0]
 i = 1
 while i < #Cs { h = h + " " + Cs[i]; i = i + 1 }
-print(h)
+println(h)
 i = 0
 while i < #ns {
     n = ns[i]
@@ -55,16 +57,16 @@ while i < #ns {
         line = line + " " + build_be(n, Cs[j])
         j = j + 1
     }
-    print(line)
+    println(line)
     i = i + 1
 }
 
-print("")
-print("CONCAT (a=b): max reads where rope wins (-1=always)")
+println("")
+println("CONCAT (a=b): max reads where rope wins (-1=always)")
 h = "" + Cs[0]
 i = 1
 while i < #Cs { h = h + " " + Cs[i]; i = i + 1 }
-print(h)
+println(h)
 i = 0
 while i < #ns {
     n = ns[i]
@@ -74,10 +76,10 @@ while i < #ns {
         line = line + " " + concat_eq(n, Cs[j])
         j = j + 1
     }
-    print(line)
+    println(line)
     i = i + 1
 }
 
-print("")
-print("LITERAL APPEND: contiguous always wins")
-print("done")
+println("")
+println("LITERAL APPEND: contiguous always wins")
+println("done")

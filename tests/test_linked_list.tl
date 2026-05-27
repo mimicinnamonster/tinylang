@@ -3,6 +3,8 @@
 // We use dynamic indexing arr[indices] to write at the tail
 // without creating shared references (no COW copies)
 
+function println(x) { print(x) print("\n") }
+
 arr = [0, []]       // first node
 path = [1]           // indices to reach the current tail
 i = 1
@@ -15,6 +17,6 @@ while i < 500 {
 // Traverse
 i = arr
 while i {
-  print(i[0])
+  println(i[0])
   i = i[1]
 }
