@@ -1,6 +1,6 @@
 # TinyLang
 
-A tiny, statically-typed programming language implemented in 1,163 lines of C.
+A tiny, statically-typed programming language implemented in ~1,200 lines of C.
 Single-pass compiler to bytecode with a stack-based VM, refcount+COW, and tail
 call optimization. No AST, no GC, no closures, no pointers.
 
@@ -26,17 +26,28 @@ call optimization. No AST, no GC, no closures, no pointers.
 ## Quick start
 
 ```sh
+# Without readline (no line editing):
 cc -Wall -Wextra -O2 -lm -o tinylang tinylang.c
 ./tinylang tests/test.tl
+
+# With optional readline support (line editing, history, arrow keys):
+cc -DREADLINE -Wall -Wextra -O2 -lm -o tinylang tinylang.c -lreadline
 ```
 
 ### REPL
 
 ```sh
-./tinylang          # bare REPL, no line editing
-rlwrap ./tinylang   # with history and arrow keys (brew install rlwrap)
-./repl.sh           # restarts on error (Ctrl+C to exit)
+./tinylang          # REPL with built-in input handling
 ```
+
+When compiled with `-DREADLINE`, the REPL provides full readline editing:
+Emacs keybindings, command history (up/down arrows), incremental search
+(Ctrl+R), and tab completion.
+Without readline, a basic `fgets`-based input is used.
+
+Either way, no external tools like `rlwrap` or `repl.sh` are needed — the
+REPL is self-contained. Errors print a traceback and return to the prompt
+without destroying variables or function definitions.
 
 The REPL reads until braces balance before executing, so multi-line functions
 and blocks work naturally.
@@ -94,7 +105,8 @@ print(nodes[0][0])                  // 42
 
 ## Implementation
 
-- 1,163 lines of C, single file
+- ~1,200 lines of C, single file
+- Optional GNU Readline/libedit integration for line editing and history
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
 - Stack-based VM: computed goto dispatch, `Value istk[4096]` stack
 - Slot-indexed variable access: O(1) instead of O(n) strcmp

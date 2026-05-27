@@ -12,6 +12,10 @@
 #include <ctype.h>
 #include <math.h>
 #include <setjmp.h>
+#ifdef READLINE
+#  include <readline/readline.h>
+#  include <readline/history.h>
+#endif
 
 typedef enum { VAL_NUM, VAL_ARR } Type;
 typedef struct Arr { int refcount, len, cap; struct Value *val; } Arr;
@@ -488,6 +492,7 @@ void comp_prim(Code *c) {
                     die("undefined variable '%s'", nm);
                 } else {
                     emit(c, (Instr){OC_VAR, 0, 0, .name = nm});
+                    nm = NULL;
                 }
                 free(nm);
             }
@@ -776,7 +781,6 @@ void comp_stmt(Code *c) {
 }
 
 void comp_program(Code *c) {
-    comp_vars = NULL; comp_vc = 0; comp_vm = 0;
     while (ts[tp].t != T_EOF) {
         while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
         if (ts[tp].t == T_EOF) break;
@@ -1127,22 +1131,54 @@ int main(int a, char **v) {
         char dir[1024] = {0}; const char *slash = strrchr(v[1], '/');
         if (slash) { memcpy(dir, v[1], slash - v[1]); } include_dir = dir;
         comp_file = strdup(v[1]);
-        lex(src); Code *code = new_code(); comp_program(code); free(src); free(comp_file); comp_file = NULL;
-        /* Pre-allocate scope for top-level variables if any */
-        if (comp_vc > 0) {
+        lex(src); Code *code = new_code();
+        comp_vars = NULL; comp_vc = 0; comp_vm = 0;
+        comp_program(code); free(src); free(comp_file); comp_file = NULL;
+        /* Grow scope if needed for top-level variable slots */
+        if (comp_vc > cs->c) {
             Scp *new_cs = snew_sized(comp_vc);
-            /* Transfer any existing values from the old cs */
             for (int i = 0; i < cs->c; i++) {
-                new_cs->n[i] = cs->n[i]; new_cs->v[i] = cs->v[i];
+                new_cs->n[i] = cs->n[i];
+                new_cs->v[i] = cs->v[i];
             }
-            free(cs->v); free(cs->n); free(cs);
+            free(cs->n); free(cs->v); free(cs);
             cs = new_cs;
         }
+        for (int i = 0; i < comp_vc; i++)
+            if (!cs->n[i]) cs->n[i] = strdup(comp_vars[i]);
         exec(code); code_free(code); free(ts);
     } else {
         char buf[65536];
+#ifdef READLINE
+        rl_initialize();
+#endif
         while (1) {
-            printf("> "); fflush(stdout); buf[0] = 0;
+            buf[0] = 0;
+#ifdef READLINE
+            {
+                char *rline = readline("> ");
+                if (!rline) { printf("\n"); break; }
+                strcat(buf, rline);
+                strcat(buf, "\n");
+                free(rline);
+                /* Empty line — skip */
+                if (!buf[0] || (buf[0] == '\n' && buf[1] == 0)) continue;
+                /* Continue reading until braces balance (multi-line input) */
+                int op = 0, cl = 0;
+                for (char *p = buf; *p; p++) { if (*p == '{') op++; if (*p == '}') cl++; }
+                while (op != cl) {
+                    rline = readline("  ");
+                    if (!rline) break;
+                    strcat(buf, rline);
+                    strcat(buf, "\n");
+                    free(rline);
+                    op = 0; cl = 0;
+                    for (char *p = buf; *p; p++) { if (*p == '{') op++; if (*p == '}') cl++; }
+                }
+                add_history(buf);
+            }
+#else
+            printf("> "); fflush(stdout);
             while (1) {
                 char line[4096];
                 if (!fgets(line, sizeof(line), stdin)) { printf("\n"); goto done; }
@@ -1152,15 +1188,30 @@ int main(int a, char **v) {
                 if (op == cl) break;
                 printf("  "); fflush(stdout);
             }
+#endif
             comp_file = NULL;
-            lex(buf); Code *code = new_code(); comp_program(code);
+            lex(buf); Code *code = new_code();
+            comp_program(code);
+            if (comp_vc > cs->c) {
+                Scp *new_cs = snew_sized(comp_vc);
+                for (int i = 0; i < cs->c; i++) {
+                    new_cs->n[i] = cs->n[i];
+                    new_cs->v[i] = cs->v[i];
+                }
+                free(cs->n); free(cs->v); free(cs);
+                cs = new_cs;
+            }
+            for (int i = 0; i < comp_vc; i++)
+                if (!cs->n[i]) cs->n[i] = strdup(comp_vars[i]);
             { int _sr = repl_catching; repl_catching = 1;
               if (setjmp(repl_jmp)) { isp = -1; rf = 0; call_depth = -1; }
               else { isp = -1; exec(code); }
               repl_catching = _sr; }
             code_free(code); free(ts);
         }
+#ifndef READLINE
         done:;
+#endif
     }
     if (comp_vars) { for (int i = 0; i < comp_vc; i++) free(comp_vars[i]); free(comp_vars); }
     sfree(cs); return 0;
