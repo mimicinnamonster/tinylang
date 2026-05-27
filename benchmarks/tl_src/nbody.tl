@@ -139,4 +139,4 @@ fun run(n=0) {
     print(energy(bodies))
 }
 
-run(5000000)
+run(500000)

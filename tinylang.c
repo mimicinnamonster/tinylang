@@ -48,7 +48,7 @@ typedef enum {
     OC_NUM, OC_NIL, OC_STR, OC_MAKE_ARR,
     OC_VAR,
     OC_VAR_SLOT, OC_STORE_SLOT,
-    OC_OP, OC_UNARY, OC_INDEX,
+    OC_OP, OC_ADD_NUM, OC_SUB_NUM, OC_MUL_NUM, OC_DIV_NUM, OC_UNARY, OC_INDEX,
     OC_CALL, OC_TCO,
     OC_JZ, OC_JMP, OC_RET, OC_POP,
     OC_LVALS, OC_PUSH, OC_LVALS_PUSH, OC_SLICE,
@@ -57,6 +57,7 @@ typedef enum {
     OC_PUSH_ALL,
     OC_SLICE_INPLACE,
     OC_DESTRUCTURE,
+    OC_MUTATE_NUM,
     OC_END,
 } OC;
 
@@ -95,6 +96,9 @@ static int comp_vc, comp_vm;
 /* Compile-time return type tracking for current function */
 static ExprType fn_ret_type;
 static int fn_ret_seen;
+
+/* Track the type of the most recently compiled expression (for numeric opcode optimization) */
+static ExprType comp_last_type;
 
 void die(const char *f, ...);
 
@@ -577,9 +581,9 @@ void comp_prim(Code *c) {
     while (ts[tp].t == T_NL) tp++;
     Tok t = ts[tp]; comp_line = t.l; err_line = t.l; err_file = comp_file;
     switch (t.t) {
-        case T_NUM: tp++; emit(c, (Instr){OC_NUM, 0, 0, .num = t.n}); break;
-        case T_NIL: tp++; emit(c, (Instr){OC_NIL, 0, 0, .num = 0}); break;
-        case T_STR: { tp++; Arr *o = (Arr*)t.s; emit(c, (Instr){OC_STR, 0, 0, .arr = o}); break; }
+        case T_NUM: tp++; emit(c, (Instr){OC_NUM, 0, 0, .num = t.n}); comp_last_type = T_NUM_TYPE; break;
+        case T_NIL: tp++; emit(c, (Instr){OC_NIL, 0, 0, .num = 0}); comp_last_type = T_ARR_TYPE; break;
+        case T_STR: { tp++; Arr *o = (Arr*)t.s; emit(c, (Instr){OC_STR, 0, 0, .arr = o}); comp_last_type = T_STR_TYPE; break; }
         case T_ID: {
             char *nm = strdup(t.s); tp++;
             if (ts[tp].t == T_LP) {
@@ -597,16 +601,19 @@ void comp_prim(Code *c) {
                     emit(c, (Instr){OC_STR, 0, 0, .arr = a});
                 } else {
                     int fi = ffind(t.s); if (fi < 0) die("undefined function '%s'", t.s);
+                    comp_last_type = fs[fi].ret_type;
                     emit(c, (Instr){OC_CALL, fi, ac, .num = 0});
                 }
             } else {
                 /* Variable read — use slot index in function bodies, name at top-level */
                 int slot = var_find(nm);
                 if (slot >= 0) {
+                    comp_last_type = comp_types[slot];
                     emit(c, (Instr){OC_VAR_SLOT, slot, 0, .num = 0});
                 } else if (cur_fi >= 0) {
                     die("undefined variable '%s'", nm);
                 } else {
+                    comp_last_type = T_UNKNOWN;
                     emit(c, (Instr){OC_VAR, 0, 0, .name = nm});
                     nm = NULL;
                 }
@@ -616,20 +623,22 @@ void comp_prim(Code *c) {
         }
         case T_LB: {
             tp++;
-            if (ts[tp].t == T_RB) { tp++; emit(c, (Instr){OC_NIL, 0, 0, .num = 0}); break; }
+            if (ts[tp].t == T_RB) { tp++; emit(c, (Instr){OC_NIL, 0, 0, .num = 0}); comp_last_type = T_ARR_TYPE; break; }
             int n = 0;
             do { comp_expr(c); n++; } while (ts[tp].t == T_CM && (tp++, 1));
             if (ts[tp].t != T_RB) die("expected ]"); tp++;
-            emit(c, (Instr){OC_MAKE_ARR, n, 0, .num = 0}); break;
+            emit(c, (Instr){OC_MAKE_ARR, n, 0, .num = 0}); comp_last_type = T_ARR_TYPE; break;
         }
         case T_LP: { tp++; comp_expr(c); if (ts[tp].t != T_RP) die("expected )"); tp++; break; }
-        case T_BN: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_BN, 0, .num = 0}); break;
-        case T_MI: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_MI, 0, .num = 0}); break;
-        case T_HASH: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_HASH, 0, .num = 0}); break;
-        case T_TILDE: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_TILDE, 0, .num = 0}); break;
+        case T_BN: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_BN, 0, .num = 0}); comp_last_type = T_UNKNOWN; break;
+        case T_MI: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_MI, 0, .num = 0}); comp_last_type = T_NUM_TYPE; break;
+        case T_HASH: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_HASH, 0, .num = 0}); comp_last_type = T_NUM_TYPE; break;
+        case T_TILDE: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_TILDE, 0, .num = 0}); comp_last_type = T_NUM_TYPE; break;
         default: die("unexpected token at line %d", t.l);
     }
+    int had_index = 0;
     while (ts[tp].t == T_LB) {
+        had_index = 1;
         tp++;
         int is_slice = 0;
         if (ts[tp].t == T_COLON) is_slice = 1;
@@ -660,6 +669,7 @@ void comp_prim(Code *c) {
             if (ts[tp].t != T_RB) die("expected ]"); tp++;
         }
     }
+    if (had_index) comp_last_type = T_UNKNOWN;
 }
 
 static void comp_expr_prec(Code *c, int min_prec) {
@@ -674,8 +684,25 @@ static void comp_expr_prec(Code *c, int min_prec) {
             comp_expr_prec(c, op_prec(op) + 1);
             c->code[jmp].a = c->len;
         } else {
+            ExprType left_type = comp_last_type;
             comp_expr_prec(c, op_prec(op) + 1);
-            emit(c, (Instr){OC_OP, op, 0, .num = 0});
+            ExprType right_type = comp_last_type;
+            /* Emit dedicated numeric opcodes when both operands are known numbers */
+            if (left_type == T_NUM_TYPE && right_type == T_NUM_TYPE) {
+                switch (op) {
+                    case T_PL: emit(c, (Instr){OC_ADD_NUM, 0, 0, .num = 0}); comp_last_type = T_NUM_TYPE; break;
+                    case T_MI: emit(c, (Instr){OC_SUB_NUM, 0, 0, .num = 0}); comp_last_type = T_NUM_TYPE; break;
+                    case T_ST: emit(c, (Instr){OC_MUL_NUM, 0, 0, .num = 0}); comp_last_type = T_NUM_TYPE; break;
+                    case T_SL: emit(c, (Instr){OC_DIV_NUM, 0, 0, .num = 0}); comp_last_type = T_NUM_TYPE; break;
+                    default:
+                        emit(c, (Instr){OC_OP, op, 0, .num = 0});
+                        comp_last_type = T_NUM_TYPE;
+                        break;
+                }
+            } else {
+                emit(c, (Instr){OC_OP, op, 0, .num = 0});
+                comp_last_type = T_UNKNOWN;
+            }
         }
     }
 }
@@ -1146,8 +1173,17 @@ void comp_stmt(Code *c) {
                 else if (ts[tp].t == T_MI_ASSIGN) compound_op = T_MI;
                 else if (ts[tp].t == T_ST_ASSIGN) compound_op = T_ST;
                 else if (ts[tp].t == T_SL_ASSIGN) compound_op = T_SL;
-                /* Rewrite compound into plain: x op= RHS → x = x op RHS (incl indices) */
+                /* Try OC_MUTATE_NUM for array[idx] op= delta (fused read-modify-write) */
                 if (compound_op) {
+                    int slot = var_find(nm);
+                    if (slot >= 0 && comp_types[slot] == T_ARR_TYPE && idx_count >= 1 && comp_last_type == T_NUM_TYPE) {
+                        tp++;  /* skip compound op token */
+                        comp_expr(c);  /* compile RHS delta expression */
+                        emit(c, (Instr){OC_MUTATE_NUM, slot, idx_count, .num = (double)compound_op});
+                        free(nm);
+                        break;
+                    }
+                    /* Fallback: rewrite compound into plain: x op= RHS → x = x op RHS (incl indices) */
                     int lhs = tp - name_tp;
                     memmove(&ts[tp + lhs + 2], &ts[tp + 1], (tc - tp - 1) * sizeof(Tok));
                     ts[tp].t = T_ASSIGN;
@@ -1420,10 +1456,59 @@ op_store_slot: {
 op_op: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     Instr *ins = &c->code[ip];
-    Value r = istk[isp--], l = istk[isp--], res = apply(ins->a, l, r);
-    if (l.type == VAL_ARR) arelease(l.arr);
-    if (r.type == VAL_ARR) arelease(r.arr);
-    istk[++isp] = res; ip++; goto dispatch;
+    Value r = istk[isp--], l = istk[isp--];
+    /* Fast path: both operands are numbers — skip apply() entirely */
+    if (l.type == VAL_NUM && r.type == VAL_NUM) {
+        double ld = l.num, rd = r.num;
+        switch (ins->a) {
+            case T_PL: istk[++isp] = vnum(ld + rd); ip++; goto dispatch;
+            case T_MI: istk[++isp] = vnum(ld - rd); ip++; goto dispatch;
+            case T_ST: istk[++isp] = vnum(ld * rd); ip++; goto dispatch;
+            case T_SL: if (rd == 0) die("division by zero"); istk[++isp] = vnum(ld / rd); ip++; goto dispatch;
+            case T_PC: if (rd == 0) die("modulo by zero"); istk[++isp] = vnum(fmod(ld, rd)); ip++; goto dispatch;
+            case T_LT: istk[++isp] = ld < rd ? vnum(1) : nilv(); ip++; goto dispatch;
+            case T_GT: istk[++isp] = ld > rd ? vnum(1) : nilv(); ip++; goto dispatch;
+            case T_LE: istk[++isp] = ld <= rd ? vnum(1) : nilv(); ip++; goto dispatch;
+            case T_GE: istk[++isp] = ld >= rd ? vnum(1) : nilv(); ip++; goto dispatch;
+            case T_EQ: istk[++isp] = ld == rd ? vnum(1) : nilv(); ip++; goto dispatch;
+            case T_NE: istk[++isp] = ld != rd ? vnum(1) : nilv(); ip++; goto dispatch;
+            case T_SHL: istk[++isp] = vnum((double)((int64_t)ld << (int32_t)rd)); ip++; goto dispatch;
+            case T_SHR: istk[++isp] = vnum((double)((int64_t)ld >> (int32_t)rd)); ip++; goto dispatch;
+            case T_AM: istk[++isp] = vnum((double)((int64_t)ld & (int64_t)rd)); ip++; goto dispatch;
+            case T_PI: istk[++isp] = vnum((double)((int64_t)ld | (int64_t)rd)); ip++; goto dispatch;
+            case T_CA: istk[++isp] = vnum((double)((int64_t)ld ^ (int64_t)rd)); ip++; goto dispatch;
+            default: break;
+        }
+    }
+    /* Fallback: call apply() for non-numeric cases */
+    {
+        Value res = apply(ins->a, l, r);
+        if (l.type == VAL_ARR) arelease(l.arr);
+        if (r.type == VAL_ARR) arelease(r.arr);
+        istk[++isp] = res; ip++; goto dispatch;
+    }
+}
+
+op_add_num: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    double r = istk[isp--].num, l = istk[isp--].num;
+    istk[++isp] = vnum(l + r); ip++; goto dispatch;
+}
+op_sub_num: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    double r = istk[isp--].num, l = istk[isp--].num;
+    istk[++isp] = vnum(l - r); ip++; goto dispatch;
+}
+op_mul_num: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    double r = istk[isp--].num, l = istk[isp--].num;
+    istk[++isp] = vnum(l * r); ip++; goto dispatch;
+}
+op_div_num: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    double r = istk[isp--].num, l = istk[isp--].num;
+    if (r == 0) die("division by zero");
+    istk[++isp] = vnum(l / r); ip++; goto dispatch;
 }
 
 op_unary: {
@@ -1896,6 +1981,39 @@ op_destructure: {
     ip++; goto dispatch;
 }
 
+op_mutate_num: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int slot = ins->a, depth = ins->b;
+    int op = (int)ins->num;
+    Value delta = istk[isp--];
+    Value indices[16];
+    for (int j = depth - 1; j >= 0; j--) indices[j] = istk[isp--];
+    Value *sp = &cs->v[slot];
+    for (int j = 0; j < depth; j++) {
+        amake_uniq(sp);
+        int ii = (int)val_num(indices[j]);
+        if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len)
+            die("index out of bounds");
+        sp = &sp->arr->val[ii];
+    }
+    if (sp->type == VAL_ARR) die("mutate on non-number");
+    double old = sp->num;
+    double d = delta.num;
+    double result = 0.0;
+    switch (op) {
+        case T_PL: result = old + d; break;
+        case T_MI: result = old - d; break;
+        case T_ST: result = old * d; break;
+        case T_SL: if (d == 0) die("division by zero"); result = old / d; break;
+        default: die("invalid mutate op");
+    }
+    *sp = vnum(result);
+    for (int j = 0; j < depth; j++)
+        if (indices[j].type == VAL_ARR) arelease(indices[j].arr);
+    ip++; goto dispatch;
+}
+
     /* ── Central dispatch ── */
 dispatch:
     switch (c->code[ip].op) {
@@ -1907,6 +2025,10 @@ dispatch:
     case OC_VAR_SLOT: goto op_var_slot;
     case OC_STORE_SLOT: goto op_store_slot;
     case OC_OP: goto op_op;
+    case OC_ADD_NUM: goto op_add_num;
+    case OC_SUB_NUM: goto op_sub_num;
+    case OC_MUL_NUM: goto op_mul_num;
+    case OC_DIV_NUM: goto op_div_num;
     case OC_UNARY: goto op_unary;
     case OC_INDEX: goto op_index;
     case OC_LVALS: goto op_lvals;
@@ -1926,6 +2048,7 @@ dispatch:
     case OC_PUSH_ALL: goto op_push_all;
     case OC_SLICE_INPLACE: goto op_slice_inplace;
     case OC_DESTRUCTURE: goto op_destructure;
+    case OC_MUTATE_NUM: goto op_mutate_num;
     case OC_END: goto op_end;
     }
 

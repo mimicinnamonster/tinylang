@@ -45,4 +45,4 @@ fun mandelbrot(size=200) {
     print(total)
 }
 
-mandelbrot(200)
+mandelbrot(1000)

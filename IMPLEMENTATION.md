@@ -75,14 +75,15 @@ A single-pass recursive descent compiler that walks the token array and emits
 `Instr[]` bytecode. No intermediate AST — each parser function emits instructions
 directly.
 
-### Instruction Set (25 opcodes)
+### Instruction Set (30 opcodes)
 
 ```c
 typedef enum {
     OC_NUM, OC_NIL, OC_STR, OC_MAKE_ARR,    // value producers
     OC_VAR,                                 // name-based variable access (top-level, read-only)
     OC_VAR_SLOT, OC_STORE_SLOT,             // slot-indexed variable access (functions)
-    OC_OP, OC_UNARY,                        // arithmetic / unary
+    OC_OP, OC_ADD_NUM, OC_SUB_NUM,          // arithmetic: generic + dedicated numeric
+    OC_MUL_NUM, OC_DIV_NUM, OC_UNARY,       //   (4 fused opcodes skip apply() dispatch)
     OC_INDEX,                               // array indexing
     OC_CALL, OC_TCO,                        // function call + tail call
     OC_JZ, OC_JMP, OC_RET, OC_POP,          // control flow
@@ -92,6 +93,7 @@ typedef enum {
     OC_PUSH_ALL,                            // push all elements from any array expr
     OC_SLICE_INPLACE,                       // x = x[slice] in-place mutation
     OC_DESTRUCTURE,                         // array destructure into multiple variables
+    OC_MUTATE_NUM,                          // fused read-modify-write for arr[idx] op= expr
     OC_END,                                 // terminator
 } OC;
 ```
@@ -105,7 +107,7 @@ typedef struct Instr {
 ```
 
 - `a`, `b`: general-purpose (slot indices, jump targets, argument counts, etc.)
-- `num`: for `OC_NUM`
+- `num`: for `OC_NUM` and as operator encoding for `OC_MUTATE_NUM`
 - `arr`: for `OC_STR` (pre-lexed string data)
 - `name`: for `OC_VAR`/`OC_STORE` (variable name, top-level only)
 - `sub`: unused
@@ -365,6 +367,86 @@ The compiler detects `x = x + [...]` by lookahead on the token stream.
 
 3. **Normal `+`:** Everything else — `apply(T_PL, ...)` creates a new
    concatenated array and stores it back.
+
+### Dedicated numeric opcodes via compile-time type tracking
+
+The compiler tracks the type of every expression it compiles via a global
+`comp_last_type`, set in `comp_prim()` for each value producer:
+
+| Expression | `comp_last_type` set to |
+|------------|------------------------|
+| Number literal `5` | `T_NUM_TYPE` |
+| String literal `"hi"` | `T_STR_TYPE` |
+| Variable read `x` | `comp_types[slot]` (compile-time known) |
+| Function call `f()` | `Fn.ret_type` |
+| Array literal `[1,2]` | `T_ARR_TYPE` |
+| Indexed expr `arr[i]` | `T_UNKNOWN` (elements not tracked) |
+| Unary `-x` | `T_NUM_TYPE` |
+
+In `comp_expr_prec`, after compiling both sides of a binary operator, the
+compiler checks both `comp_last_type` values. If both are `T_NUM_TYPE`, it
+emits a dedicated numeric opcode instead of the generic `OC_OP`:
+
+| Operator | Generic opcode | Numeric fast-path opcode |
+|----------|---------------|--------------------------|
+| `+` | `OC_OP(T_PL)` → `apply()` | `OC_ADD_NUM` (inline `l.num + r.num`) |
+| `-` | `OC_OP(T_MI)` → `apply()` | `OC_SUB_NUM` (inline subtraction) |
+| `*` | `OC_OP(T_ST)` → `apply()` | `OC_MUL_NUM` (inline multiplication) |
+| `/` | `OC_OP(T_SL)` → `apply()` | `OC_DIV_NUM` (inline divide, zero-check) |
+
+Each dedicated opcode handler is 3-4 C statements (load two doubles, compute,
+push result) compared to the ~20 statements plus function call overhead of
+the `apply()` path.
+
+For operators without dedicated opcodes (comparisons, bitwise, `%`), the
+`OC_OP` handler was also given a runtime fast path: when both operands are
+`VAL_NUM`, it inlines all 15 operators into a switch and skips `apply()`
+entirely. This catches array-read results whose types are `T_UNKNOWN` at
+compile time.
+
+### Fused read-modify-write for compound assignment (`OC_MUTATE_NUM`)
+
+When the compiler encounters compound assignment with an indexed LHS like
+`bodies[bi+3] -= dx*mj`, the token-rewrite approach produces:
+
+```
+bodies [ bi + 3 ] = bodies [ bi + 3 ] - dx * mj
+                       ^^^^^^^^^
+                       same index, evaluated again
+```
+
+The `bi+3` index is evaluated twice — once for the LHS store path (saved for
+`OC_LVALS`), once for the RHS read. This doubles the per-mutation bytecode
+count and applies to every element update in the n-body hot loop.
+
+`OC_MUTATE_NUM` fuses the read-modify-write into a single opcode:
+
+| Before (13 bytecodes) | After OC_MUTATE_NUM (9 bytecodes) |
+|-----------------------|-----------------------------------|
+| `OC_VAR_SLOT(bi)` | `OC_VAR_SLOT(bi)` |
+| `OC_NUM(3)` | `OC_NUM(3)` |
+| `OC_ADD_NUM` | `OC_ADD_NUM` |
+| `OC_VAR_SLOT(bodies)` (RHS read) | `OC_VAR_SLOT(dx)` (delta only) |
+| `OC_VAR_SLOT(bi)` (duplicate!) | `OC_VAR_SLOT(mj)` |
+| `OC_NUM(3)` (duplicate!) | `OC_MUL_NUM` |
+| `OC_ADD_NUM` (duplicate!) | **`OC_MUTATE_NUM`** (fused) |
+| `OC_INDEX` | |
+| `OC_VAR_SLOT(dx)` | |
+| `OC_VAR_SLOT(mj)` | |
+| `OC_MUL_NUM` | |
+| `OC_OP(T_MI)` | |
+| `OC_LVALS` | |
+
+The compiler emits `OC_MUTATE_NUM` when:
+1. The LHS variable is known to be an array (`comp_types[slot] == T_ARR_TYPE`)
+2. The index expression is known to be a number (`comp_last_type == T_NUM_TYPE`)
+3. The operator is one of `+=`, `-=`, `*=`, `/=`
+
+The opcode stores the slot in `ins->a`, depth in `ins->b`, and the operator
+in `ins->num`. At runtime, it pops the delta value and all index values,
+navigates through the array (with `amake_uniq` COW checks at each level),
+reads the current element, applies the operator, and writes back — all in
+one dispatch.
 
 ### TCO detection
 
@@ -844,9 +926,20 @@ for (int i = 0; i < lhs; i++) {
 - **Computed goto dispatch:** ~15% faster than switch (1 jump/bytecode vs 3)
 - **Slot-indexed variables:** ~50% reduction in variable access cost (O(1) vs
   O(n) strcmp). Biggest win for variable-heavy loops.
+- **Dedicated numeric opcodes:** `OC_ADD_NUM` / `SUB` / `MUL` / `DIV` skip
+  the `apply()` function call and 15-operator switch, doing inline double
+  arithmetic. ~30% speedup on numeric-heavy workloads.
+- **Runtime operator fast path:** `OC_OP` handler checks for `VAL_NUM`
+  operands at runtime and inlines all 15 operators, catching dynamically-typed
+  expressions where compile-time types are unknown (e.g., indexed reads).
+- **Fused mutate opcode:** `OC_MUTATE_NUM` coalesces `arr[idx] op= delta`
+  into a single opcode that reads, applies the operator, and writes back.
+  The index is evaluated once instead of twice. ~30% speedup over duplicate
+  index evaluation on array-mutation-heavy workloads.
 - **Zero-copy slice views:** contiguous slices (`step == 1`) are O(1) — no
   allocation or copying regardless of slice size. Strided slices still O(n).
-- **Combined speedup over original switch+strcmp VM:** 55-85% across benchmarks.
+- **Combined speedup over original switch+strcmp VM:** ~4× on n-body (204s →
+  ~45s at 5M steps) from flat array + numeric opcodes + OC_MUTATE_NUM.
 - **TinyLang vs CPython:** ~2× faster on numeric workloads.
-- **TinyLang vs Node.js V8:** 4-31× slower (V8 JIT-compiles to native code).
+- **TinyLang vs Node.js V8:** 3-68× slower (V8 JIT-compiles to native code).
 - **TinyLang vs naive C:** ~10-200× slower (interpreted dispatch overhead).

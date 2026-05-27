@@ -94,4 +94,4 @@ fun run(n=0) {
     random_fasta(rng, hs, hs_p, n * 5)
 }
 
-run(25000)
+run(500000)

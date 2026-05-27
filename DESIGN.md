@@ -640,6 +640,16 @@ args          := /* empty */ | expr ("," expr)*
 - **Slot initialization** — array-typed slots pre-initialized to `[]` at scope
   creation, eliminating runtime type guards
 - **TCO** — tail-recursive functions reuse the same C stack frame
+- **Dedicated numeric opcodes** — `OC_ADD_NUM`, `OC_SUB_NUM`, `OC_MUL_NUM`,
+  `OC_DIV_NUM` skip the 15-operator `apply()` dispatch for compile-time-known
+  number operations. ~30% speedup on numeric-heavy workloads.
+- **Runtime operator fast path** — the generic `OC_OP` handler checks if both
+  operands are numbers and inlines the arithmetic, still catching comparison,
+  bitwise, and modulo operators for dynamically-typed expressions.
+- **Fused mutate opcode** — `OC_MUTATE_NUM` coalesces array element read,
+  arithmetic, and write into a single opcode for `arr[idx] op= expr` patterns.
+  The index expression is evaluated once instead of twice, saving ~30% of
+  per-mutation bytecodes.
 - **Memory** — arrays are always `Value[]` (no compact backing stores), each
   Value is 24 bytes
 - **TinyLang is ~2× faster than CPython** on comparable workloads, and

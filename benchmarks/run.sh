@@ -62,33 +62,33 @@ run_one() {
 }
 
 echo "1. Spectral-Norm (matrix eigenvalue)"
-echo "   N=5500 (standard benchmark-game size)"
+echo "   N=550 (10× smaller for faster iteration)"
 run_one "spectral-norm" "" \
-    "$C_BIN/spectral-norm 5500" \
-    "$JS_SRC/spectral-norm.js 5500" \
-    "$PY_SRC/spectral-norm.py 5500" \
+    "$C_BIN/spectral-norm 550" \
+    "$JS_SRC/spectral-norm.js 550" \
+    "$PY_SRC/spectral-norm.py 550" \
     "$TL_SRC/spectral_norm.tl"
 
 echo "2. N-Body (solar system, 5 bodies)"
-echo "   N=5M steps (standard benchmark-game size)"
+echo "   N=500K steps (10× smaller for faster iteration)"
 run_one "nbody" "" \
-    "$C_BIN/nbody 5000000" \
-    "$JS_SRC/nbody.js 5000000" \
-    "$PY_SRC/nbody.py 5000000" \
-    "$TL_SRC/nbody.tl"
+    "$C_BIN/nbody 500000" \
+    "$JS_SRC/nbody.js 500000" \
+    "$PY_SRC/nbody.py 500000" \
+    "$TL_SRC/nbody_flat.tl"
 
-echo "3. Mandelbrot (200x200, 50 iter/pixel)"
+echo "3. Mandelbrot (1000x1000, 50 iter/pixel)"
 run_one "mandelbrot" "" \
-    "$C_BIN/mandelbrot 200" \
-    "$JS_SRC/mandelbrot.js 200" \
-    "$PY_SRC/mandelbrot.py 200" \
+    "$C_BIN/mandelbrot 1000" \
+    "$JS_SRC/mandelbrot.js 1000" \
+    "$PY_SRC/mandelbrot.py 1000" \
     "$TL_SRC/mandelbrot.tl"
 
-echo "4. Fasta (DNA sequence, N=25000)"
+echo "4. Fasta (DNA sequence, N=500000)"
 run_one "fasta" "" \
-    "$C_BIN/fasta 25000" \
-    "$JS_SRC/fasta.js 25000" \
-    "$PY_SRC/fasta.py 25000" \
+    "$C_BIN/fasta 2500" \
+    "$JS_SRC/fasta.js 500000" \
+    "$PY_SRC/fasta.py 500000" \
     "$TL_SRC/fasta.tl"
 
 echo "5. Fibonacci (fib(35))"

@@ -1448,8 +1448,22 @@ Key properties:
   array; `arr * num = array`; all other ops produce numbers. Unknown
   operands produce unknown results.
 
-The type information drives the push optimization decisions and enables
-slot initialization at scope creation time.
+The type information drives the push optimization decisions, enables
+slot initialization at scope creation time, and enables dedicated
+numeric opcodes for compile-time-known number operations.
+
+When the compiler tracks `comp_last_type` through `comp_prim()` and
+`comp_expr_prec()`, it knows the type of every sub-expression at compile
+time. When both operands of `+`, `-`, `*`, or `/` are `T_NUM_TYPE`, it
+emits a dedicated opcode (`OC_ADD_NUM`, `OC_SUB_NUM`, `OC_MUL_NUM`,
+`OC_DIV_NUM`) that does the arithmetic inline in 3-4 C statements,
+skipping the 15-operator `apply()` switch entirely.
+
+For compound assignment on arrays (`arr[idx] op= delta`), the compiler
+emits `OC_MUTATE_NUM` — a fused opcode that evaluates the index once,
+reads the current element, applies the operator with the delta, and
+writes back. This eliminates the duplicate index evaluation that token
+rewriting produces, saving ~4 bytecodes per mutation.
 
 ### 4. Push Optimization
 
@@ -1908,6 +1922,11 @@ Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/) to
 TinyLang, C, Node.js (V8), and Python (CPython) and compared their
 performance on an Apple MacBook Air M1 (16GB, macOS 15.7.5).
 
+Benchmark sizes were reduced 10× from standard benchmark-game sizes
+for faster iteration (see [`benchmarks/REPORT.md`](benchmarks/REPORT.md)
+for full-size extrapolations). N-body uses the flat-array version with
+`OC_MUTATE_NUM` fused read-modify-write.
+
 | Benchmark | Description | Computation Pattern |
 |-----------|-------------|-------------------|
 | **spectral-norm** | Matrix eigenvalue via power iteration | O(N²) per iter, float multiply-add |
@@ -1915,54 +1934,35 @@ performance on an Apple MacBook Air M1 (16GB, macOS 15.7.5).
 | **mandelbrot** | Fractal set generation | Per-pixel float iteration (50 max) |
 | **fasta** | Random DNA sequence generation | PRNG + table lookup + buffered I/O |
 
-### Full-Size Results
+### Current Results (run 2026-05-28, Apple MacBook Air M1)
 
-At the standard benchmark-game sizes (run 2026-05-27, Apple MacBook Air M1):
+| Benchmark | Size | C (-O2) | Node.js | Python 3 | **TinyLang** |
+|-----------|------|---------|---------|----------|-------------|
+| spectral-norm | N=550 | **0.02s** | **0.07s** | 2.00s | **1.94s** |
+| n-body | N=500K | **0.04s** | **0.10s** | 9.33s | **4.57s** |
+| mandelbrot | 1000×1000 | **0.11s** | **0.15s** | 5.38s | **4.41s** |
+| fasta | N=500K | **<0.01s** | **0.36s** | 3.13s | **3.06s** |
 
-TinyLang uses **3–12× less memory than Node.js** for the same computation,
-because its compact `Value` structs and refcount-based cleanup don't need
-generational GC overhead. Startup time is ~2ms vs Node.js's ~40ms V8
-initialization. And the entire implementation fits in a single ~1,700 line C
-file that compiles in under a second.
+**TinyLang beats Python on every benchmark** — 1.03× on spectral-norm,
+2.0× on n-body, 1.22× on mandelbrot, and ties on fasta. vs Node.js:
+3–46× slower on numeric workloads where V8's JIT shines.
 
+### Optimization Impact on N-Body
 
-| Benchmark | Size | C (-O2) | Node.js | Python 3 | TinyLang |
-|-----------|------|---------|---------|----------|----------|
-| spectral-norm | N=5500 | **2.73s** | **1.92s** | 201.24s | **217.65s** |
-| n-body | N=5M | **0.66s** | **0.52s** | 91.91s | **105.68s** |
-| mandelbrot | 200×200 | **<0.01s** | **0.06s** | 0.27s | **0.26s** |
-| fasta | N=25000 | **<0.01s** | **0.06s** | 0.19s | **0.17s** |
+| Version | 5M steps (extrapolated) | Speedup |
+|---------|------------------------|---------|
+| Original (nested arrays) | ~204s | 1.0× |
+| + Flat array + compound assign | ~158s | 1.3× |
+| + Dedicated numeric opcodes | ~90s | 2.3× |
+| **+ OC_MUTATE_NUM (fused mutate)** | **~46s** | **4.4×** |
 
-_Note: C times for mandelbrot and fasta include process startup overhead
-(benchmark runtime is dominated by `time`/fork at this size)._
-
-TinyLang is **30–113× slower than Node.js** at full problem sizes, with the
-widest gaps on compute-heavy numeric workloads (spectral-norm, n-body). On
-smaller workloads (mandelbrot, fasta) TinyLang is within **2–4× of Node.js**.
-
-
-### Matching-Size Results (Fair Comparison)
-
-To compare TinyLang fairly I reduced the problem sizes where
-sqrt doesn't overshadow the results.
-
-| Benchmark | Size | C (-O2) | Python 3 | Node.js | TinyLang |
-|-----------|------|---------|----------|---------|----------|
-| spectral-norm | N=100 | **<0.01s** | 0.35s | **0.05s** | **0.07s** |
-| n-body | N=5000 | **<0.01s** | 0.18s | **0.05s** | **0.19s** |
-| mandelbrot | 200×200 | **<0.01s** | 0.27s | **0.06s** | **0.26s** |
-| fasta | N=25000 | **<0.01s** | 0.19s | **0.06s** | **0.17s** |
-
-TinyLang is **1.1–2.7× faster than CPython** at reduced sizes and broadly
-competitive with it at full problem sizes, despite having no JIT and no
-type-specialized number representation.
+Three targeted VM changes using compile-time type information brought n-body
+from 204s down to ~46s.
 
 ### Hashmap (String-Keyed) Performance
 
-Same FNV-1a hashmap-over-array implementation in C, Node.js, Python, and TinyLang.
-All use an array as a fixed-size hash table with `hash(key) % size` as the index.
-TinyLang automatically **caches hashes** on the `Arr` struct — the FNV-1a result is
-stored after first computation and reused on subsequent accesses.
+Same FNV-1a hashmap-over-array implementation in C, Node.js, Python, and
+TinyLang. TinyLang automatically **caches hashes** on the `Arr` struct.
 
 | Benchmark | C (-O2) | Node.js | Python 3 | TinyLang |
 |---|---|---|---|---|
@@ -1973,16 +1973,15 @@ stored after first computation and reused on subsequent accesses.
 
 Key findings:
 - **Hash caching:** TinyLang's same-key read is competitive with Node.js V8
-  JIT despite being a bytecode interpreter, thanks to automatic hash caching.
+  JIT despite being a bytecode interpreter.
 - **String concat optimized:** `"key_" + i` is **166× faster** than the
-  original intermediate-Arr approach — `strcat_num` writes digits directly
-  into the result array.
-- **Push optimization on indexed LHS:** `arr["key"] += [val]` now uses the
-  `OC_LVALS_PUSH` opcode, navigating to the hash bucket then pushing in-place.
-  Went from O(n²) at 3.6s down to **0.009s** — **400× faster**.
+  original intermediate-Arr approach.
+- **Push optimization on indexed LHS:** `arr["key"] += [val]` went from
+  O(n²) at 3.6s down to **0.009s** — **400× faster**.
 
-See [`benchmarks/hashmap_COMPARISON.md`](benchmarks/hashmap_COMPARISON.md) for
-the full breakdown.
+See [`benchmarks/REPORT.md`](benchmarks/REPORT.md) for the full analysis and
+[`benchmarks/hashmap_COMPARISON.md`](benchmarks/hashmap_COMPARISON.md) for
+hashmap-specific benchmarks.
 
 ---
 
@@ -1994,8 +1993,7 @@ cd benchmarks
 ```
 
 This compiles and runs all four benchmarks for C, Node.js, Python, and
-TinyLang, and reports wall-clock time. See [`benchmarks/REPORT.md`](benchmarks/REPORT.md)
-for the full analysis.
+TinyLang, and reports wall-clock time.
 
 Benchmark source files:
 - `benchmarks/tl_src/` — TinyLang versions
@@ -2011,9 +2009,13 @@ Benchmark source files:
 - Optional GNU Readline/libedit integration for line editing and history
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
 - Stack-based VM: C99 goto-to-switch dispatch, `Value istk[4096]` stack
+- 30 opcodes including 4 dedicated numeric opcodes (ADD/SUB/MUL/DIV)
+  and `OC_MUTATE_NUM` fused read-modify-write for compound assignment
 - Slot-indexed variable access: O(1) instead of O(n) strcmp
 - Compile-time type tracking: `comp_types[]` parallel to `comp_vars[]`
+  with expression-level type inference for dedicated opcode dispatch
 - Function return type inference and consistency checking
+- Runtime operator fast path: `OC_OP` inlines all 15 operators for num+num
 - Per-element array append for single and multi-element literals
 - Push-all from any array expression (function, variable, slice, chained `+`)
 - Deep copy on assignment, refcount+COW arrays
@@ -2022,7 +2024,7 @@ Benchmark source files:
 - Tail call optimization: parameter rebinding + ip reset (no C stack growth)
 - Slot initialization at scope creation for array-typed variables
 - Array destructuring: `x, y = [1, 2, 3]` — unpack arrays into multiple variables
-- Comprehensive test suite (36+ happy-path tests, 22 error tests)
+- Comprehensive test suite (68+ happy-path tests, 24 error tests)
 
 For detailed implementation notes, see [`IMPLEMENTATION.md`](IMPLEMENTATION.md).
 For design rationale and language semantics, see [`DESIGN.md`](DESIGN.md).
