@@ -1,7 +1,7 @@
 # TinyLang — Implementation Guide
 
 **~1,700 lines of C.** Single-pass compiler to bytecode with stack-based VM,
-computed goto dispatch, slot-indexed variable access, compile-time type
+goto-to-switch dispatch, slot-indexed variable access, compile-time type
 tracking, refcount+COW, zero-copy slice views, tail call optimization,
 and array destructuring.
 
@@ -387,7 +387,7 @@ The include path is extracted directly from the string literal token.
 
 ### Dispatch mechanism
 
-The VM uses **computed goto** (GNU C extension `&&` address-of-label) instead
+The VM uses **goto-to-switch dispatch** (C99-compatible `switch` with `goto` cases) instead
 of a `for`+`switch` loop:
 
 ```c
@@ -831,7 +831,7 @@ for (int i = 0; i < lhs; i++) {
 | Lexer | ~100 |
 | Compiler — all functions (incl. type inference, destructure detection,
   default params via `eval_constant_expr()`) | ~395 |
-| VM executor — exec() with computed goto (incl. OC_DESTRUCTURE,
+| VM executor — exec() with goto-to-switch dispatch (incl. OC_DESTRUCTURE,
   string-keyed hashmap indexing) | ~365 |
 | Main / REPL | ~70 |
 | Include handling + expression eval | ~60 |

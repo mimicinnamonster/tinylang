@@ -1,20 +1,6 @@
 // Spectral-Norm benchmark — tinylang version
 // Based on the same algorithm as the C version.
-
-// Newton-Raphson square root
-fun sqrt(x=0) {
-    if x <= 0 { ret 0 }
-    guess = x / 2
-    i = 0
-    for i < 100 {
-        if guess == 0 { ret x }
-        new_guess = (guess + x / guess) / 2
-        if new_guess == guess { ret guess }
-        guess = new_guess
-        i = i + 1
-    }
-    ret guess
-}
+// Uses builtin sqrt()
 
 fun eval_A(i_val=0, j_val=0) {
     i = i_val

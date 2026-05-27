@@ -1,21 +1,7 @@
 // N-body benchmark — tinylang version
 // Solar system simulation with value semantics
 // Arrays must end on same line as last element (parser limitation)
-
-// Newton-Raphson square root
-fun sqrt(x=0) {
-    if x <= 0 { ret 0 }
-    guess = x / 2
-    i = 0
-    for i < 100 {
-        if guess == 0 { ret x }
-        new_guess = (guess + x / guess) / 2
-        if new_guess == guess { ret guess }
-        guess = new_guess
-        i = i + 1
-    }
-    ret guess
-}
+// Uses builtin sqrt()
 
 fun init_bodies() {
     // Pre-computed values (no scientific notation - tinylang doesn't support it)

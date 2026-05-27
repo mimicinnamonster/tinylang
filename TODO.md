@@ -1,1 +1,0 @@
-- switch instead of compute goto (compiler should optimise, check output ASSEMBLY)

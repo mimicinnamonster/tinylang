@@ -1,4 +1,4 @@
-/* tinylang.c — VM with computed goto dispatch + slot-indexed variables
+/* tinylang.c — VM with goto-to-switch dispatch + slot-indexed variables
  * Removed: compact types, FFI, assert, type(), 0b/0123 / OC_SLICE_ASSIGN
  * Kept: TCO, COW+refcounting, push optimization, short-circuit && ||,
  *        0x hex, slices, input, REPL
@@ -1355,43 +1355,27 @@ void comp_program(Code *c) {
     emit(c, (Instr){OC_END, 0, 0, .num = 0});
 }
 
-/* ─── VM Executor (computed goto dispatch) ─── */
+/* ─── VM Executor (C99 goto-to-switch dispatch) ─── */
 
 void exec(Code *c) {
-    static void *dispatch[] = {
-        [OC_NUM] = &&op_num, [OC_NIL] = &&op_nil, [OC_STR] = &&op_str,
-        [OC_MAKE_ARR] = &&op_make_arr,
-        [OC_VAR] = &&op_var,
-        [OC_VAR_SLOT] = &&op_var_slot, [OC_STORE_SLOT] = &&op_store_slot,
-        [OC_OP] = &&op_op, [OC_UNARY] = &&op_unary, [OC_INDEX] = &&op_index,
-        [OC_LVALS] = &&op_lvals, [OC_PUSH] = &&op_push, [OC_LVALS_PUSH] = &&op_lvals_push, [OC_SLICE] = &&op_slice,
-        [OC_CALL] = &&op_call, [OC_TCO] = &&op_tco,
-        [OC_RET] = &&op_ret, [OC_POP] = &&op_pop,
-        [OC_DUP] = &&op_dup, [OC_JZ] = &&op_jz, [OC_JNZ] = &&op_jnz, [OC_JMP] = &&op_jmp,
-        [OC_PRINT] = &&op_print, [OC_INPUT] = &&op_input,
-        [OC_PUSH_ALL] = &&op_push_all,
-        [OC_SLICE_INPLACE] = &&op_slice_inplace,
-        [OC_DESTRUCTURE] = &&op_destructure,
-        [OC_END] = &&op_end,
-    };
     int ip = 0;
     err_line = c->code[ip].line; err_file = c->code[ip].file;
-    goto *dispatch[c->code[ip].op];
+    goto dispatch;
 
     /* ── Opcode handlers ── */
 op_num:
     err_line = c->code[ip].line; err_file = c->code[ip].file;
-    istk[++isp] = vnum(c->code[ip].num); ip++; goto *dispatch[c->code[ip].op];
+    istk[++isp] = vnum(c->code[ip].num); ip++; goto dispatch;
 
 op_nil:
     err_line = c->code[ip].line; err_file = c->code[ip].file;
-    istk[++isp] = nilv(); ip++; goto *dispatch[c->code[ip].op];
+    istk[++isp] = nilv(); ip++; goto dispatch;
 
 op_str: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     Instr *ins = &c->code[ip];
     istk[++isp] = (Value){ .type = VAL_ARR, .arr = ins->arr };
-    aretain(ins->arr); ip++; goto *dispatch[c->code[ip].op];
+    aretain(ins->arr); ip++; goto dispatch;
 }
 
 op_make_arr: {
@@ -1405,7 +1389,7 @@ op_make_arr: {
         if (tmp[i].type == VAL_ARR) { aretain(tmp[i].arr); arelease(tmp[i].arr); }
     }
     istk[++isp] = (Value){ .type = VAL_ARR, .arr = a };
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 /* Name-based variable access (top-level / REPL) */
@@ -1414,7 +1398,7 @@ op_var: {
     Instr *ins = &c->code[ip];
     Value v = sget(cs, ins->name);
     istk[++isp] = v; if (v.type == VAL_ARR) aretain(v.arr);
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 /* Slot-indexed variable access (function bodies) — O(1), no strcmp */
 op_var_slot: {
@@ -1422,7 +1406,7 @@ op_var_slot: {
     int slot = c->code[ip].a;
     Value v = cs->v[slot];
     istk[++isp] = v; if (v.type == VAL_ARR) aretain(v.arr);
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 op_store_slot: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
@@ -1430,7 +1414,7 @@ op_store_slot: {
     Value v = istk[isp--];
     vassign(&cs->v[slot], v);
     if (v.type == VAL_ARR) arelease(v.arr);
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_op: {
@@ -1439,7 +1423,7 @@ op_op: {
     Value r = istk[isp--], l = istk[isp--], res = apply(ins->a, l, r);
     if (l.type == VAL_ARR) arelease(l.arr);
     if (r.type == VAL_ARR) arelease(r.arr);
-    istk[++isp] = res; ip++; goto *dispatch[c->code[ip].op];
+    istk[++isp] = res; ip++; goto dispatch;
 }
 
 op_unary: {
@@ -1450,7 +1434,7 @@ op_unary: {
     else if (ins->a == T_MI) { if (v.type!=VAL_NUM) die("minus on non-number"); istk[++isp] = vnum(-val_num(v)); }
     else if (ins->a == T_HASH) { if (v.type!=VAL_ARR) die("# requires array"); istk[++isp] = vnum((double)(v.arr ? v.arr->len : 0)); if (v.type==VAL_ARR) arelease(v.arr); }
     else if (ins->a == T_TILDE) { if (v.type!=VAL_NUM) die("bitwise ~ requires number"); istk[++isp] = vnum((double)(~((int64_t)val_num(v)))); }
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_index: {
@@ -1489,7 +1473,7 @@ op_index: {
             istk[++isp] = cur;
         }
     } else die("index must be number or array");
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_lvals: {
@@ -1527,7 +1511,7 @@ op_lvals: {
     if (val.type == VAL_ARR) arelease(val.arr);
     for (int j = 0; j < depth; j++)
         if (indices[j].type == VAL_ARR) arelease(indices[j].arr);
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_push: {
@@ -1546,7 +1530,7 @@ op_push: {
     vassign(&slot_val->arr->val[len], elem);
     slot_val->arr->len = len + 1;
     if (elem.type == VAL_ARR) arelease(elem.arr);
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_lvals_push: {
@@ -1593,7 +1577,7 @@ op_lvals_push: {
     if (elem.type == VAL_ARR) arelease(elem.arr);
     for (int j = 0; j < depth; j++)
         if (indices[j].type == VAL_ARR) arelease(indices[j].arr);
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_push_all: {
@@ -1628,7 +1612,7 @@ op_push_all: {
         if (rhs.type == VAL_ARR) arelease(rhs.arr);
         if (res.type == VAL_ARR) arelease(res.arr);
     }
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_slice: {
@@ -1656,7 +1640,7 @@ op_slice: {
     int count;
     if (step > 0) { if (start >= stop) count = 0; else count = (stop - start + step - 1) / step; }
     else { if (start <= stop) count = 0; else count = (start - stop + (-step) - 1) / (-step); }
-    if (count == 0) { arelease(arr_v.arr); istk[++isp] = nilv(); ip++; goto *dispatch[c->code[ip].op]; }
+    if (count == 0) { arelease(arr_v.arr); istk[++isp] = nilv(); ip++; goto dispatch; }
     if (step == 1) {
         /* Zero-copy view: share parent's backing store */
         Arr *view = malloc(sizeof(Arr));
@@ -1684,7 +1668,7 @@ op_slice: {
         arelease(arr_v.arr);
         istk[++isp] = (Value){ .type = VAL_ARR, .arr = result };
     }
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_slice_inplace: {
@@ -1719,7 +1703,7 @@ op_slice_inplace: {
     if (count == 0) {
         arelease(slot_val->arr);
         *slot_val = nilv();
-        ip++; goto *dispatch[c->code[ip].op];
+        ip++; goto dispatch;
     }
     if (src->refcount == 1 && !src->is_slice && step == 1) {
         /* In-place: exclusively owned, contiguous slice — memmove + trim.
@@ -1735,7 +1719,7 @@ op_slice_inplace: {
                 if (src->val[i].type == VAL_ARR) arelease(src->val[i].arr);
             memmove(src->val, src->val + start, count * sizeof(Value));
             src->len = count;
-            ip++; goto *dispatch[c->code[ip].op];
+            ip++; goto dispatch;
         }
     }
     /* Fall back to zero-copy view (or copy for strided) */
@@ -1766,7 +1750,7 @@ op_slice_inplace: {
     }
     if (start_v.type == VAL_ARR) arelease(start_v.arr);
     if (stop_v.type == VAL_ARR) arelease(stop_v.arr);
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_call: {
@@ -1779,7 +1763,7 @@ op_call: {
     if (f->is_builtin) {
         Value result = f->native_fn(ac, args);
         istk[++isp] = result;
-        ip++; goto *dispatch[c->code[ip].op];
+        ip++; goto dispatch;
     }
     int saved_isp = isp;
     Value saved_stack[64];
@@ -1809,7 +1793,7 @@ op_call: {
     rf = saved_rf; rv = saved_rv; isp = saved_isp;
     for (int j = 0; j <= saved_isp; j++) istk[j] = saved_stack[j];
     istk[++isp] = result;
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_tco: {
@@ -1831,7 +1815,7 @@ op_tco: {
             cs->v[f->p_slots[j]] = nilv();
         }
     }
-    ip = 0; goto *dispatch[c->code[ip].op];
+    ip = 0; goto dispatch;
 }
 
 op_ret:
@@ -1841,13 +1825,13 @@ op_ret:
 op_pop:
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     if (isp >= 0) { Value v = istk[isp--]; if (v.type == VAL_ARR) arelease(v.arr); }
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 
 op_dup: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     if (isp < 0) die("stack underflow");
     Value v = istk[isp]; if (v.type == VAL_ARR) aretain(v.arr);
-    istk[++isp] = v; ip++; goto *dispatch[c->code[ip].op];
+    istk[++isp] = v; ip++; goto dispatch;
 }
 
 op_jz: {
@@ -1856,7 +1840,7 @@ op_jz: {
     Value v = istk[isp--]; int t = truthy(v);
     if (v.type == VAL_ARR) arelease(v.arr);
     ip = t ? ip + 1 : ins->a;
-    goto *dispatch[c->code[ip].op];
+    goto dispatch;
 }
 
 op_jnz: {
@@ -1865,18 +1849,18 @@ op_jnz: {
     Value v = istk[isp--]; int t = truthy(v);
     if (v.type == VAL_ARR) arelease(v.arr);
     ip = t ? ins->a : ip + 1;
-    goto *dispatch[c->code[ip].op];
+    goto dispatch;
 }
 
 op_jmp:
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     ip = c->code[ip].a;
-    goto *dispatch[c->code[ip].op];
+    goto dispatch;
 
 op_print:
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     if (isp >= 0) { print_val(istk[isp--]); }
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 
 op_input: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
@@ -1885,7 +1869,7 @@ op_input: {
     Arr *a = aalloc(n); a->len = n; a->is_string = 1;
     for (int i = 0; i < n; i++) a->val[i] = vnum((double)(unsigned char)buf[i]);
     istk[++isp] = (Value){ .type = VAL_ARR, .arr = a };
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
 
 op_destructure: {
@@ -1909,8 +1893,41 @@ op_destructure: {
         }
     }
     arelease(arr_val.arr);
-    ip++; goto *dispatch[c->code[ip].op];
+    ip++; goto dispatch;
 }
+
+    /* ── Central dispatch ── */
+dispatch:
+    switch (c->code[ip].op) {
+    case OC_NUM: goto op_num;
+    case OC_NIL: goto op_nil;
+    case OC_STR: goto op_str;
+    case OC_MAKE_ARR: goto op_make_arr;
+    case OC_VAR: goto op_var;
+    case OC_VAR_SLOT: goto op_var_slot;
+    case OC_STORE_SLOT: goto op_store_slot;
+    case OC_OP: goto op_op;
+    case OC_UNARY: goto op_unary;
+    case OC_INDEX: goto op_index;
+    case OC_LVALS: goto op_lvals;
+    case OC_PUSH: goto op_push;
+    case OC_LVALS_PUSH: goto op_lvals_push;
+    case OC_SLICE: goto op_slice;
+    case OC_CALL: goto op_call;
+    case OC_TCO: goto op_tco;
+    case OC_RET: goto op_ret;
+    case OC_POP: goto op_pop;
+    case OC_DUP: goto op_dup;
+    case OC_JZ: goto op_jz;
+    case OC_JNZ: goto op_jnz;
+    case OC_JMP: goto op_jmp;
+    case OC_PRINT: goto op_print;
+    case OC_INPUT: goto op_input;
+    case OC_PUSH_ALL: goto op_push_all;
+    case OC_SLICE_INPLACE: goto op_slice_inplace;
+    case OC_DESTRUCTURE: goto op_destructure;
+    case OC_END: goto op_end;
+    }
 
 op_end:
     return;
