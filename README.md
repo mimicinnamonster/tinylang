@@ -418,11 +418,16 @@ They desugar to the equivalent simple assignment at compile time, producing
 exactly the same bytecode — no new opcodes, no VM changes.
 
 Works with simple variables, indexed arrays, nested indices, and expression
-right-hand sides:
+right-hand sides. The push optimization fires for `arr += [elem]` just like
+`arr = arr + [elem]`:
 
 ```tinylang
 x = 2
 x += 3 * 4              // x = x + (3 * 4) → 14
+
+arr = []
+arr += [99]             // push optimization: O(1) append
+arr += [1, 2]           // multi-element: array concat (not push)
 ```
 
 ### Functions

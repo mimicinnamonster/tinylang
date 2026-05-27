@@ -868,10 +868,11 @@ void comp_stmt(Code *c) {
                     if (ts[pt].t == T_RB) bd--; pt++;
                 }
             }
-            int is_assign = (ts[pt].t == T_ASSIGN || ts[pt].t == T_PL_ASSIGN ||
-                             ts[pt].t == T_MI_ASSIGN || ts[pt].t == T_ST_ASSIGN ||
-                             ts[pt].t == T_SL_ASSIGN);
-            if (is_assign) {
+            int at = ts[pt].t;
+            int is_assign = (at == T_ASSIGN);
+            int is_compound = (at == T_PL_ASSIGN || at == T_MI_ASSIGN ||
+                               at == T_ST_ASSIGN || at == T_SL_ASSIGN);
+            if (is_assign || is_compound) {
                 char *nm = strdup(ts[tp].s); tp++; int idx_count = 0;
                 int idx_saved_tp[16];
                 while (ts[tp].t == T_LB) {
@@ -889,23 +890,44 @@ void comp_stmt(Code *c) {
                     tp++;
                     int slot = var_find(nm);
                     if (slot < 0) slot = var_add(nm);
-                    /* Compile variable read, then replay indices with OC_INDEX */
-                    emit(c, (Instr){OC_VAR_SLOT, slot, 0, .num = 0});
-                    for (int i = 0; i < idx_count; i++) {
-                        int cur_tp = tp;
-                        tp = idx_saved_tp[i];
-                        comp_expr(c);
-                        tp = cur_tp;
-                        emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
+                    /* Push optimization: arr += [elem] same as arr = arr + [elem] */
+                    int is_push = 0;
+                    if (compound_op == T_PL && idx_count == 0) {
+                        int pn = tp;
+                        is_push = ts[pn].t == T_LB;
+                        if (is_push) {
+                            pn++; int depth = 1;
+                            while (depth > 0 && ts[pn].t != T_EOF) {
+                                if (ts[pn].t == T_LP || ts[pn].t == T_LB) depth++;
+                                if (ts[pn].t == T_RP || ts[pn].t == T_RB) depth--;
+                                if (depth == 1 && ts[pn].t == T_CM) { is_push = 0; break; }
+                                pn++;
+                            }
+                        }
                     }
-                    /* Compile RHS and apply operation */
-                    comp_expr(c);
-                    emit(c, (Instr){OC_OP, compound_op, 0, .num = 0});
-                    /* Store (store indices already on stack from first pass) */
-                    if (idx_count > 0)
-                        emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
-                    else
-                        emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
+                    if (is_push) {
+                        tp++; /* skip [ */
+                        comp_expr(c);
+                        while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
+                        if (ts[tp].t != T_RB) die("expected ]"); tp++;
+                        emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
+                    } else {
+                        /* Generic desugar: read var, replay indices, compile RHS, apply op, store */
+                        emit(c, (Instr){OC_VAR_SLOT, slot, 0, .num = 0});
+                        for (int i = 0; i < idx_count; i++) {
+                            int cur_tp = tp;
+                            tp = idx_saved_tp[i];
+                            comp_expr(c);
+                            tp = cur_tp;
+                            emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
+                        }
+                        comp_expr(c);
+                        emit(c, (Instr){OC_OP, compound_op, 0, .num = 0});
+                        if (idx_count > 0)
+                            emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
+                        else
+                            emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
+                    }
                 } else {
                     if (ts[tp].t != T_ASSIGN) die("expected ="); tp++;
                     int is_push = (idx_count == 0);
@@ -942,12 +964,10 @@ void comp_stmt(Code *c) {
                     } else {
                         comp_expr(c);
                         if (idx_count > 0) {
-                            /* Lvalue chain — find or create slot for root variable */
                             int slot = var_find(nm);
                             if (slot < 0) slot = var_add(nm);
                             emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
                         } else {
-                            /* Simple assignment */
                             int slot = var_find(nm);
                             if (slot < 0) slot = var_add(nm);
                             emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});

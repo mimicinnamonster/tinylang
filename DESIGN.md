@@ -97,6 +97,7 @@ lvalue     := identifier ("[" expr "]")*
 - `arr[0] = 5` — array element mutation (in-place via COW)
 - `matrix[i][j] = 5` — nested mutation via lvalue chain
 - `x += 5` — compound assignment: desugars to `x = x + 5`
+- `arr += [elem]` — push optimization: same O(1) append as `arr = arr + [elem]`
 
 ### Compound Assignment
 
@@ -118,9 +119,12 @@ constant indices like `0` or `i` this is invisible; for complex index
 expressions with side effects (e.g. function calls), the side effect occurs
 twice.
 
-**Compound assignment does not trigger the push optimization.** `x += [y]`
-performs array concatenation (`x = x + [y]`), not push — use `x = x + [y]`
-explicitly for the O(1) push optimization.
+**Push optimization works with compound assignment too.** `arr += [elem]`
+triggers the same O(1) push optimization as `arr = arr + [elem]` — both
+produce identical bytecode.
+
+Multi-element bracket syntax (`arr += [a, b]`) still performs array
+concatenation, not push.
 
 ### Arithmetic
 

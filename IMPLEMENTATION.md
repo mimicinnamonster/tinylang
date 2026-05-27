@@ -130,14 +130,19 @@ each function's variable namespace.
 ### Compound assignment desugaring
 
 Compound assignment operators (`+=`, `-=`, `*=`, `/=`) are desugared entirely
-at the parser level — no new token types would be needed beyond `T_PL_ASSIGN`,
-`T_MI_ASSIGN`, `T_ST_ASSIGN`, `T_SL_ASSIGN`, and no new bytecodes are required.
-
-The lexer recognizes `+=`, `-=`, `*=`, `/=` as single tokens by peeking ahead
+at the parser level — no new bytecodes are required. The lexer recognizes
+`+=`, `-=`, `*=`, `/=` as single tokens (`T_PL_ASSIGN` etc.) by peeking ahead
 one character after `+`, `-`, `*`, `/`.
 
-In `comp_stmt`, when the `T_ID` case detects a compound assignment token instead
-of `T_ASSIGN`, it desugars as follows:
+In `comp_stmt`, when the `T_ID` case detects a compound assignment token, it
+desugars to the exact same bytecode the equivalent simple assignment would
+produce. The desugaring is identical to `x = x op (expr)` — including the push
+optimization for `arr += [elem]`.
+
+**Push optimization:** `arr += [elem]` uses the same lookahead detection as
+`arr = arr + [elem]` and emits `OC_PUSH` — O(1) amortized append. Multi-element
+`arr += [a, b]` falls through to the generic desugar and performs array
+concatenation.
 
 **Simple variables (`x += expr`):**
 
@@ -148,11 +153,10 @@ of `T_ASSIGN`, it desugars as follows:
 
 **Indexed targets (`a[i] += expr`):**
 
-The tricky part is that indices must be available twice — once for reading the
-current value via `OC_INDEX`, and once for the store via `OC_LVALS`. Since we
-don't want to add new bytecodes, the compiler saves the token position before
-each index expression during the first parse pass (store indices), then replays
-them by temporarily rewinding `tp`:
+Indices must be available twice — once for reading via `OC_INDEX`, once for
+storing via `OC_LVALS`. The compiler saves the token position before each index
+expression during the first parse pass (store indices), then replays them by
+temporarily rewinding `tp`:
 
 1. Compile all index expressions normally (these stay on the stack for
    `OC_LVALS` later)
@@ -164,11 +168,9 @@ them by temporarily rewinding `tp`:
 6. Emit `OC_LVALS` (or `OC_STORE_SLOT` for simple variables) using the
    store indices from step 1
 
-This means index expressions with side effects (function calls, etc.) are
-evaluated twice at runtime. This is a documented design choice — the language
-has no mutable global state accessible from index expressions, so the only
-side effect would be through `input()` which is unlikely to be used in an
-index context.
+Index expressions with side effects are evaluated twice at runtime. This is a
+documented design choice — the language has no mutable global state accessible
+from index expressions.
 
 ### Push optimization detection
 

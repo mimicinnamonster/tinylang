@@ -34,7 +34,7 @@ print(b[0][1])  // 7
 b[1][0] *= 2
 print(b[1][0])  // 6
 
-// With expression RHS
+// With expression RHS (precedence preserved)
 y = 2
 y += 3 * 4
 print(y)     // 14
@@ -47,6 +47,10 @@ y = 2
 y *= 3 + 4
 print(y)     // 14
 
+y = 20
+y /= 2 + 3
+print(y)     // 4
+
 // Inside a function
 function test_fn(n) {
     r = n
@@ -56,9 +60,7 @@ function test_fn(n) {
     r /= 3
     return r
 }
-print(test_fn(5))  // ((5+10)*2-5)/3 = (30-5)/3 = 25/3 = 8.33333? No...
-// r=5, r+=10 → 15, r*=2 → 30, r-=5 → 25, r/=3 → 8.33333...
-// Let's use integer-friendly values
+print(test_fn(5))  // ((5+10)*2-5)/3 = (30-5)/3 = 25/3 ≈ 8.33333
 print(test_fn(0))  // ((0+10)*2-5)/3 = (20-5)/3 = 15/3 = 5
 
 // In a loop
@@ -70,13 +72,15 @@ while i < 5 {
 }
 print(z)     // 32
 
-// Push optimization NOT triggered by +=
-arr = [1, 2, 3]
-arr += [4]
-print(#arr)  // 4 (concat, not push — still works)
-print(arr[3]) // 4
+// Push optimization also works via += (same as arr = arr + [elem])
+arr = []
+arr += [99]
+print(arr[0]) // 99
 
-// Real push still works via explicit = + []
-arr2 = []
-arr2 = arr2 + [99]
-print(arr2[0]) // 99
+// Multi-element += works as concat (not push)
+b = [1]
+b += [2, 3]
+print(#b)   // 3
+print(b[0]) // 1
+print(b[1]) // 2
+print(b[2]) // 3
