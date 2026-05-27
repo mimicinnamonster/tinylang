@@ -3,11 +3,11 @@
 # Usage: ./run_tests.sh
 
 DIR="$(dirname "$0")"
-TINYLANG="$DIR/tinylang"
+TINYLANG="$DIR/tiny"
 TESTDIR="$DIR/tests"
 
 if [ ! -f "$TINYLANG" ]; then
-    echo "Error: tinylang not found at $TINYLANG"
+    echo "Error: tiny not found at $TINYLANG"
     echo "Build it first: cc -o tiny tinylang.c -lm"
     exit 1
 fi
@@ -43,7 +43,7 @@ for file in "$TESTDIR"/*.tl; do
 done
 
 # FFI tests (requires TL_FFI build)
-FFI_BIN="$DIR/tinylang-ffi"
+FFI_BIN="$DIR/tiny-ffi"
 if [ -f "$FFI_BIN" ]; then
     # Build the test shared library
     echo "  (building ffi_lib for tests)"

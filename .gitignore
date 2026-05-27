@@ -1,10 +1,10 @@
 # Compiled binary
-tinylang
-tinylang.dSYM/
-tinylang-ffi
-tinylang-ffi.dSYM/
-tinylang-asan
-tinylang-asan.dSYM/
+tiny
+tiny.dSYM/
+tiny-ffi
+tiny-ffi.dSYM/
+tiny-asan
+tiny-asan.dSYM/
 a.out
 
 # FFI test shared library (built at test time)

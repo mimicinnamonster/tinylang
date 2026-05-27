@@ -1,11 +1,14 @@
 # TinyLang
 
-A tiny, **statically-typed** programming language built to explore how simple a
-language can be while still being practical. Every design choice prioritises
-**simple implementation** and **easy optimisation** — no runtime type dispatch,
-no garbage collector, no closures, no pointers, no AST, no intermediate
-representations. Just a single-pass compiler emitting flat bytecode for a
-stack-based VM, all in ~1,190 lines of C.
+> ✨ Tiny Is Beautiful ✨
+
+TinyLang (pet name Tiny) is a tiny, **statically-typed** programming language
+built to explore how simple a language can be while still being practical.
+Every design choice prioritises **simple implementation** and 
+**easy optimisation** — no runtime type dispatch, no garbage collector,
+no closures, no pointers, no AST, no intermediate representations.
+Just a single-pass compiler emitting flat bytecode for a stack-based VM,
+all in a small single C file.
 
 The central thesis: **static typing and simple semantics are not constraints —
 they are enablers.**  Every optimisation in the VM flows directly from a
@@ -280,6 +283,7 @@ All comparisons return `1` (truthy) or `[]` (falsey).
 | Operator | Meaning |
 |----------|---------|
 | `=` | Equal (assignment in statement context) |
+| `+=` `-=` `*=` `/=` | Compound assignment (statement only) |
 | `!=` | Not equal |
 | `<` | Less than |
 | `>` | Greater than |
@@ -397,6 +401,29 @@ dyn[idx_arr] = 99       // dynamic chain: idx_arr = [i, j, k]
 
 Assignments are **statements**, not expressions — they cannot appear inside
 other expressions.
+
+#### Compound Assignment
+
+```tinylang
+x += 5                  // x = x + 5
+x -= 3                  // x = x - 3
+x *= 2                  // x = x * 2
+x /= 4                  // x = x / 4
+a[0] += 10              // indexed array element
+b[0][1] += 5            // nested indexed array element
+```
+
+Compound assignment operators (`+=`, `-=`, `*=`, `/=`) are syntactic sugar.
+They desugar to the equivalent simple assignment at compile time, producing
+exactly the same bytecode — no new opcodes, no VM changes.
+
+Works with simple variables, indexed arrays, nested indices, and expression
+right-hand sides:
+
+```tinylang
+x = 2
+x += 3 * 4              // x = x + (3 * 4) → 14
+```
 
 ### Functions
 
@@ -1215,7 +1242,7 @@ include_stmt  := "include" include_path
 include_path  := string | include_expr
 include_expr  := thispath "(" ")" ("+" string)*
 
-assignment    := lvalue "=" expr
+assignment    := lvalue ("=" | "+=" | "-=" | "*=" | "/=" ) expr
 lvalue        := identifier ("[" slice_or_index "]")*
 if_stmt       := "if" expr block ("elif" expr block)* ("else" block)?
 while_stmt    := "while" expr block

@@ -127,6 +127,49 @@ each function's variable namespace.
 | `comp_include(c)` | `include` directive (string literal or expression) |
 | `eval_include_path()` | Compile-time evaluation of include path expressions |
 
+### Compound assignment desugaring
+
+Compound assignment operators (`+=`, `-=`, `*=`, `/=`) are desugared entirely
+at the parser level — no new token types would be needed beyond `T_PL_ASSIGN`,
+`T_MI_ASSIGN`, `T_ST_ASSIGN`, `T_SL_ASSIGN`, and no new bytecodes are required.
+
+The lexer recognizes `+=`, `-=`, `*=`, `/=` as single tokens by peeking ahead
+one character after `+`, `-`, `*`, `/`.
+
+In `comp_stmt`, when the `T_ID` case detects a compound assignment token instead
+of `T_ASSIGN`, it desugars as follows:
+
+**Simple variables (`x += expr`):**
+
+1. Compile variable read (`OC_VAR_SLOT`)
+2. Compile RHS expression
+3. Emit `OC_OP` with the corresponding arithmetic opcode
+4. Emit `OC_STORE_SLOT`
+
+**Indexed targets (`a[i] += expr`):**
+
+The tricky part is that indices must be available twice — once for reading the
+current value via `OC_INDEX`, and once for the store via `OC_LVALS`. Since we
+don't want to add new bytecodes, the compiler saves the token position before
+each index expression during the first parse pass (store indices), then replays
+them by temporarily rewinding `tp`:
+
+1. Compile all index expressions normally (these stay on the stack for
+   `OC_LVALS` later)
+2. Emit `OC_VAR_SLOT` for the variable
+3. For each saved index position: rewind `tp`, re-compile the expression,
+   restore `tp`, emit `OC_INDEX`
+4. Compile RHS expression
+5. Emit `OC_OP` for the arithmetic operator
+6. Emit `OC_LVALS` (or `OC_STORE_SLOT` for simple variables) using the
+   store indices from step 1
+
+This means index expressions with side effects (function calls, etc.) are
+evaluated twice at runtime. This is a documented design choice — the language
+has no mutable global state accessible from index expressions, so the only
+side effect would be through `input()` which is unlikely to be used in an
+index context.
+
 ### Push optimization detection
 
 The compiler detects `x = x + [expr]` by lookahead on the token stream and

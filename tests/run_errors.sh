@@ -4,13 +4,13 @@
 # Usage: ./run_errors.sh [test_file.tl]
 
 DIR="$(dirname "$0")"
-TINYLANG="$DIR/../tinylang"
+TINYLANG="$DIR/../tiny"
 PASS=0
 FAIL=0
 TOTAL=0
 
 if [ ! -f "$TINYLANG" ]; then
-    echo "Error: tinylang not found at $TINYLANG"
+    echo "Error: tiny not found at $TINYLANG"
     echo "Build it first: cc -o tiny tinylang.c -lm"
     exit 1
 fi

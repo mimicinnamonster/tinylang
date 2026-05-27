@@ -30,7 +30,8 @@ typedef enum {
     T_LP, T_RP, T_LB, T_RB, T_LC, T_RC, T_CM, T_SEMI,
     T_PL, T_MI, T_ST, T_SL, T_PC,
     T_AM, T_PI, T_CA, T_SHL, T_SHR, T_BN,
-    T_ASSIGN, T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
+    T_ASSIGN, T_PL_ASSIGN, T_MI_ASSIGN, T_ST_ASSIGN, T_SL_ASSIGN,
+    T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
     T_HASH, T_COLON,
     T_NL, T_IF, T_ELIF, T_ELSE, T_WH, T_FN, T_RT, T_INCLUDE,
     T_AND, T_OR,
@@ -492,8 +493,10 @@ void lex(const char *s) {
             case '[': tk.t=T_LB; break; case ']': tk.t=T_RB; break;
             case '{': tk.t=T_LC; break; case '}': tk.t=T_RC; break;
             case ',': tk.t=T_CM; break; case ';': tk.t=T_SEMI; break;
-            case '+': tk.t=T_PL; break; case '-': tk.t=T_MI; break;
-            case '*': tk.t=T_ST; break; case '/': tk.t=T_SL; break;
+            case '+': if(pc()=='='){ac();tk.t=T_PL_ASSIGN;}else tk.t=T_PL; break;
+            case '-': if(pc()=='='){ac();tk.t=T_MI_ASSIGN;}else tk.t=T_MI; break;
+            case '*': if(pc()=='='){ac();tk.t=T_ST_ASSIGN;}else tk.t=T_ST; break;
+            case '/': if(pc()=='='){ac();tk.t=T_SL_ASSIGN;}else tk.t=T_SL; break;
             case '%': tk.t=T_PC; break;
             case '&': if (pc()=='&'){ac();tk.t=T_AND;}else tk.t=T_AM; break;
             case '|': if (pc()=='|'){ac();tk.t=T_OR;}else tk.t=T_PI; break;
@@ -865,58 +868,90 @@ void comp_stmt(Code *c) {
                     if (ts[pt].t == T_RB) bd--; pt++;
                 }
             }
-            int is_assign = (ts[pt].t == T_ASSIGN);
+            int is_assign = (ts[pt].t == T_ASSIGN || ts[pt].t == T_PL_ASSIGN ||
+                             ts[pt].t == T_MI_ASSIGN || ts[pt].t == T_ST_ASSIGN ||
+                             ts[pt].t == T_SL_ASSIGN);
             if (is_assign) {
                 char *nm = strdup(ts[tp].s); tp++; int idx_count = 0;
+                int idx_saved_tp[16];
                 while (ts[tp].t == T_LB) {
                     tp++;
+                    idx_saved_tp[idx_count] = tp;
                     do { comp_expr(c); idx_count++; } while (ts[tp].t == T_CM && (tp++, 1));
                     if (ts[tp].t != T_RB) die("expected ]"); tp++;
                 }
-                if (ts[tp].t != T_ASSIGN) die("expected ="); tp++;
-                int is_push = (idx_count == 0);
-                if (is_push) {
-                    int pn = tp;
-                    while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                    is_push = ts[pn].t == T_ID && !strcmp(ts[pn].s, nm);
+                int compound_op = 0;
+                if (ts[tp].t == T_PL_ASSIGN) compound_op = T_PL;
+                else if (ts[tp].t == T_MI_ASSIGN) compound_op = T_MI;
+                else if (ts[tp].t == T_ST_ASSIGN) compound_op = T_ST;
+                else if (ts[tp].t == T_SL_ASSIGN) compound_op = T_SL;
+                if (compound_op) {
+                    tp++;
+                    int slot = var_find(nm);
+                    if (slot < 0) slot = var_add(nm);
+                    /* Compile variable read, then replay indices with OC_INDEX */
+                    emit(c, (Instr){OC_VAR_SLOT, slot, 0, .num = 0});
+                    for (int i = 0; i < idx_count; i++) {
+                        int cur_tp = tp;
+                        tp = idx_saved_tp[i];
+                        comp_expr(c);
+                        tp = cur_tp;
+                        emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
+                    }
+                    /* Compile RHS and apply operation */
+                    comp_expr(c);
+                    emit(c, (Instr){OC_OP, compound_op, 0, .num = 0});
+                    /* Store (store indices already on stack from first pass) */
+                    if (idx_count > 0)
+                        emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
+                    else
+                        emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
+                } else {
+                    if (ts[tp].t != T_ASSIGN) die("expected ="); tp++;
+                    int is_push = (idx_count == 0);
                     if (is_push) {
-                        pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                        is_push = ts[pn].t == T_PL;
+                        int pn = tp;
+                        while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                        is_push = ts[pn].t == T_ID && !strcmp(ts[pn].s, nm);
                         if (is_push) {
                             pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                            is_push = ts[pn].t == T_LB;
+                            is_push = ts[pn].t == T_PL;
                             if (is_push) {
-                                pn++; int depth = 1;
-                                while (depth > 0 && ts[pn].t != T_EOF) {
-                                    if (ts[pn].t == T_LP || ts[pn].t == T_LB) depth++;
-                                    if (ts[pn].t == T_RP || ts[pn].t == T_RB) depth--;
-                                    if (depth == 1 && ts[pn].t == T_CM) { is_push = 0; break; }
-                                    pn++;
+                                pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                                is_push = ts[pn].t == T_LB;
+                                if (is_push) {
+                                    pn++; int depth = 1;
+                                    while (depth > 0 && ts[pn].t != T_EOF) {
+                                        if (ts[pn].t == T_LP || ts[pn].t == T_LB) depth++;
+                                        if (ts[pn].t == T_RP || ts[pn].t == T_RB) depth--;
+                                        if (depth == 1 && ts[pn].t == T_CM) { is_push = 0; break; }
+                                        pn++;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                if (is_push) {
-                    int slot = var_find(nm);
-                    if (slot < 0) slot = var_add(nm);
-                    tp++; tp++; tp++;
-                    comp_expr(c);
-                    while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
-                    if (ts[tp].t != T_RB) die("expected ]"); tp++;
-                    emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
-                } else {
-                    comp_expr(c);
-                    if (idx_count > 0) {
-                        /* Lvalue chain — find or create slot for root variable */
+                    if (is_push) {
                         int slot = var_find(nm);
                         if (slot < 0) slot = var_add(nm);
-                        emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
+                        tp++; tp++; tp++;
+                        comp_expr(c);
+                        while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
+                        if (ts[tp].t != T_RB) die("expected ]"); tp++;
+                        emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
                     } else {
-                        /* Simple assignment */
-                        int slot = var_find(nm);
-                        if (slot < 0) slot = var_add(nm);
-                        emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
+                        comp_expr(c);
+                        if (idx_count > 0) {
+                            /* Lvalue chain — find or create slot for root variable */
+                            int slot = var_find(nm);
+                            if (slot < 0) slot = var_add(nm);
+                            emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
+                        } else {
+                            /* Simple assignment */
+                            int slot = var_find(nm);
+                            if (slot < 0) slot = var_add(nm);
+                            emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
+                        }
                     }
                 }
                 free(nm);

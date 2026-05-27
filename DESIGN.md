@@ -89,13 +89,38 @@ reads.
 ### Assignment (statement level only)
 
 ```
-assignment := lvalue "=" expr
+assignment := lvalue ("=" | "+=" | "-=" | "*=" | "/=" ) expr
 lvalue     := identifier ("[" expr "]")*
 ```
 
 - `x = 5` — variable assignment
 - `arr[0] = 5` — array element mutation (in-place via COW)
 - `matrix[i][j] = 5` — nested mutation via lvalue chain
+- `x += 5` — compound assignment: desugars to `x = x + 5`
+
+### Compound Assignment
+
+`+=`, `-=`, `*=`, `/=` are syntactic sugar that desugars at compile time into
+the equivalent simple assignment. No new bytecodes or VM changes are needed —
+the compiler emits the same instruction sequence as `x = x op y`.
+
+**Simple variables:** `x += expr` compiles to read `x`, evaluate `expr`, apply
+op, store to `x`.
+
+**Indexed targets:** `a[i] += expr` compiles to:
+- Evaluate index `i` once (for the store via `OC_LVALS`)
+- Read variable `a`, re-evaluate index `i`, apply `OC_INDEX`
+- Evaluate RHS `expr`, apply op
+- Store through `OC_LVALS` using the first index copy
+
+This means the index expression is evaluated twice at runtime. For simple
+constant indices like `0` or `i` this is invisible; for complex index
+expressions with side effects (e.g. function calls), the side effect occurs
+twice.
+
+**Compound assignment does not trigger the push optimization.** `x += [y]`
+performs array concatenation (`x = x + [y]`), not push — use `x = x + [y]`
+explicitly for the O(1) push optimization.
 
 ### Arithmetic
 
@@ -328,7 +353,7 @@ include_stmt  := "include" include_path
 include_path  := string | include_expr
 include_expr  := thispath "(" ")" ("+" string)*
 
-assignment    := lvalue "=" expr
+assignment    := lvalue ("=" | "+=" | "-=" | "*=" | "/=" ) expr
 lvalue        := identifier ("[" expr "]")*
 
 if_stmt       := "if" expr block ("elif" expr block)* ("else" block)?
