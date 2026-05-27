@@ -1,16 +1,16 @@
 # TinyLang
 
-A tiny, statically-typed programming language implemented in 1701 lines of C.
+A tiny, statically-typed programming language implemented in 1,161 lines of C.
 Single-pass compiler to bytecode with a stack-based VM, refcount+COW, and tail
 call optimization. No AST, no GC, no closures, no pointers.
 
 ## Features
 
-- **Three types:** `number` (all floats), `array` (heterogeneous, deep equality), and `ptr` (FFI)
+- **Two types:** `number` (double) and `array` (heterogeneous, deep equality)
 - **Value semantics:** No references, no aliasing, no GC — refcount+COW sharing
 - **Tail call optimization:** Recursive functions don't blow the C stack
-- **Operator precedence:** Full precedence table with `||` < `&&` < `==`/`!=` < `<`/`>/`<=`/`>=` < `+`/`-` < `*`/`/`/%` (no parens needed)
-- **Logical operators:** `&&` and `||` with short-circuit evaluation
+- **Operator precedence:** `||` < `&&` < `==`/`!=` < `<`/`>`/`<=`/`>=` < `+`/`-` < `*`/`/`/%` 
+- **Short-circuit** `&&` and `||` with conditional evaluation
 - **Statement separation:** Newlines (Go-style inference) or explicit `;` separate statements
 - **Functions:** Pure (no globals), define-before-use, no closures, recursion OK
 - **Control flow:** `if`/`elif`/`else`, `while`
@@ -18,20 +18,17 @@ call optimization. No AST, no GC, no closures, no pointers.
 - **Multi-index:** `arr[i, j, k]` desugars to `arr[i][j][k]`
 - **Array slicing:** `arr[start:stop]` and `arr[start:stop:step]`, with Python-style defaults
 - **Strings:** Syntactic sugar for byte arrays, escape sequences supported
-- **Number literals:** decimal, `0b` binary, `0x` hex, `0o` octal
-- **REPL:** Expression values auto-printed, `rlwrap` / `repl.sh` for history and arrow keys
-- **Operators:** `+ - * / %`, `& | ^ @` (shift), `= != < > <= >=`, `!`, `#` (array length prefix), `&&` `||`
-- **Built-ins:** `print()`, `input()`, `assert()`, `thispath()`
-- **FFI:** `dlopen()`, `dlsym()`, `dlclose()`, `ffi_call()` — optional (requires libffi)
+- **Number literals:** decimal and `0x` hex
+- **REPL:** Expression values auto-printed, brace balancing for multi-line blocks
+- **Operators:** `+ - * / %`, `= != < > <= >=`, `!`, `#` (array length prefix), `&&` `||`
+- **Built-ins:** `print()`, `input()`, `thispath()`
 
 ## Quick start
 
 ```sh
-cc -Wall -Wextra -lm -o tinylang tinylang.c
+cc -Wall -Wextra -O2 -lm -o tinylang tinylang.c
 ./tinylang tests/test.tl
 ```
-
-> **Note:** `-lm` is required on Linux and Android/Termux to link the math library (`fmod`). On macOS it links automatically and can be omitted.
 
 ### REPL
 
@@ -41,54 +38,20 @@ rlwrap ./tinylang   # with history and arrow keys (brew install rlwrap)
 ./repl.sh           # restarts on error (Ctrl+C to exit)
 ```
 
-The REPL reads until braces balance before executing, so multi-line functions and blocks work naturally:
-
-```
-> function hello() {
-    print("hi")
-  }
-> hello()
-hi
-```
-
-Runtime errors print a message with source file and line number, plus a stack trace showing the call chain. Execution halts for the current input. In script mode the process exits with status 1; in the REPL it continues to the next input, preserving the current scope.
-
-### FFI build
-
-```sh
-cc -Wall -DTL_FFI `pkg-config --cflags libffi` -o tinylang-ffi tinylang.c `pkg-config --libs libffi` -lm
-```
-
-Requires [libffi](https://github.com/libffi/libffi) (`brew install libffi` on macOS).
-The FFI build registers four built-in functions: `dlopen()`, `dlsym()`, `dlclose()`, and
-`ffi_call()` — enabling dynamic loading and calling of C functions at runtime.
-
-The FFI tests include a demo that creates an actual SDL2 window:
-
-```sh
-./tinylang-ffi tests/ffi_sdl_window.tl
-```
-
-This requires [SDL2](https://www.libsdl.org/) (`brew install sdl2` on macOS).
-The test loads SDL2 at runtime via `dlopen`, initializes the video subsystem,
-creates a 640×480 window titled "TinyLang SDL Test", keeps it visible for 5
-seconds with event pumping, then cleans up.
+The REPL reads until braces balance before executing, so multi-line functions
+and blocks work naturally.
 
 ### Tests
 
 ```sh
-./run_tests.sh      # runs all happy-path + error + FFI tests
+./run_tests.sh      # runs all happy-path and error tests
 ```
 
-- **Happy-path tests** — `tests/test_*.tl` (assertions, function calls, linked lists, TCO, arrays)
-- **Benchmarks** — `tests/bench_*.tl` (backwards traversal, COW, push optimization)
-- **Error tests** — `tests/e_*.tl` (expected runtime errors, each tested individually)
-- **FFI tests** — `tests/ffi_*.tl` (library loading, symbol lookup, C function calls, SDL2 window demo)
+- **Happy-path tests** — `tests/test_*.tl` and `tests/bench_*.tl`
+- **Error tests** — `tests/e_*.tl` (expected runtime errors)
+- Benchmarks in `tests/bench_*.tl` (backwards traversal, COW, push optimization, TCO)
 
 All tests must pass before committing.
-
-> **Note:** The SDL window test (`ffi_sdl_window.tl`) requires SDL2 to be installed.
-> It is skipped automatically when SDL2 is not available (dlopen returns nil).
 
 ## Example
 
@@ -114,47 +77,37 @@ function fact(n, acc) {
 print(fact(5, 1))                   // 120
 print(fact(1000, 1))                // inf (no stack overflow)
 
-// operator precedence
-function is_power_of_two(x) {
-    return x > 0 && x & (x - 1) == 0
-}
-print(is_power_of_two(8))           // 1 (true)
-print(is_power_of_two(7))           // 0 (false)
-
 // array slicing
 arr = [0, 1, 2, 3, 4, 5]
 print(arr[1:3])                     // [1, 2]
 print(arr[:4:2])                    // [0, 2]
 print(arr[::2])                     // [0, 2, 4]
 
+// hex literals
+print(0xFF)                         // 255
+
 // manual heap pattern
 nodes = [[0, -1]] * 10
 nodes[0][0] = 42
 print(nodes[0][0])                  // 42
-
-// binary & hex literals
-print(0xFF)                         // 255
-print(0b1010)                       // 10
 ```
 
 ## Implementation
 
-- 1701 lines of C, single file
-- Optional FFI extension via libffi
+- 1,161 lines of C, single file
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
-- Stack-based VM: 24 opcodes, `Value istk[4096]` stack
+- Stack-based VM: computed goto dispatch, `Value istk[4096]` stack
+- Slot-indexed variable access: O(1) instead of O(n) strcmp
 - Deep copy on assignment, refcount+COW arrays with push optimization
   (`x = x + [elem]` compiles to O(1) `OC_PUSH`, no array copy)
 - Tail call optimization: parameter rebinding + ip reset (no C stack growth)
-- `assert()` error catching via `setjmp`/`longjmp`
-- FFI via `OC_CFUNC` opcode: registered C functions called at zero dispatch cost
-- Comprehensive test suite (40+ tests: happy-path, benchmarks, error cases, FFI demos)
+- Comprehensive test suite (25+ happy-path tests, 20 error tests)
 
 ## Benchmarks
 
 [`benchmarks/`](benchmarks/) contains a performance comparison of TinyLang against
-C (Apple Clang `-O2`) and Node.js (V8 JIT) on four benchmarks from the
-[Computer Language Benchmarks Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/):
+C (Apple Clang `-O2`), Node.js (V8 JIT), and Python (CPython 3.9) on four
+benchmarks from the [Computer Language Benchmarks Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/):
 
 | Benchmark | Description |
 |-----------|-------------|
@@ -165,14 +118,20 @@ C (Apple Clang `-O2`) and Node.js (V8 JIT) on four benchmarks from the
 
 ### Key Results
 
-- **Node.js is 0.3–1× of C** on these workloads, often faster thanks to V8's
-  JIT inlining, loop vectorization, and typed array optimization
-- **TinyLang is 4–31× slower than Node.js** for the same workloads, dominated
-  by interpreted dispatch vs JIT compilation
-- **TinyLang uses 3–12× less memory** than Node.js (1.2–5.7 MB vs 14–17 MB)
+```
+                   C     Node.js     Python    TinyLang
+spectral-norm    2.75s    1.93s     212.70s     0.07s*    (* N=100 vs 5500)
+n-body           0.59s    0.52s      93.10s     0.19s*    (* N=5000 vs 5M)
+mandelbrot       0.18s    0.05s       0.47s     0.26s
+fasta            0.16s    0.07s       0.31s     0.14s
+```
 
-See [`benchmarks/REPORT.md`](benchmarks/REPORT.md) for the full analysis with
-instruction counts, memory usage, and root-cause breakdown.
+- **Node.js is 0.3–1× of C** (V8's JIT often beats naive C)
+- **Python is 77–158× slower than C** at full sizes
+- **TinyLang is 1.5–2.7× faster than Python** at matching sizes, and
+  4–31× slower than Node.js
+
+See [`benchmarks/REPORT.md`](benchmarks/REPORT.md) for the full analysis.
 
 ### Running Benchmarks
 
@@ -197,19 +156,16 @@ func_def      := "function" identifier "(" params ")" block
 ret_stmt      := "return" expr
 
 block         := "{" stmt_list "}"
-expr          := or_expr
-or_expr       := and_expr ("||" and_expr)*
-and_expr      := compare_expr ("&&" compare_expr)*
-compare_expr  := add_expr (("=" | "!=" | "<" | ">" | "<=" | ">=") add_expr)?
-add_expr      := mul_expr (("+" | "-") mul_expr)*
-mul_expr      := primary (("*" | "/" | "%") primary)*
+expr          := logical_or
+logical_or    := logical_and ("||" logical_and)*
+logical_and   := comparison ("&&" comparison)*
+comparison    := addition (("=" | "!=" | "<" | ">" | "<=" | ">=") addition)?
+addition      := multiplication (("+" | "-") multiplication)*
+multiplication := primary (("*" | "/" | "%") primary)*
+
 primary       := number | identifier | "nil" | string | array_literal
                | call | index | slice | "(" expr ")" | "!" primary | "-" primary
 
-op            := "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "@"
-               | "=" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||"
-
-index_list    := expr ("," expr)*
 slice         := primary "[" expr? ":" expr? (":" expr?)? "]"
 ```
 

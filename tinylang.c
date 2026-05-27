@@ -1,3 +1,9 @@
+/* tinylang.c — VM with computed goto dispatch + slot-indexed variables
+ * Removed: compact types, FFI, assert, type(), 0b/0123 / OC_SLICE_ASSIGN
+ * Kept: TCO, COW+refcounting, push optimization, short-circuit && ||,
+ *        0x hex, slices, thispath, input, REPL
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,31 +13,12 @@
 #include <math.h>
 #include <setjmp.h>
 
-typedef enum { VAL_NUM, VAL_ARR, VAL_PTR } Type;
-typedef enum {
-    NK_U8, NK_U16, NK_U32, NK_U64,
-    NK_I8, NK_I16, NK_I32, NK_I64,
-    NK_F32, NK_F64
-} NumKind;
-typedef enum {
-    ARR_U8, ARR_U16, ARR_U32, ARR_U64,
-    ARR_I8, ARR_I16, ARR_I32, ARR_I64,
-    ARR_F32, ARR_F64, ARR_VAL
-} ArrKind;
-typedef struct Arr {
-    int refcount, len, cap; ArrKind kind;
-    union { struct Value *val; uint8_t *u8; uint16_t *u16; uint32_t *u32; uint64_t *u64;
-            int8_t *i8; int16_t *i16; int32_t *i32; int64_t *i64;
-            float *f32; double *f64; } as;
-} Arr;
+typedef enum { VAL_NUM, VAL_ARR } Type;
+typedef struct Arr { int refcount, len, cap; struct Value *val; } Arr;
 typedef struct Value {
-    Type type; NumKind nkind;
-    union {
-        uint8_t u8; uint16_t u16; uint32_t u32; uint64_t u64;
-        int8_t i8; int16_t i16; int32_t i32; int64_t i64;
-        float f32; double f64;
-        Arr *arr; void *ptr;
-    } as;
+    Type type;
+    double num;
+    Arr *arr;
 } Value;
 
 typedef enum {
@@ -40,8 +27,7 @@ typedef enum {
     T_PL, T_MI, T_ST, T_SL, T_PC,
     T_AM, T_PI, T_CA, T_AT, T_BN,
     T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
-    T_HASH,
-    T_COLON,
+    T_HASH, T_COLON,
     T_NL, T_IF, T_ELIF, T_ELSE, T_WH, T_FN, T_RT, T_INCLUDE,
     T_AND, T_OR,
 } TK;
@@ -52,13 +38,12 @@ typedef struct { char **n; Value *v; int c, m; } Scp;
 typedef enum {
     OC_NUM, OC_NIL, OC_STR, OC_MAKE_ARR,
     OC_VAR, OC_STORE,
-    OC_OP, OC_UNARY,
-    OC_INDEX,
+    OC_VAR_SLOT, OC_STORE_SLOT,
+    OC_OP, OC_UNARY, OC_INDEX,
     OC_CALL, OC_TCO,
     OC_JZ, OC_JMP, OC_RET, OC_POP,
-    OC_LVALS,
-    OC_PRINT, OC_INPUT, OC_ASSERT, OC_CFUNC, OC_PUSH, OC_TYPE,
-    OC_SLICE, OC_SLICE_ASSIGN,
+    OC_LVALS, OC_PUSH, OC_SLICE,
+    OC_PRINT, OC_INPUT,
     OC_DUP, OC_JNZ,
     OC_END,
 } OC;
@@ -71,338 +56,174 @@ typedef struct Instr {
 Tok *ts; int tc, tp;
 Scp *cs;
 int rf; Value rv;
+Value istk[4096]; int isp;
 int cur_fi;
+
 static char *include_dir;
-jmp_buf assert_jmp; int assert_catching;
-jmp_buf repl_jmp; int repl_catching;
-char assert_msg[512];
-int comp_line; char *comp_file;
-int err_line; char *err_file;
+char *comp_file; int comp_line;
+char *err_file; int err_line;
 typedef struct { int fi; int line; char *file; } CallFrame;
 CallFrame call_stack[128]; int call_depth = -1;
 
-typedef struct { char *n, **p; int a; Code *code; } Fn;
+typedef struct { char *n, **p; int a; int nvars, *p_slots; Code *code; } Fn;
 Fn *fs; int fc, fm;
-Value istk[4096]; int isp;
 
-typedef Value (*CFunc)(int, Value*);
-typedef struct { char *name; CFunc func; } CReg;
-static CReg *cregs; static int creg_count, creg_cap;
+jmp_buf repl_jmp; int repl_catching;
 
-void tl_register(const char *name, CFunc func) {
-    if (creg_count >= creg_cap) {
-        creg_cap = creg_cap ? creg_cap * 2 : 8;
-        cregs = realloc(cregs, creg_cap * sizeof(CReg));
-    }
-    cregs[creg_count].name = strdup(name);
-    cregs[creg_count].func = func;
-    creg_count++;
-}
+/* Compile-time variable tracking: name → slot index */
+static char **comp_vars;
+static int comp_vc, comp_vm;
 
-/* Detect the narrowest NumKind for a double value */
-NumKind detect_num_kind(double d) {
-    if (d != floor(d) || !isfinite(d)) {
-        return ((double)(float)d == d) ? NK_F32 : NK_F64;
-    }
-    if (d >= 0) {
-        if (d <= 255.0) return NK_U8;
-        if (d <= 65535.0) return NK_U16;
-        if (d <= 4294967295.0) return NK_U32;
-        return NK_U64;
-    } else {
-        if (d >= -128.0 && d <= 127.0) return NK_I8;
-        if (d >= -32768.0 && d <= 32767.0) return NK_I16;
-        if (d >= -2147483648.0 && d <= 2147483647.0) return NK_I32;
-        return NK_I64;
-    }
-}
+/* ─── Value helpers ─── */
 
-/* Create a number Value with compact storage */
-Value vnum(double n) {
-    Value v = { .type = VAL_NUM, .nkind = NK_F64, .as.f64 = n };
-    v.nkind = detect_num_kind(n);
-    switch (v.nkind) {
-        case NK_U8:  v.as.u8  = (uint8_t)n; break;
-        case NK_U16: v.as.u16 = (uint16_t)n; break;
-        case NK_U32: v.as.u32 = (uint32_t)n; break;
-        case NK_U64: v.as.u64 = (uint64_t)n; break;
-        case NK_I8:  v.as.i8  = (int8_t)n; break;
-        case NK_I16: v.as.i16 = (int16_t)n; break;
-        case NK_I32: v.as.i32 = (int32_t)n; break;
-        case NK_I64: v.as.i64 = (int64_t)n; break;
-        case NK_F32: v.as.f32 = (float)n; break;
-        case NK_F64: v.as.f64 = n; break;
-    }
-    return v;
-}
-
-/* Widen a number Value to double */
-double val_num(Value v) {
-    switch (v.nkind) {
-        case NK_U8:  return v.as.u8;
-        case NK_U16: return v.as.u16;
-        case NK_U32: return v.as.u32;
-        case NK_U64: return (double)v.as.u64;
-        case NK_I8:  return v.as.i8;
-        case NK_I16: return v.as.i16;
-        case NK_I32: return v.as.i32;
-        case NK_I64: return (double)v.as.i64;
-        case NK_F32: return v.as.f32;
-        case NK_F64: return v.as.f64;
-    }
-    return v.as.f64;
-}
-
+Value vnum(double n) { return (Value){ .type = VAL_NUM, .num = n }; }
+double val_num(Value v) { return v.num; }
 Value vempty(void) { return (Value){ .type = VAL_ARR }; }
-Value vptr(void *p) { return (Value){ .type = VAL_PTR, .as.ptr = p }; }
+#define nilv() ((Value){ .type = VAL_ARR })
 
-/* Read element from any array kind, wrapping as Value */
-Value arr_item(Arr *a, int i) {
-    switch (a->kind) {
-        case ARR_U8:  return vnum((double)a->as.u8[i]);
-        case ARR_U16: return vnum((double)a->as.u16[i]);
-        case ARR_U32: return vnum((double)a->as.u32[i]);
-        case ARR_U64: return vnum((double)a->as.u64[i]);
-        case ARR_I8:  return vnum((double)a->as.i8[i]);
-        case ARR_I16: return vnum((double)a->as.i16[i]);
-        case ARR_I32: return vnum((double)a->as.i32[i]);
-        case ARR_I64: return vnum((double)a->as.i64[i]);
-        case ARR_F32: return vnum((double)a->as.f32[i]);
-        case ARR_F64: return vnum(a->as.f64[i]);
-        case ARR_VAL: return a->as.val[i];
-    }
-    return vnum(0);
-}
+/* ─── Array runtime ─── */
 
-/* Detect the narrowest compact kind that can hold all values */
-ArrKind detect_kind(Value *vals, int n) {
-    if (n == 0) return ARR_VAL;
-    double dmin = 0, dmax = 0;
-    int all_int = 1, all_num = 1, first = 1;
-    for (int i = 0; i < n; i++) {
-        if (vals[i].type != VAL_NUM) { all_num = 0; continue; }
-        double d = val_num(vals[i]);
-        if (first) { dmin = dmax = d; first = 0; }
-        else { if (d < dmin) dmin = d; if (d > dmax) dmax = d; }
-        if (d != floor(d) || !isfinite(d)) all_int = 0;
-    }
-    if (!all_num) return ARR_VAL;
-    if (all_int) {
-        if (dmin >= 0) {
-            if (dmax <= 255.0) return ARR_U8;
-            if (dmax <= 65535.0) return ARR_U16;
-            if (dmax <= 4294967295.0) return ARR_U32;
-            return ARR_U64;
-        } else {
-            if (dmin >= -128.0 && dmax <= 127.0) return ARR_I8;
-            if (dmin >= -32768.0 && dmax <= 32767.0) return ARR_I16;
-            if (dmin >= -2147483648.0 && dmax <= 2147483647.0) return ARR_I32;
-            return ARR_I64;
-        }
-    }
-    for (int i = 0; i < n; i++)
-        if ((double)(float)val_num(vals[i]) != val_num(vals[i])) return ARR_F64;
-    return ARR_F32;
-}
-
-ArrKind promote_kind(ArrKind a, ArrKind b);
-void arr_append_val(Arr *a, int *k, Value v);
-void vassign(Value *d, Value s);
-
-/* ── Arr helpers ──────────────────────────────────────────────── */
-
-int kind_exactly_covers(ArrKind container, ArrKind contained) {
-    if (container == contained) return 1;
-    switch (container) {
-        case ARR_U16: return contained == ARR_U8;
-        case ARR_U32: return contained == ARR_U8 || contained == ARR_U16;
-        case ARR_U64: return contained >= ARR_U8 && contained <= ARR_U32;
-        case ARR_I16: return contained == ARR_I8 || contained == ARR_U8;
-        case ARR_I32: return (contained >= ARR_I8 && contained <= ARR_I16) ||
-                             (contained >= ARR_U8 && contained <= ARR_U16);
-        case ARR_I64: return (contained >= ARR_I8 && contained <= ARR_I32) ||
-                             (contained >= ARR_U8 && contained <= ARR_U32);
-        case ARR_F32: return contained == ARR_U8 || contained == ARR_I8 ||
-                             contained == ARR_U16 || contained == ARR_I16 ||
-                             contained == ARR_F32;
-        case ARR_F64: return (contained >= ARR_U8 && contained <= ARR_U32) ||
-                             (contained >= ARR_I8 && contained <= ARR_I32) ||
-                             contained == ARR_F32 || contained == ARR_F64;
-        case ARR_VAL: return 1;
-        default: return 0;
-    }
-}
-
-ArrKind promote_kind(ArrKind a, ArrKind b) {
-    if (a == b) return a;
-    ArrKind candidates[] = {
-        ARR_U8, ARR_I8, ARR_U16, ARR_I16,
-        ARR_U32, ARR_I32, ARR_F32,
-        ARR_U64, ARR_I64, ARR_F64, ARR_VAL
-    };
-    for (size_t i = 0; i < sizeof(candidates)/sizeof(candidates[0]); i++) {
-        ArrKind k = candidates[i];
-        if (kind_exactly_covers(k, a) && kind_exactly_covers(k, b)) return k;
-    }
-    return ARR_VAL;
-}
-
-void arr_append_val(Arr *a, int *k, Value v) {
-    double d = val_num(v);
-    switch (a->kind) {
-        case ARR_U8:  a->as.u8[(*k)++]  = (uint8_t)d; break;
-        case ARR_U16: a->as.u16[(*k)++] = (uint16_t)d; break;
-        case ARR_U32: a->as.u32[(*k)++] = (uint32_t)d; break;
-        case ARR_U64: a->as.u64[(*k)++] = (uint64_t)d; break;
-        case ARR_I8:  a->as.i8[(*k)++]  = (int8_t)d; break;
-        case ARR_I16: a->as.i16[(*k)++] = (int16_t)d; break;
-        case ARR_I32: a->as.i32[(*k)++] = (int32_t)d; break;
-        case ARR_I64: a->as.i64[(*k)++] = (int64_t)d; break;
-        case ARR_F32: a->as.f32[(*k)++] = (float)d; break;
-        case ARR_F64: a->as.f64[(*k)++] = d; break;
-        case ARR_VAL: vassign(&a->as.val[*k], v); (*k)++; break;
-    }
-}
-
-Arr *aalloc(int c, ArrKind k) {
+Arr *aalloc(int c) {
     Arr *a = calloc(1, sizeof(Arr)); a->refcount = 1;
-    a->cap = c; a->kind = k;
-    switch (k) {
-        case ARR_U8:  a->as.u8  = c ? calloc(c, 1) : NULL; break;
-        case ARR_U16: a->as.u16 = c ? calloc(c, sizeof(uint16_t)) : NULL; break;
-        case ARR_U32: a->as.u32 = c ? calloc(c, sizeof(uint32_t)) : NULL; break;
-        case ARR_U64: a->as.u64 = c ? calloc(c, sizeof(uint64_t)) : NULL; break;
-        case ARR_I8:  a->as.i8  = c ? calloc(c, 1) : NULL; break;
-        case ARR_I16: a->as.i16 = c ? calloc(c, sizeof(int16_t)) : NULL; break;
-        case ARR_I32: a->as.i32 = c ? calloc(c, sizeof(int32_t)) : NULL; break;
-        case ARR_I64: a->as.i64 = c ? calloc(c, sizeof(int64_t)) : NULL; break;
-        case ARR_F32: a->as.f32 = c ? calloc(c, sizeof(float)) : NULL; break;
-        case ARR_F64: a->as.f64 = c ? calloc(c, sizeof(double)) : NULL; break;
-        case ARR_VAL: a->as.val = c ? calloc(c, sizeof(Value)) : NULL; break;
-    }
+    a->cap = c; a->val = c ? calloc(c, sizeof(Value)) : NULL;
     return a;
 }
-
+void aretain(Arr *a) { if (a) a->refcount++; }
 void arelease(Arr *a) {
     if (!a) return;
     if (--a->refcount > 0) return;
-    if (a->kind == ARR_VAL) {
-        for (int i = 0; i < a->len; i++)
-            if (a->as.val[i].type == VAL_ARR) arelease(a->as.val[i].as.arr);
-        free(a->as.val);
-    } else {
-        free(a->as.i8);
-    }
-    free(a);
+    for (int i = 0; i < a->len; i++)
+        if (a->val[i].type == VAL_ARR) arelease(a->val[i].arr);
+    free(a->val); free(a);
 }
-
-void aretain(Arr *a) { if (a) a->refcount++; }
-
 Arr *adeep_copy(Arr *s) {
     if (!s) return NULL;
-    Arr *d = aalloc(s->cap, s->kind); d->len = s->len;
-    if (s->kind == ARR_VAL) {
-        for (int i = 0; i < s->len; i++) {
-            d->as.val[i] = s->as.val[i];
-            if (d->as.val[i].type == VAL_ARR) aretain(d->as.val[i].as.arr);
-        }
-        return d;
+    Arr *d = aalloc(s->cap); d->len = s->len;
+    for (int i = 0; i < s->len; i++) {
+        d->val[i] = s->val[i];
+        if (d->val[i].type == VAL_ARR) aretain(d->val[i].arr);
     }
-    int esize = 0;
-    switch (s->kind) {
-        case ARR_U8:  case ARR_I8:  esize = 1; break;
-        case ARR_U16: case ARR_I16: esize = 2; break;
-        case ARR_U32: case ARR_I32: case ARR_F32: esize = 4; break;
-        case ARR_U64: case ARR_I64: case ARR_F64: esize = 8; break;
-        default: break;
-    }
-    if (esize) memcpy(d->as.i8, s->as.i8, s->len * esize);
     return d;
 }
-
-void apromote_to_val(Arr *a) {
-    if (a->kind == ARR_VAL) return;
-    int n = a->len, c = a->cap;
-    Value *nv = calloc(c, sizeof(Value));
-    for (int i = 0; i < n; i++) nv[i] = arr_item(a, i);
-    free(a->as.i8);
-    a->as.val = nv;
-    a->kind = ARR_VAL;
-}
-
 void amake_uniq(Value *v) {
-    if (v->type != VAL_ARR || !v->as.arr) return;
-    if (v->as.arr->refcount > 1) {
-        Arr *old = v->as.arr;
-        v->as.arr = adeep_copy(old);
-        apromote_to_val(v->as.arr);
+    if (v->type != VAL_ARR || !v->arr) return;
+    if (v->arr->refcount > 1) {
+        Arr *old = v->arr;
+        v->arr = adeep_copy(old);
         arelease(old);
-    } else {
-        apromote_to_val(v->as.arr);
     }
 }
-
 void vassign(Value *d, Value s) {
-    if (d->type == VAL_ARR) arelease(d->as.arr);
+    if (d->type == VAL_ARR) arelease(d->arr);
     *d = s;
-    if (s.type == VAL_ARR) aretain(s.as.arr);
+    if (s.type == VAL_ARR) aretain(s.arr);
 }
+Value arr_item(Arr *a, int i) { return a->val[i]; }
 
 void print_val(Value v) {
     if (v.type == VAL_NUM) {
-        double d = val_num(v);
+        double d = v.num;
         if (d == (double)(int64_t)d) printf("%lld", (int64_t)d);
         else printf("%g", d);
     } else if (v.type == VAL_ARR) {
-        Arr *a = v.as.arr;
+        Arr *a = v.arr;
         int is_str = a ? 1 : 0;
-        if (a && (a->kind == ARR_U8 || a->kind == ARR_I8)) {
-            int8_t *p = (a->kind == ARR_U8) ? (int8_t*)a->as.u8 : a->as.i8;
+        if (a) {
             for (int i = 0; i < a->len && is_str; i++) {
-                int c = (unsigned char)p[i];
+                if (a->val[i].type != VAL_NUM) { is_str = 0; break; }
+                int c = (int)val_num(a->val[i]);
                 if (c != 10 && c != 13 && c != 9 && (c < 32 || c > 126)) is_str = 0;
             }
-            if (is_str) { fwrite(p, 1, a->len, stdout); return; }
-        } else if (a && a->kind == ARR_VAL) {
-            for (int i = 0; i < a->len && is_str; i++) {
-                if (a->as.val[i].type != VAL_NUM) { is_str = 0; break; }
-                int c = (int)val_num(a->as.val[i]);
-                if (c != 10 && c != 13 && c != 9 && (c < 32 || c > 126)) is_str = 0;
+            if (is_str) {
+                for (int i = 0; i < a->len; i++) putchar((int)val_num(a->val[i]));
+                return;
             }
-            if (is_str) { for (int i = 0; i < a->len; i++) putchar((int)val_num(a->as.val[i])); return; }
-        } else is_str = 0;
+        }
         putchar('[');
         if (a) for (int i = 0; i < a->len; i++) {
-            if (i) printf(", "); print_val(arr_item(a, i));
+            if (i) printf(", "); print_val(a->val[i]);
         }
         putchar(']');
-    } else printf("<ptr: %p>", v.as.ptr);
+    }
 }
-
-int truthy(Value v) {
-    if (v.type == VAL_PTR) return v.as.ptr != NULL;
-    return v.type != VAL_ARR || (v.as.arr && v.as.arr->len > 0);
-}
-
+int truthy(Value v) { return v.type != VAL_ARR || (v.arr && v.arr->len > 0); }
 int veq(Value a, Value b) {
     if (a.type != b.type) return 0;
-    if (a.type == VAL_NUM) return val_num(a) == val_num(b);
-    if (a.type == VAL_PTR) return a.as.ptr == b.as.ptr;
-    if (!a.as.arr && !b.as.arr) return 1;
-    if (!a.as.arr || !b.as.arr || a.as.arr->len != b.as.arr->len) return 0;
-
-    Arr *aa = a.as.arr, *bb = b.as.arr;
-    for (int i = 0; i < aa->len; i++)
-        if (!veq(arr_item(aa, i), arr_item(bb, i))) return 0;
+    if (a.type == VAL_NUM) return a.num == b.num;
+    if (!a.arr && !b.arr) return 1;
+    if (!a.arr || !b.arr || a.arr->len != b.arr->len) return 0;
+    for (int i = 0; i < a.arr->len; i++)
+        if (!veq(a.arr->val[i], b.arr->val[i])) return 0;
     return 1;
 }
 
+void die(const char *f, ...);
+
+/* ─── Operators ─── */
+
+Value apply(int op, Value l, Value r) {
+    double ld = val_num(l), rd = val_num(r);
+    int lf = l.type == VAL_NUM, rf = r.type == VAL_NUM;
+    switch (op) {
+        case T_PL:
+            if (lf && rf) return vnum(ld + rd);
+            if (l.type == VAL_ARR && r.type == VAL_ARR) {
+                Arr *la = l.arr, *ra = r.arr;
+                int ln = la ? la->len : 0, rn = ra ? ra->len : 0;
+                Arr *a = aalloc(ln + rn); a->len = ln + rn;
+                for (int i = 0; i < ln; i++) { a->val[i] = la->val[i];
+                    if (a->val[i].type == VAL_ARR) aretain(a->val[i].arr); }
+                for (int i = 0; i < rn; i++) { a->val[ln + i] = ra->val[i];
+                    if (a->val[ln + i].type == VAL_ARR) aretain(a->val[ln + i].arr); }
+                return (Value){ .type = VAL_ARR, .arr = a };
+            } die("'+' type mismatch");
+        case T_MI:
+            if (!lf || !rf) die("'-' requires numbers");
+            return vnum(ld - rd);
+        case T_ST:
+            if (lf && rf) return vnum(ld * rd);
+            if (l.type == VAL_ARR && rf) {
+                Arr *la = l.arr; int bl = la ? la->len : 0, n = (int)rd;
+                if (n <= 0) return nilv();
+                Arr *a = aalloc(bl * n); a->len = bl * n;
+                for (int i = 0; i < bl; i++) { a->val[i] = la->val[i];
+                    if (a->val[i].type == VAL_ARR) aretain(a->val[i].arr); }
+                for (int i = 1; i < n; i++)
+                    for (int j = 0; j < bl; j++) { a->val[i * bl + j] = la->val[j];
+                        if (a->val[i * bl + j].type == VAL_ARR) aretain(a->val[i*bl+j].arr); }
+                return (Value){ .type = VAL_ARR, .arr = a };
+            } die("'*' type mismatch");
+        case T_SL:
+            if (!lf || !rf) die("'/' requires numbers");
+            if (rd == 0) die("division by zero");
+            return vnum(ld / rd);
+        case T_PC:
+            if (!lf || !rf) die("'%%' requires numbers");
+            if (rd == 0) die("modulo by zero");
+            return vnum(fmod(ld, rd));
+        case T_EQ: return veq(l, r) ? vnum(1) : nilv();
+        case T_NE: return veq(l, r) ? nilv() : vnum(1);
+        case T_LT:
+            if (!lf || !rf) die("'<' requires numbers");
+            return ld < rd ? vnum(1) : nilv();
+        case T_GT:
+            if (!lf || !rf) die("'>' requires numbers");
+            return ld > rd ? vnum(1) : nilv();
+        case T_LE:
+            if (!lf || !rf) die("'<=' requires numbers");
+            return ld <= rd ? vnum(1) : nilv();
+        case T_GE:
+            if (!lf || !rf) die("'>=' requires numbers");
+            return ld >= rd ? vnum(1) : nilv();
+        default: die("unknown op");
+    } return nilv();
+}
+void die(const char *f, ...);
+
+/* ─── Error handling ─── */
+
 void die(const char *f, ...) {
-    va_list ap, aq; va_start(ap, f); va_copy(aq, ap);
-    if (assert_catching) {
-        vsnprintf(assert_msg, sizeof(assert_msg), f, aq);
-        va_end(aq); va_end(ap); longjmp(assert_jmp, 1);
-    }
+    va_list ap; va_start(ap, f);
     if (repl_catching) {
         vfprintf(stderr, f, ap); fputc('\n', stderr);
         for (int i = 0; i <= call_depth; i++) {
@@ -412,128 +233,138 @@ void die(const char *f, ...) {
                 fprintf(stderr, "%s()\n", fs[call_stack[i].fi].n);
             } else if (call_stack[i].file)
                 fprintf(stderr, "in %s:%d\n", call_stack[i].file, call_stack[i].line);
-            else
-                fprintf(stderr, "in <top-level>\n");
+            else fprintf(stderr, "in <top-level>\n");
         }
         if (cur_fi >= 0) {
             fprintf(stderr, "in ");
             if (err_file) fprintf(stderr, "%s:%d: ", err_file, err_line);
             fprintf(stderr, "%s()\n", fs[cur_fi].n);
-        } else if (err_file)
-            fprintf(stderr, "in %s:%d\n", err_file, err_line);
-        else
-            fprintf(stderr, "in <top-level>\n");
-        va_end(aq); va_end(ap); longjmp(repl_jmp, 1);
+        } else if (err_file) fprintf(stderr, "in %s:%d\n", err_file, err_line);
+        else fprintf(stderr, "in <top-level>\n");
+        va_end(ap); longjmp(repl_jmp, 1);
     }
     vfprintf(stderr, f, ap); fputc('\n', stderr);
     for (int i = 0; i <= call_depth; i++) {
-            if (call_stack[i].fi >= 0) {
-                fprintf(stderr, "in ");
-                if (call_stack[i].file) fprintf(stderr, "%s:%d: ", call_stack[i].file, call_stack[i].line);
-                fprintf(stderr, "%s()\n", fs[call_stack[i].fi].n);
-            } else if (call_stack[i].file)
-                fprintf(stderr, "in %s:%d\n", call_stack[i].file, call_stack[i].line);
-            else
-                fprintf(stderr, "in <top-level>\n");
-        }
-        if (cur_fi >= 0) {
+        if (call_stack[i].fi >= 0) {
             fprintf(stderr, "in ");
-            if (err_file) fprintf(stderr, "%s:%d: ", err_file, err_line);
-            fprintf(stderr, "%s()\n", fs[cur_fi].n);
-        } else if (err_file)
-            fprintf(stderr, "in %s:%d\n", err_file, err_line);
-        else
-            fprintf(stderr, "in <top-level>\n");
-    va_end(aq); va_end(ap); exit(1);
+            if (call_stack[i].file) fprintf(stderr, "%s:%d: ", call_stack[i].file, call_stack[i].line);
+            fprintf(stderr, "%s()\n", fs[call_stack[i].fi].n);
+        } else if (call_stack[i].file)
+            fprintf(stderr, "in %s:%d\n", call_stack[i].file, call_stack[i].line);
+        else fprintf(stderr, "in <top-level>\n");
+    }
+    if (cur_fi >= 0) {
+        fprintf(stderr, "in ");
+        if (err_file) fprintf(stderr, "%s:%d: ", err_file, err_line);
+        fprintf(stderr, "%s()\n", fs[cur_fi].n);
+    } else if (err_file) fprintf(stderr, "in %s:%d\n", err_file, err_line);
+    else fprintf(stderr, "in <top-level>\n");
+    va_end(ap); exit(1);
 }
 
-#define nilv() ((Value){ .type = VAL_ARR })
+/* ─── Scope ─── */
 
-Value apply(int op, Value l, Value r) {
-    double ld = val_num(l), rd = val_num(r);
-    switch (op) {
-        case T_PL:
-            if (l.type == VAL_NUM && r.type == VAL_NUM) return vnum(ld + rd);
-            if (l.type == VAL_ARR && r.type == VAL_ARR) {
-                Arr *la = l.as.arr, *ra = r.as.arr;
-                int ln = la ? la->len : 0, rn = ra ? ra->len : 0;
-                ArrKind lk = la ? la->kind : ARR_VAL, rk = ra ? ra->kind : ARR_VAL;
-                ArrKind rkf = promote_kind(lk, rk);
-                Arr *a = aalloc(ln + rn, rkf); a->len = ln + rn; int k = 0;
-                for (int i = 0; i < ln; i++) arr_append_val(a, &k, arr_item(la, i));
-                for (int i = 0; i < rn; i++) arr_append_val(a, &k, arr_item(ra, i));
-                return (Value){ .type = VAL_ARR, .as.arr = a };
-            } die("'+' type mismatch");
-
-        case T_MI:
-            if (l.type != VAL_NUM || r.type != VAL_NUM) die("'-' requires numbers");
-            return vnum(ld - rd);
-
-        case T_ST:
-            if (l.type == VAL_NUM && r.type == VAL_NUM) return vnum(ld * rd);
-            if (l.type == VAL_ARR && r.type == VAL_NUM) {
-                Arr *la = l.as.arr; int bl = la ? la->len : 0, n = (int)rd;
-                if (n <= 0) return nilv();
-                ArrKind lk = la ? la->kind : ARR_VAL;
-                Arr *a = aalloc(bl * n, lk); a->len = bl * n;
-                if (lk == ARR_VAL) {
-                    for (int i = 0; i < bl; i++) vassign(&a->as.val[i], arr_item(la, i));
-                    for (int i = 1; i < n; i++)
-                        for (int j = 0; j < bl; j++) vassign(&a->as.val[i * bl + j], arr_item(la, j));
-                } else {
-                    int esize = 0;
-                    switch (lk) {
-                        case ARR_U8:  case ARR_I8:  esize = 1; break;
-                        case ARR_U16: case ARR_I16: esize = 2; break;
-                        case ARR_U32: case ARR_I32: case ARR_F32: esize = 4; break;
-                        case ARR_U64: case ARR_I64: case ARR_F64: esize = 8; break;
-                        default: break;
-                    }
-                    memcpy(a->as.i8, la->as.i8, bl * esize);
-                    for (int i = 1; i < n; i++)
-                        memcpy(a->as.i8 + i * bl * esize, la->as.i8, bl * esize);
-                }
-                return (Value){ .type = VAL_ARR, .as.arr = a };
-            } die("'*' type mismatch");
-
-        case T_SL:
-            if (l.type != VAL_NUM || r.type != VAL_NUM) die("'/' requires numbers");
-            if (rd == 0) die("division by zero");
-            return vnum(ld / rd);
-
-        case T_PC:
-            if (l.type != VAL_NUM || r.type != VAL_NUM) die("'%%' requires numbers");
-            if (rd == 0) die("modulo by zero");
-            return vnum(fmod(ld, rd));
-
-        case T_AM: case T_PI: case T_CA: case T_AT: {
-            if (l.type != VAL_NUM || r.type != VAL_NUM) die("bitwise requires numbers");
-            int64_t a = (int64_t)ld, b = (int64_t)rd;
-            if (op == T_AM) return vnum((double)(a & b));
-            if (op == T_PI) return vnum((double)(a | b));
-            if (op == T_CA) return vnum((double)(a ^ b));
-            int64_t s = (int64_t)rd;
-            if (s < 0) { if (s < -63) s = -63; return vnum((double)((uint64_t)a >> -s)); }
-            if (s > 63) s = 63;
-            return vnum((double)((uint64_t)a << s));
-        }
-        case T_EQ: return veq(l, r) ? vnum(1) : nilv();
-        case T_NE: return veq(l, r) ? nilv() : vnum(1);
-        case T_LT:
-            if (l.type != VAL_NUM || r.type != VAL_NUM) die("'<' requires numbers");
-            return ld < rd ? vnum(1) : nilv();
-        case T_GT:
-            if (l.type != VAL_NUM || r.type != VAL_NUM) die("'>' requires numbers");
-            return ld > rd ? vnum(1) : nilv();
-        case T_LE:
-            if (l.type != VAL_NUM || r.type != VAL_NUM) die("'<=' requires numbers");
-            return ld <= rd ? vnum(1) : nilv();
-        case T_GE:
-            if (l.type != VAL_NUM || r.type != VAL_NUM) die("'>=' requires numbers");
-            return ld >= rd ? vnum(1) : nilv();
-        default: die("unknown op");
-    } return nilv();
+Scp *snew(void) { return calloc(1, sizeof(Scp)); }
+Scp *snew_sized(int n) {
+    Scp *s = calloc(1, sizeof(Scp));
+    if (n > 0) { s->v = calloc(n, sizeof(Value)); s->n = calloc(n, sizeof(char*)); }
+    s->c = n; s->m = n;
+    return s;
 }
+void sfree(Scp *s) {
+    for (int i = 0; i < s->c; i++) {
+        if (s->v[i].type == VAL_ARR) arelease(s->v[i].arr);
+        if (s->n[i]) free(s->n[i]);
+    }
+    free(s->n); free(s->v); free(s);
+}
+Value sget(Scp *s, const char *n) {
+    for (int i = 0; i < s->c; i++) if (s->n[i] && !strcmp(s->n[i], n)) return s->v[i];
+    die("undefined '%s'", n); return nilv();
+}
+void sset(Scp *s, const char *n, Value v) {
+    for (int i = 0; i < s->c; i++)
+        if (s->n[i] && !strcmp(s->n[i], n)) { vassign(&s->v[i], v); return; }
+    if (s->c >= s->m) { s->m = s->m ? s->m*2 : 4;
+        s->n = realloc(s->n, s->m*sizeof(char*)); s->v = realloc(s->v, s->m*sizeof(Value));
+        for (int i = s->c; i < s->m; i++) s->n[i] = NULL; }
+    s->n[s->c] = strdup(n); s->v[s->c] = v;
+    if (v.type == VAL_ARR) aretain(v.arr); s->c++;
+}
+int ffind(const char *n) { for (int i = 0; i < fc; i++) if (!strcmp(fs[i].n, n)) return i; return -1; }
+
+/* ─── Bytecode helpers ─── */
+
+void emit(Code *c, Instr ins) {
+    if (c->len >= c->cap) { c->cap = c->cap ? c->cap*2 : 128;
+        c->code = realloc(c->code, c->cap * sizeof(Instr)); }
+    ins.line = comp_line; ins.file = comp_file ? strdup(comp_file) : NULL;
+    c->code[c->len++] = ins;
+}
+Code *new_code(void) { return calloc(1, sizeof(Code)); }
+void code_free(Code *c) {
+    if (!c) return;
+    for (int i = 0; i < c->len; i++) {
+        free(c->code[i].name); free(c->code[i].file);
+        if (c->code[i].arr) arelease(c->code[i].arr);
+        code_free(c->code[i].sub);
+    }
+    free(c->code); free(c);
+}
+char *readf(const char *p) {
+    FILE *f = fopen(p, "rb"); if (!f) return NULL;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); rewind(f);
+    char *b = malloc(sz + 1); fread(b, 1, sz, f); b[sz] = 0;
+    fclose(f); return b;
+}
+int var_find(const char *n) {
+    for (int i = 0; i < comp_vc; i++)
+        if (!strcmp(comp_vars[i], n)) return i;
+    return -1;
+}
+int var_add(const char *n) {
+    int s = comp_vc++;
+    if (comp_vc > comp_vm) { comp_vm = comp_vm ? comp_vm*2 : 16;
+        comp_vars = realloc(comp_vars, comp_vm * sizeof(char*)); }
+    comp_vars[s] = strdup(n);
+    return s;
+}
+
+/* ─── Compiler ─── */
+
+void comp_stmt(Code *c);
+void comp_expr(Code *c);
+void comp_prim(Code *c);
+void comp_block(Code *c);
+
+static int op_prec(TK t) {
+    switch (t) {
+        case T_ST: case T_SL: case T_PC: return 9;
+        case T_PL: case T_MI: return 8;
+        case T_AT: return 7;
+        case T_LT: case T_GT: case T_LE: case T_GE: return 6;
+        case T_EQ: case T_NE: return 5;
+        case T_AM: return 4;
+        case T_CA: return 3;
+        case T_PI: return 2;
+        case T_AND: return 1;
+        case T_OR:  return 0;
+        default: return 0;
+    }
+}
+static int is_binary_op(TK t) {
+    switch (t) {
+        case T_PL: case T_MI: case T_ST: case T_SL: case T_PC:
+        case T_AM: case T_PI: case T_CA: case T_AT:
+        case T_EQ: case T_NE:
+        case T_LT: case T_GT: case T_LE: case T_GE:
+        case T_AND: case T_OR:
+            return 1;
+        default: return 0;
+    }
+}
+
+/* ─── Lexer ─── */
 
 const char *src; int sl;
 static int pc(void) { return (unsigned char)*src; }
@@ -542,66 +373,30 @@ static int ac(void) { int c = (unsigned char)*src++; if (c == '\n') sl++; return
 void lex(const char *s) {
     src = s; sl = 1; tc = 0; tp = 0;
     int m = 8192; ts = malloc(m * sizeof(Tok));
-
     for (;;) {
         while (pc() == ' ' || pc() == '\t') ac();
         int c = pc(); Tok tk = { .l = sl };
         if (c == '\n') { ac(); tk.t = T_NL; goto em; }
         if (c == 0) { tk.t = T_EOF; goto em; }
         if (c == '/' && src[1] == '/') { while (pc() && pc() != '\n') ac(); continue; }
-
         if (isdigit(c) || (c == '.' && isdigit(src[1]))) {
             char b[64]; int i = 0;
-            if (c == '0') {
-                int nxt = (unsigned char)src[1];
-                if (nxt == 'b' || nxt == 'B') {
-                    ac(); ac();
-                    while (pc() == '0' || pc() == '1') {
-                        if (i >= 62) die("binary literal too long");
-                        b[i++] = ac();
-                    }
-                    if (i == 0) die("invalid binary literal");
-                    if (isalnum(pc())) die("invalid character in binary literal");
-                    b[i] = 0;
-                    tk.t = T_NUM; tk.n = (double)strtoull(b, NULL, 2); goto em;
-                }
-                if (nxt == 'x' || nxt == 'X') {
-                    ac(); ac();
-                    while (isxdigit(pc())) {
-                        if (i >= 62) die("hex literal too long");
-                        b[i++] = ac();
-                    }
-                    if (i == 0) die("invalid hex literal");
-                    if (isalnum(pc())) die("invalid character in hex literal");
-                    b[i] = 0;
-                    tk.t = T_NUM; tk.n = (double)strtoull(b, NULL, 16); goto em;
-                }
-                if (nxt >= '0' && nxt <= '7') {
-                    ac();
-                    while (pc() >= '0' && pc() <= '7') {
-                        if (i >= 62) die("octal literal too long");
-                        b[i++] = ac();
-                    }
-                    if (isdigit(pc())) die("invalid digit in octal literal");
-                    if (isalnum(pc())) die("invalid character in octal literal");
-                    b[i] = 0;
-                    tk.t = T_NUM; tk.n = (double)strtoull(b, NULL, 8); goto em;
-                }
-                if (nxt >= '8' && nxt <= '9') {
-                    die("invalid digit in octal literal");
-                }
+            if (c == '0' && (src[1] == 'x' || src[1] == 'X')) {
+                ac(); ac();
+                while (isxdigit(pc())) { if (i >= 62) die("hex literal too long"); b[i++] = ac(); }
+                if (i == 0) die("invalid hex literal");
+                b[i] = 0; tk.t = T_NUM; tk.n = (double)strtoull(b, NULL, 16); goto em;
             }
             if (c == '.') { b[i++] = c; ac(); c = pc(); }
             while (isdigit(c)) { b[i++] = c; ac(); c = pc(); }
             if (c == '.') { b[i++] = c; ac(); c = pc(); while (isdigit(c)) { b[i++] = c; ac(); c = pc(); } }
             b[i] = 0; tk.t = T_NUM; tk.n = atof(b); goto em;
         }
-
         if (isalpha(c) || c == '_') {
             char b[64]; int i = 0;
             while (isalnum(c) || c == '_') { b[i++] = c; ac(); c = pc(); }
             b[i] = 0; tk.t = T_ID; tk.s = strdup(b);
-            if      (!strcmp(b,"nil")){tk.t=T_NIL;free(tk.s);}
+            if (!strcmp(b,"nil")){tk.t=T_NIL;free(tk.s);}
             else if (!strcmp(b,"if")){tk.t=T_IF;free(tk.s);}
             else if (!strcmp(b,"elif")){tk.t=T_ELIF;free(tk.s);}
             else if (!strcmp(b,"else")){tk.t=T_ELSE;free(tk.s);}
@@ -611,7 +406,6 @@ void lex(const char *s) {
             else if (!strcmp(b,"include")){tk.t=T_INCLUDE;free(tk.s);}
             goto em;
         }
-
         if (c == '"') {
             ac(); char b[8192]; int i = 0;
             for (;;) {
@@ -627,11 +421,10 @@ void lex(const char *s) {
                     }
                 } else { if (c==0||c=='\n') die("unterminated string"); b[i++]=c; }
             }
-            Arr *a = aalloc(i, ARR_I8); a->len = i;
-            for (int j = 0; j < i; j++) a->as.i8[j] = (unsigned char)b[j];
+            Arr *a = aalloc(i); a->len = i;
+            for (int j = 0; j < i; j++) a->val[j] = vnum((double)(unsigned char)b[j]);
             tk.t = T_STR; tk.s = (char*)a; goto em;
         }
-
         ac();
         switch (c) {
             case '(': tk.t=T_LP; break; case ')': tk.t=T_RP; break;
@@ -644,8 +437,7 @@ void lex(const char *s) {
             case '&': if (pc()=='&'){ac();tk.t=T_AND;}else tk.t=T_AM; break;
             case '|': if (pc()=='|'){ac();tk.t=T_OR;}else tk.t=T_PI; break;
             case '^': tk.t=T_CA; break; case '@': tk.t=T_AT; break;
-            case '#': tk.t=T_HASH; break;
-            case ':': tk.t=T_COLON; break;
+            case '#': tk.t=T_HASH; break; case ':': tk.t=T_COLON; break;
             case '!': if (pc()=='='){ac();tk.t=T_NE;}else tk.t=T_BN; break;
             case '=': tk.t=T_EQ; break;
             case '<': if (pc()=='='){ac();tk.t=T_LE;}else tk.t=T_LT; break;
@@ -655,53 +447,6 @@ void lex(const char *s) {
         em: if (tc>=m){m*=2;ts=realloc(ts,m*sizeof(Tok));} ts[tc++]=tk; if (tk.t==T_EOF) break;
     }
 }
-
-Scp *snew(void) { return calloc(1, sizeof(Scp)); }
-
-void sfree(Scp *s) {
-    for (int i = 0; i < s->c; i++) { if (s->v[i].type == VAL_ARR) arelease(s->v[i].as.arr); free(s->n[i]); }
-    free(s->n); free(s->v); free(s);
-}
-
-Value sget(Scp *s, const char *n) {
-    for (int i = 0; i < s->c; i++) if (!strcmp(s->n[i], n)) return s->v[i];
-    die("undefined '%s'", n); return nilv();
-}
-
-void sset(Scp *s, const char *n, Value v) {
-    for (int i = 0; i < s->c; i++)
-        if (!strcmp(s->n[i], n)) { vassign(&s->v[i], v); return; }
-    if (s->c >= s->m) { s->m = s->m ? s->m*2 : 4;
-        s->n = realloc(s->n, s->m*sizeof(char*)); s->v = realloc(s->v, s->m*sizeof(Value)); }
-    s->n[s->c] = strdup(n); s->v[s->c] = v;
-    if (v.type == VAL_ARR) aretain(v.as.arr); s->c++;
-}
-
-int ffind(const char *n) { for (int i = 0; i < fc; i++) if (!strcmp(fs[i].n, n)) return i; return -1; }
-
-void emit(Code *c, Instr ins) {
-    if (c->len >= c->cap) { c->cap = c->cap ? c->cap*2 : 128;
-        c->code = realloc(c->code, c->cap * sizeof(Instr)); }
-    ins.line = comp_line; ins.file = comp_file ? strdup(comp_file) : NULL;
-    c->code[c->len++] = ins;
-}
-
-Code *new_code(void) { return calloc(1, sizeof(Code)); }
-
-void code_free(Code *c) {
-    if (!c) return;
-    for (int i = 0; i < c->len; i++) {
-        free(c->code[i].name); free(c->code[i].file);
-        if (c->code[i].arr) arelease(c->code[i].arr);
-        code_free(c->code[i].sub);
-    }
-    free(c->code); free(c);
-}
-
-void comp_stmt(Code *c);
-void comp_expr(Code *c);
-void comp_prim(Code *c);
-void comp_block(Code *c);
 
 void comp_prim(Code *c) {
     while (ts[tp].t == T_NL) tp++;
@@ -714,31 +459,31 @@ void comp_prim(Code *c) {
             char *nm = strdup(t.s); tp++;
             if (ts[tp].t == T_LP) {
                 free(nm); tp++;
-                int is_assert = !strcmp(t.s, "assert");
-                if (is_assert) {
-                    Code *arg = new_code(); int ac = 0;
-                    if (ts[tp].t != T_RP) { do { comp_expr(arg); ac++; } while (ts[tp].t == T_CM && (tp++, 1)); }
-                    tp++; emit(c, (Instr){OC_ASSERT, ac, 0, .sub = arg}); break;
-                }
                 int ac = 0;
                 if (ts[tp].t != T_RP) { do { comp_expr(c); ac++; } while (ts[tp].t == T_CM && (tp++, 1)); }
                 tp++;
                 if (!strcmp(t.s, "print")) { if (ac < 1) die("print needs 1 arg"); emit(c, (Instr){OC_PRINT, 0, 0}); }
                 else if (!strcmp(t.s, "input")) emit(c, (Instr){OC_INPUT, 0, 0});
-                else if (!strcmp(t.s, "type")) emit(c, (Instr){OC_TYPE, 0, 0});
                 else if (!strcmp(t.s, "thispath")) {
                     int n = comp_file ? strlen(comp_file) : 0;
-                    Arr *a = aalloc(n, ARR_I8); a->len = n;
-                    for (int j = 0; j < n; j++) a->as.i8[j] = comp_file[j];
+                    Arr *a = aalloc(n); a->len = n;
+                    for (int j = 0; j < n; j++) a->val[j] = vnum((double)(unsigned char)comp_file[j]);
                     emit(c, (Instr){OC_STR, 0, 0, .arr = a});
                 } else {
-                    int ci = -1;
-                    for (int i = 0; i < creg_count; i++) if (!strcmp(t.s, cregs[i].name)) { ci = i; break; }
-                    if (ci >= 0) { emit(c, (Instr){OC_CFUNC, ci, ac}); }
-                    else { int fi = ffind(t.s); if (fi < 0) die("undefined function '%s'", t.s); emit(c, (Instr){OC_CALL, fi, ac}); }
+                    int fi = ffind(t.s); if (fi < 0) die("undefined function '%s'", t.s);
+                    emit(c, (Instr){OC_CALL, fi, ac});
                 }
             } else {
-                emit(c, (Instr){OC_VAR, 0, 0, .name = nm});
+                /* Variable read — use slot index in function bodies, name at top-level */
+                int slot = var_find(nm);
+                if (slot >= 0) {
+                    emit(c, (Instr){OC_VAR_SLOT, slot, 0});
+                } else if (cur_fi >= 0) {
+                    die("undefined variable '%s'", nm);
+                } else {
+                    emit(c, (Instr){OC_VAR, 0, 0, .name = nm});
+                }
+                free(nm);
             }
             break;
         }
@@ -756,14 +501,11 @@ void comp_prim(Code *c) {
         case T_HASH: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_HASH, 0}); break;
         default: die("unexpected token at line %d", t.l);
     }
-    /* General array indexing/slicing for any primary expression */
     while (ts[tp].t == T_LB) {
         tp++;
-        /* Check if this is a slice [start:stop:step] */
         int is_slice = 0;
-        if (ts[tp].t == T_COLON) {
-            is_slice = 1;
-        } else if (ts[tp].t != T_RB) {
+        if (ts[tp].t == T_COLON) is_slice = 1;
+        else if (ts[tp].t != T_RB) {
             int depth = 0;
             for (int p = tp; p < tc; p++) {
                 if (depth == 0 && (ts[p].t == T_RB || ts[p].t == T_CM)) break;
@@ -773,30 +515,16 @@ void comp_prim(Code *c) {
             }
         }
         if (is_slice) {
-            /* start */
-            if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
-                comp_expr(c);
-            } else {
-                emit(c, (Instr){OC_NIL, 0, 0});
-            }
+            if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
+            else emit(c, (Instr){OC_NIL, 0, 0});
             if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
-            /* stop */
-            if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
-                comp_expr(c);
-            } else {
-                emit(c, (Instr){OC_NIL, 0, 0});
-            }
-            /* step */
+            if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
+            else emit(c, (Instr){OC_NIL, 0, 0});
             if (ts[tp].t == T_COLON) {
                 tp++;
-                if (ts[tp].t != T_RB) {
-                    comp_expr(c);
-                } else {
-                    emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
-                }
-            } else {
-                emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
-            }
+                if (ts[tp].t != T_RB) comp_expr(c);
+                else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+            } else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
             if (ts[tp].t != T_RB) die("expected ]"); tp++;
             emit(c, (Instr){OC_SLICE, 0, 0});
         } else {
@@ -806,56 +534,24 @@ void comp_prim(Code *c) {
     }
 }
 
-static int op_prec(TK t) {
-    switch (t) {
-        case T_ST: case T_SL: case T_PC: return 9;  /* * / % */
-        case T_PL: case T_MI: return 8;              /* + - */
-        case T_AT: return 7;                          /* shift @ */
-        case T_LT: case T_GT: case T_LE: case T_GE: return 6;  /* < > <= >= */
-        case T_EQ: case T_NE: return 5;              /* = != */
-        case T_AM: return 4;                          /* & */
-        case T_CA: return 3;                          /* ^ */
-        case T_PI: return 2;                          /* | */
-        case T_AND: return 1;                         /* && */
-        case T_OR:  return 0;                         /* || */
-        default: return 0;
-    }
-}
-
-static int is_binary_op(TK t) {
-    switch (t) {
-        case T_PL: case T_MI: case T_ST: case T_SL: case T_PC:
-        case T_AM: case T_PI: case T_CA: case T_AT:
-        case T_EQ: case T_NE:
-        case T_LT: case T_GT: case T_LE: case T_GE:
-        case T_AND: case T_OR:
-            return 1;
-        default: return 0;
-    }
-}
-
 static void comp_expr_prec(Code *c, int min_prec) {
     comp_prim(c);
     while (is_binary_op(ts[tp].t) && op_prec(ts[tp].t) >= min_prec) {
         int op = ts[tp].t; tp++;
         if (op == T_AND || op == T_OR) {
-            /* Short-circuit: && and || need conditional evaluation */
             emit(c, (Instr){ OC_DUP, 0, 0 });
-            int jmp_patch = c->len;
+            int jmp = c->len;
             emit(c, (Instr){ op == T_AND ? OC_JZ : OC_JNZ, 0, 0 });
             emit(c, (Instr){ OC_POP, 0, 0 });
             comp_expr_prec(c, op_prec(op) + 1);
-            c->code[jmp_patch].a = c->len;
+            c->code[jmp].a = c->len;
         } else {
             comp_expr_prec(c, op_prec(op) + 1);
             emit(c, (Instr){OC_OP, op, 0});
         }
     }
 }
-
-void comp_expr(Code *c) {
-    comp_expr_prec(c, 0);
-}
+void comp_expr(Code *c) { comp_expr_prec(c, 0); }
 
 void comp_block(Code *c) {
     while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
@@ -870,26 +566,24 @@ void comp_block(Code *c) {
 }
 
 void comp_if(Code *c) {
-    int jz_patches[64], np = 0, jmp_patches[64], nj = 0;
-    tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file; comp_expr(c);
-    jz_patches[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0});
-    comp_block(c);
-    jmp_patches[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0});
+    int jz[64], np = 0, jmp[64], nj = 0;
+    tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
+    comp_expr(c); jz[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0});
+    comp_block(c); jmp[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0});
     while (ts[tp].t == T_ELIF) {
-        c->code[jz_patches[np-1]].a = c->len; tp++;
-        comp_expr(c); jz_patches[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0});
-        comp_block(c); jmp_patches[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0});
+        c->code[jz[np-1]].a = c->len; tp++;
+        comp_expr(c); jz[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0});
+        comp_block(c); jmp[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0});
     }
-    if (ts[tp].t == T_ELSE) { c->code[jz_patches[np-1]].a = c->len; tp++; comp_block(c); }
-    else c->code[jz_patches[np-1]].a = c->len;
-    for (int i = 0; i < nj; i++) c->code[jmp_patches[i]].a = c->len;
+    if (ts[tp].t == T_ELSE) { c->code[jz[np-1]].a = c->len; tp++; comp_block(c); }
+    else c->code[jz[np-1]].a = c->len;
+    for (int i = 0; i < nj; i++) c->code[jmp[i]].a = c->len;
 }
 
 void comp_while(Code *c) {
     int loop = c->len; tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     comp_expr(c); int jz = c->len; emit(c, (Instr){OC_JZ, 0, 0});
-    comp_block(c);
-    emit(c, (Instr){OC_JMP, loop, 0}); c->code[jz].a = c->len;
+    comp_block(c); emit(c, (Instr){OC_JMP, loop, 0}); c->code[jz].a = c->len;
 }
 
 void comp_return(Code *c) {
@@ -904,21 +598,56 @@ void comp_return(Code *c) {
 }
 
 void comp_fn(Code *c) {
+    (void)c;
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     if (ts[tp].t != T_ID) die("expected function name");
     char *name = strdup(ts[tp].s); tp++;
     if (ts[tp].t != T_LP) die("expected ("); tp++;
+    if (fc >= fm) { fm = fm ? fm*2 : 8; fs = realloc(fs, fm*sizeof(Fn)); }
+    int fi = fc;
+    Fn *f = &fs[fc++]; memset(f, 0, sizeof(Fn));
+    f->n = name; f->code = NULL; f->p_slots = NULL;
+
+    /* Parse parameters */
     char *params[64]; int pa = 0;
     if (ts[tp].t != T_RP) {
-        do { if (ts[tp].t != T_ID) die("expected param name"); params[pa++] = strdup(ts[tp].s); tp++; }
-        while (ts[tp].t == T_CM && (tp++, 1));
+        do {
+            if (ts[tp].t != T_ID) die("expected param name");
+            params[pa++] = strdup(ts[tp].s);
+            tp++;
+        } while (ts[tp].t == T_CM && (tp++, 1));
     }
     if (ts[tp].t != T_RP) die("expected )"); tp++;
-    if (ffind(name) >= 0) die("'%s' already defined", name);
-    if (fc >= fm) { fm = fm ? fm*2 : 8; fs = realloc(fs, fm*sizeof(Fn)); }
-    Fn *f = &fs[fc++]; f->n = name; f->p = malloc(pa*sizeof(char*));
-    for (int i = 0; i < pa; i++) f->p[i] = params[i]; f->a = pa; f->code = NULL;
-    Code *body = new_code(); comp_block(body); emit(body, (Instr){OC_END, 0, 0}); f->code = body;
+    if (ffind(name) >= 0 && ffind(name) != fi) die("'%s' already defined", name);
+
+    /* Save top-level var state, restore after function body */
+    char **saved_vars = comp_vars;
+    int saved_vc = comp_vc, saved_vm = comp_vm;
+
+    /* Reset var table for this function body */
+    comp_vars = NULL; comp_vc = 0; comp_vm = 0;
+    for (int i = 0; i < pa; i++) var_add(params[i]);
+
+    /* Register param slots for fast binding */
+    f->p_slots = malloc(pa * sizeof(int));
+    for (int i = 0; i < pa; i++) f->p_slots[i] = var_find(params[i]);
+    f->a = pa;
+
+    /* Compile body */
+    Code *body = new_code(); comp_block(body); emit(body, (Instr){OC_END, 0, 0});
+    f->code = body;
+    f->nvars = comp_vc;
+
+    /* Free function's var table */
+    for (int i = 0; i < comp_vc; i++) free(comp_vars[i]);
+    free(comp_vars);
+
+    /* Restore top-level var state */
+    comp_vars = saved_vars;
+    comp_vc = saved_vc;
+    comp_vm = saved_vm;
+
+    /* TCO detection */
     int last = body->len - 1;
     if (last >= 0 && body->code[last].op == OC_END) last--;
     if (last >= 0 && body->code[last].op == OC_RET) last--;
@@ -927,109 +656,6 @@ void comp_fn(Code *c) {
         { body->code[last].op = OC_TCO; body->code[last].a = body->code[last].b; body->code[last].b = 0; }
 }
 
-char *tl_to_cstring(Value v) {
-    if (v.type != VAL_ARR || !v.as.arr) return strdup("");
-    Arr *a = v.as.arr;
-    char *s = malloc(a->len + 1);
-    if (a->kind == ARR_I8 || a->kind == ARR_U8) {
-        memcpy(s, a->as.i8, a->len);
-    } else {
-        for (int i = 0; i < a->len; i++)
-            s[i] = (char)val_num(arr_item(a, i));
-    }
-    s[a->len] = 0;
-    return s;
-}
-
-#ifdef TL_FFI
-#include <dlfcn.h>
-#include <ffi.h>
-
-Value tl_dlopen(int argc, Value *args) {
-    if (argc < 1) return vptr(NULL);
-    char *path = tl_to_cstring(args[0]);
-    void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    free(path);
-    return vptr(handle);
-}
-
-Value tl_dlsym(int argc, Value *args) {
-    if (argc < 2 || args[0].type != VAL_PTR || !args[0].as.ptr) return vptr(NULL);
-    char *name = tl_to_cstring(args[1]);
-    void *sym = dlsym(args[0].as.ptr, name);
-    free(name);
-    return vptr(sym);
-}
-
-Value tl_dlclose(int argc, Value *args) {
-    if (argc < 1) die("dlclose needs handle");
-    dlclose(args[0].as.ptr);
-    return vempty();
-}
-
-Value tl_ffi_call(int argc, Value *args) {
-    if (argc < 2) die("ffi_call needs fn_ptr, sig, ...");
-    void  *fn   = args[0].as.ptr;
-    char  *sig  = tl_to_cstring(args[1]);
-    int    slen = strlen(sig);
-    char   rets = sig[0];
-    int    nargs = slen - 1;
-    if (argc - 2 != nargs)
-        die("ffi_call: sig says %d args, got %d", nargs, argc - 2);
-
-    ffi_type *at[64]; void *av[64];
-    int ib[64], ni=0;
-    double db[64]; int nd=0;
-    void *pb[64]; int np2=0;
-    char *sb[64]; int ns2=0;
-
-    for (int i = 1; i < slen; i++) {
-        switch (sig[i]) {
-            case 'i': at[i-1]=&ffi_type_sint32;  ib[ni]=(int)val_num(args[1+i]); av[i-1]=&ib[ni++]; break;
-            case 'd': at[i-1]=&ffi_type_double;  db[nd]=val_num(args[1+i]);     av[i-1]=&db[nd++]; break;
-            case 'p': at[i-1]=&ffi_type_pointer;  pb[np2]=args[1+i].as.ptr;     av[i-1]=&pb[np2++]; break;
-            case 's': at[i-1]=&ffi_type_pointer;  sb[ns2]=tl_to_cstring(args[1+i]); av[i-1]=&sb[ns2++]; break;
-            default: die("ffi_call: unknown type '%c'", sig[i]);
-        }
-    }
-
-    ffi_type *rt = NULL;
-    char rbuf[64];
-    switch (rets) {
-        case 'v': rt=&ffi_type_void;   break;
-        case 'i': rt=&ffi_type_sint32;  break;
-        case 'd': rt=&ffi_type_double;  break;
-        case 'p': case 's': rt=&ffi_type_pointer; break;
-        default: die("ffi_call: unknown return '%c'", rets);
-    }
-
-    ffi_cif cif;
-    ffi_prep_cif(&cif, FFI_DEFAULT_ABI, nargs, rt, at);
-    ffi_call(&cif, FFI_FN(fn), rbuf, av);
-
-    for (int i = 0; i < (int)ns2; i++) free(sb[i]);
-    free(sig);
-
-    switch (rets) {
-        case 'v': return vempty();
-        case 'i': return vnum((double)*(int*)rbuf);
-        case 'd': return vnum(*(double*)rbuf);
-        case 'p': return vptr(*(void**)rbuf);
-        case 's': {
-            const char *str = *(const char**)rbuf;
-            if (!str) return vempty();
-            int n = strlen(str);
-            Arr *a = aalloc(n, ARR_I8); a->len = n;
-            memcpy(a->as.i8, str, n);
-            return (Value){ .type = VAL_ARR, .as.arr = a };
-        }
-    }
-    return vempty();
-}
-#endif
-
-char *readf(const char *p);
-
 void comp_include(Code *c) {
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     if (ts[tp].t != T_STR) die("include requires a string path");
@@ -1037,7 +663,7 @@ void comp_include(Code *c) {
     int plen = a ? a->len : 0;
     if (plen >= 1024) die("include path too long");
     char path[1024];
-    for (int i = 0; i < plen; i++) path[i] = (char)val_num(arr_item(a, i)); path[plen] = '\0';
+    for (int i = 0; i < plen; i++) path[i] = (char)val_num(a->val[i]); path[plen] = '\0';
     char full[1024];
     if (include_dir && include_dir[0])
         snprintf(full, sizeof(full), "%s/%s", include_dir, path);
@@ -1078,8 +704,7 @@ void comp_stmt(Code *c) {
                 pt++; int bd = 1;
                 while (bd > 0 && ts[pt].t != T_EOF) {
                     if (ts[pt].t == T_LB) bd++;
-                    if (ts[pt].t == T_RB) bd--;
-                    pt++;
+                    if (ts[pt].t == T_RB) bd--; pt++;
                 }
             }
             int is_assign = (ts[pt].t == T_EQ);
@@ -1114,67 +739,29 @@ void comp_stmt(Code *c) {
                         }
                     }
                 }
-                int is_slice_opt = 0;
-                if (!is_push && idx_count == 0) {
-                    int pn = tp;
-                    while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                    if (ts[pn].t == T_ID && !strcmp(ts[pn].s, nm)) {
-                        pn++;
-                        while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                        if (ts[pn].t == T_LB) {
-                            pn++;
-                            int depth = 0;
-                            for (int p = pn; p < tc; p++) {
-                                if (depth == 0 && (ts[p].t == T_RB || ts[p].t == T_CM)) break;
-                                if (depth == 0 && ts[p].t == T_COLON) { is_slice_opt = 1; break; }
-                                if (ts[p].t == T_LB || ts[p].t == T_LP) depth++;
-                                if (ts[p].t == T_RB || ts[p].t == T_RP) depth--;
-                            }
-                        }
-                    }
-                }
                 if (is_push) {
+                    int slot = var_find(nm);
+                    if (slot < 0) slot = var_add(nm);
                     tp++; tp++; tp++;
                     comp_expr(c);
                     while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
-                    if (ts[tp].t != T_RB) die("expected ]");
-                    tp++;
-                    emit(c, (Instr){OC_PUSH, 0, 0, .name = nm});
-                } else if (is_slice_opt) {
-                    /* x = x[start:stop:step] — emit OC_SLICE_ASSIGN for in-place optimization */
-                    tp++; while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
-                    if (ts[tp].t != T_LB) die("expected ["); tp++;
-                    /* start */
-                    if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
-                        comp_expr(c);
-                    } else {
-                        emit(c, (Instr){OC_NIL, 0, 0});
-                    }
-                    if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
-                    /* stop */
-                    if (ts[tp].t != T_COLON && ts[tp].t != T_RB) {
-                        comp_expr(c);
-                    } else {
-                        emit(c, (Instr){OC_NIL, 0, 0});
-                    }
-                    /* step */
-                    if (ts[tp].t == T_COLON) {
-                        tp++;
-                        if (ts[tp].t != T_RB) {
-                            comp_expr(c);
-                        } else {
-                            emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
-                        }
-                    } else {
-                        emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
-                    }
                     if (ts[tp].t != T_RB) die("expected ]"); tp++;
-                    emit(c, (Instr){OC_SLICE_ASSIGN, 0, 0, .name = strdup(nm)});
+                    emit(c, (Instr){OC_PUSH, slot, 0});
                 } else {
                     comp_expr(c);
-                    if (idx_count > 0) emit(c, (Instr){OC_LVALS, idx_count, 0, .name = nm});
-                    else emit(c, (Instr){OC_STORE, 0, 0, .name = nm});
+                    if (idx_count > 0) {
+                        /* Lvalue chain — find or create slot for root variable */
+                        int slot = var_find(nm);
+                        if (slot < 0) slot = var_add(nm);
+                        emit(c, (Instr){OC_LVALS, slot, idx_count});
+                    } else {
+                        /* Simple assignment */
+                        int slot = var_find(nm);
+                        if (slot < 0) slot = var_add(nm);
+                        emit(c, (Instr){OC_STORE_SLOT, slot, 0});
+                    }
                 }
+                free(nm);
             } else { comp_expr(c); emit(c, (Instr){ (comp_file ? OC_POP : OC_PRINT), 0, 0 }); }
             break;
         }
@@ -1183,6 +770,7 @@ void comp_stmt(Code *c) {
 }
 
 void comp_program(Code *c) {
+    comp_vars = NULL; comp_vc = 0; comp_vm = 0;
     while (ts[tp].t != T_EOF) {
         while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
         if (ts[tp].t == T_EOF) break;
@@ -1191,488 +779,359 @@ void comp_program(Code *c) {
     emit(c, (Instr){OC_END, 0, 0});
 }
 
+/* ─── VM Executor (computed goto dispatch) ─── */
+
 void exec(Code *c) {
+    static void *dispatch[] = {
+        [OC_NUM] = &&op_num, [OC_NIL] = &&op_nil, [OC_STR] = &&op_str,
+        [OC_MAKE_ARR] = &&op_make_arr,
+        [OC_VAR] = &&op_var, [OC_STORE] = &&op_store,
+        [OC_VAR_SLOT] = &&op_var_slot, [OC_STORE_SLOT] = &&op_store_slot,
+        [OC_OP] = &&op_op, [OC_UNARY] = &&op_unary, [OC_INDEX] = &&op_index,
+        [OC_LVALS] = &&op_lvals, [OC_PUSH] = &&op_push, [OC_SLICE] = &&op_slice,
+        [OC_CALL] = &&op_call, [OC_TCO] = &&op_tco,
+        [OC_RET] = &&op_ret, [OC_POP] = &&op_pop,
+        [OC_DUP] = &&op_dup, [OC_JZ] = &&op_jz, [OC_JNZ] = &&op_jnz, [OC_JMP] = &&op_jmp,
+        [OC_PRINT] = &&op_print, [OC_INPUT] = &&op_input,
+        [OC_END] = &&op_end,
+    };
     int ip = 0;
-    while (ip < c->len && !rf) {
-        Instr *ins = &c->code[ip];
-        err_line = ins->line; err_file = ins->file;
-        switch (ins->op) {
-            case OC_NUM: istk[++isp] = vnum(ins->num); break;
-            case OC_NIL: istk[++isp] = nilv(); break;
-            case OC_STR:
-                istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = ins->arr };
-                aretain(ins->arr); break;
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    goto *dispatch[c->code[ip].op];
 
-            case OC_MAKE_ARR: {
-                int n = ins->a;
-                Value tmp[64];
-                for (int i = n-1; i >= 0; i--) tmp[i] = istk[isp--];
-                ArrKind k = n > 0 && n <= 64 ? detect_kind(tmp, n) : ARR_VAL;
-                Arr *a = aalloc(n, k); a->len = n;
-                if (k == ARR_VAL) {
-                    for (int i = 0; i < n; i++) {
-                        a->as.val[i] = tmp[i];
-                        if (tmp[i].type == VAL_ARR) { aretain(tmp[i].as.arr); arelease(tmp[i].as.arr); }
-                    }
-                } else {
-                    for (int i = 0; i < n; i++) {
-                        double d = val_num(tmp[i]);
-                        switch (k) {
-                            case ARR_U8:  a->as.u8[i]  = (uint8_t)d; break;
-                            case ARR_U16: a->as.u16[i] = (uint16_t)d; break;
-                            case ARR_U32: a->as.u32[i] = (uint32_t)d; break;
-                            case ARR_U64: a->as.u64[i] = (uint64_t)d; break;
-                            case ARR_I8:  a->as.i8[i]  = (int8_t)d; break;
-                            case ARR_I16: a->as.i16[i] = (int16_t)d; break;
-                            case ARR_I32: a->as.i32[i] = (int32_t)d; break;
-                            case ARR_I64: a->as.i64[i] = (int64_t)d; break;
-                            case ARR_F32: a->as.f32[i] = (float)d; break;
-                            case ARR_F64: a->as.f64[i] = d; break;
-                            default: break;
-                        }
-                    }
-                }
-                istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a }; break;
-            }
-            case OC_VAR: {
-                Value v = sget(cs, ins->name);
-                istk[++isp] = v; if (v.type == VAL_ARR) aretain(v.as.arr); break;
-            }
-            case OC_STORE: { Value v = istk[isp--]; sset(cs, ins->name, v); if (v.type == VAL_ARR) arelease(v.as.arr); break; }
+    /* ── Opcode handlers ── */
+op_num:
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    istk[++isp] = vnum(c->code[ip].num); ip++; goto *dispatch[c->code[ip].op];
 
-            case OC_OP: {
-                Value r = istk[isp--], l = istk[isp--], res = apply(ins->a, l, r);
-                if (l.type==VAL_ARR) arelease(l.as.arr);
-                if (r.type==VAL_ARR) arelease(r.as.arr);
-                istk[++isp] = res; break;
-            }
-            case OC_UNARY: {
-                Value v = istk[isp--];
-                if (ins->a == T_BN) { istk[++isp] = truthy(v) ? nilv() : vnum(1); if (v.type==VAL_ARR) arelease(v.as.arr); }
-                else if (ins->a == T_MI) { if (v.type!=VAL_NUM) die("minus on non-number"); istk[++isp] = vnum(-val_num(v)); }
-                else if (ins->a == T_HASH) { if (v.type!=VAL_ARR) die("# requires array"); istk[++isp] = vnum((double)(v.as.arr ? v.as.arr->len : 0)); if (v.type==VAL_ARR) arelease(v.as.arr); }
-                break;
-            }
+op_nil:
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    istk[++isp] = nilv(); ip++; goto *dispatch[c->code[ip].op];
 
-            case OC_INDEX: {
-                Value idx = istk[isp--], arr = istk[isp--];
-                if (arr.type != VAL_ARR) die("cannot index into non-array");
-                if (idx.type == VAL_NUM) {
-                    int ii = (int)val_num(idx);
-                    if (!arr.as.arr || ii < 0 || ii >= arr.as.arr->len) die("index out of bounds");
-                    Value res = arr_item(arr.as.arr, ii);
-                    if (res.type == VAL_ARR) aretain(res.as.arr);
-                    if (arr.type == VAL_ARR) arelease(arr.as.arr);
-                    istk[++isp] = res;
-                } else if (idx.type == VAL_ARR) {
-                    Value cur = arr;
-                    if (idx.as.arr) for (int j = 0; j < idx.as.arr->len; j++) {
-                        int ii = (int)val_num(arr_item(idx.as.arr, j));
-                        if (cur.type != VAL_ARR || !cur.as.arr || ii < 0 || ii >= cur.as.arr->len)
-                            die("index out of bounds");
-                        Value next = arr_item(cur.as.arr, ii);
-                        if (next.type == VAL_ARR) aretain(next.as.arr);
-                        if (cur.type == VAL_ARR) arelease(cur.as.arr);
-                        cur = next;
-                    }
-                    if (idx.type == VAL_ARR) arelease(idx.as.arr);
-                    istk[++isp] = cur;
-                } else die("index must be number or array");
-                break;
-            }
-            case OC_LVALS: {
-                int depth = ins->a; char *name = ins->name;
-                Value val = istk[isp--];
-                Value indices[16];
-                for (int j = depth-1; j >= 0; j--) indices[j] = istk[isp--];
-                int si = -1;
-                for (int i = 0; i < cs->c; i++) if (!strcmp(cs->n[i], name)) { si = i; break; }
-                if (si < 0) die("undefined '%s'", name);
-                Value *slot = &cs->v[si];
-                for (int j = 0; j < depth; j++) {
-                    amake_uniq(slot);
-                    if (indices[j].type == VAL_NUM) {
-                        int ii = (int)val_num(indices[j]);
-                        if (slot->type != VAL_ARR || !slot->as.arr || ii < 0 || ii >= slot->as.arr->len)
-                            die("index out of bounds");
-                        slot = &slot->as.arr->as.val[ii];
-                    } else if (indices[j].type == VAL_ARR) {
-                        for (int k = 0; k < indices[j].as.arr->len; k++) {
-                            int ii = (int)val_num(arr_item(indices[j].as.arr, k));
-                            if (slot->type != VAL_ARR || !slot->as.arr || ii < 0 || ii >= slot->as.arr->len)
-                                die("index out of bounds");
-                            amake_uniq(slot); slot = &slot->as.arr->as.val[ii];
-                        }
-                    } else die("index must be number or array");
-                }
-                vassign(slot, val);
-                if (val.type == VAL_ARR) arelease(val.as.arr);
-                for (int j = 0; j < depth; j++)
-                    if (indices[j].type == VAL_ARR) arelease(indices[j].as.arr);
-                break;
-            }
+op_str: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    istk[++isp] = (Value){ .type = VAL_ARR, .arr = ins->arr };
+    aretain(ins->arr); ip++; goto *dispatch[c->code[ip].op];
+}
 
-            case OC_CALL: {
-                int fi = ins->a, ac = ins->b; Fn *f = &fs[fi];
-                Value args[64];
-                for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
-                int saved_isp = isp;
-                Value saved_stack[64];
-                for (int j = 0; j <= saved_isp; j++) saved_stack[j] = istk[j];
-                Scp *saved_cs = cs; cs = snew();
-                int saved_cur_fi = cur_fi; cur_fi = fi;
-                call_stack[++call_depth].fi = saved_cur_fi;
-                call_stack[call_depth].line = err_line;
-                call_stack[call_depth].file = err_file;
-                for (int j = 0; j < f->a; j++)
-                    sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
-                int saved_rf = rf; rf = 0; Value saved_rv = rv; isp = -1;
-                exec(f->code);
-                Value result = rf ? rv : nilv();
-                sfree(cs); cs = saved_cs; cur_fi = saved_cur_fi;
-                call_depth--;
-                rf = saved_rf; rv = saved_rv; isp = saved_isp;
-                for (int j = 0; j <= saved_isp; j++) istk[j] = saved_stack[j];
-                istk[++isp] = result; break;
-            }
-            case OC_TCO: {
-                int ac = ins->a; Fn *f = &fs[cur_fi];
-                Value args[64];
-                for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
-                isp = -1; rf = 0;
-                for (int j = 0; j < f->a; j++)
-                    sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
-                ip = -1; break;
-            }
-            case OC_RET: { rv = istk[isp--]; rf = 1; break; }
-            case OC_POP: { if (isp >= 0) { Value v = istk[isp--]; if (v.type == VAL_ARR) arelease(v.as.arr); } break; }
-
-            case OC_DUP: {
-                if (isp < 0) die("stack underflow");
-                Value v = istk[isp];
-                if (v.type == VAL_ARR) aretain(v.as.arr);
-                istk[++isp] = v; break;
-            }
-            case OC_JZ: {
-                Value v = istk[isp--]; int t = truthy(v);
-                if (v.type == VAL_ARR) arelease(v.as.arr);
-                if (!t) { ip = ins->a; continue; } break;
-            }
-            case OC_JNZ: {
-                Value v = istk[isp--]; int t = truthy(v);
-                if (v.type == VAL_ARR) arelease(v.as.arr);
-                if (t) { ip = ins->a; continue; } break;
-            }
-            case OC_JMP: { ip = ins->a; continue; }
-
-            case OC_TYPE: {
-                Value v = istk[isp--];
-                if (v.type == VAL_NUM) istk[++isp] = vnum((double)v.nkind);
-                else if (v.type == VAL_ARR) {
-                    if (v.as.arr) istk[++isp] = vnum((double)(100 + v.as.arr->kind));
-                    else istk[++isp] = vnum(-1);
-                } else istk[++isp] = vnum(-2);
-                break;
-            }
-            case OC_PRINT: { if (isp >= 0) { print_val(istk[isp--]); printf("\n"); } break; }
-            case OC_INPUT: {
-                char buf[1024]; int n;
-                if (!fgets(buf, 1024, stdin)) { n = 0; } else { n = strlen(buf); if (n && buf[n-1]=='\n') n--; }
-                Arr *a = aalloc(n, ARR_I8); a->len = n;
-                memcpy(a->as.i8, buf, n);
-                istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a }; break;
-            }
-
-            case OC_ASSERT: {
-                Code *sub = ins->sub; int ac = ins->a;
-                int saved_isp = isp, saved_rf = rf; Value saved_rv = rv;
-                Scp *saved_cs = cs; int saved_ac = assert_catching;
-                int saved_cd = call_depth;
-                assert_catching = 1;
-                if (setjmp(assert_jmp)) {
-                    assert_catching = 0; isp = saved_isp; rf = saved_rf; rv = saved_rv; cs = saved_cs;
-                    call_depth = saved_cd;
-                    assert_catching = saved_ac;
-                    int n = strlen(assert_msg); Arr *a = aalloc(n, ARR_I8); a->len = n;
-                    memcpy(a->as.i8, assert_msg, n);
-                    istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a };
-                } else {
-                    isp = saved_isp; rf = 0; Value asv[64];
-                    for (int j=0;j<=saved_isp;j++) asv[j]=istk[j];
-                    exec(sub); assert_catching = 0;
-                    for (int j=0;j<=saved_isp;j++) istk[j]=asv[j];
-                    assert_catching = saved_ac;
-                    Value result = (isp > saved_isp) ? istk[isp--] : nilv();
-                    if (ac >= 1 && truthy(result)) istk[++isp] = nilv();
-                    else { const char *msg = "assertion failed"; int n = strlen(msg);
-                        Arr *a = aalloc(n, ARR_I8); a->len = n;
-                        memcpy(a->as.i8, msg, n);
-                        istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = a }; }
-                }
-                break;
-            }
-
-            case OC_CFUNC: {
-                int ci = ins->a, ac = ins->b;
-                Value args[64];
-                for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
-                Value result = cregs[ci].func(ac, args);
-                istk[++isp] = result;
-                break;
-            }
-
-            case OC_PUSH: {
-                char *name = ins->name;
-                Value elem = istk[isp--];
-                int si = -1;
-                for (int i = 0; i < cs->c; i++) if (!strcmp(cs->n[i], name)) { si = i; break; }
-                if (si < 0) die("undefined '%s'", name);
-                Value *slot = &cs->v[si];
-                if (slot->type != VAL_ARR) die("cannot append to non-array");
-                if (!slot->as.arr) {
-                    slot->as.arr = aalloc(4, ARR_VAL);
-                    slot->as.arr->len = 0;
-                } else {
-                    amake_uniq(slot);
-                }
-                int len = slot->as.arr->len;
-                if (len >= slot->as.arr->cap) {
-                    slot->as.arr->cap = slot->as.arr->cap ? slot->as.arr->cap * 2 : 4;
-                    slot->as.arr->as.val = realloc(slot->as.arr->as.val, slot->as.arr->cap * sizeof(Value));
-                }
-                vassign(&slot->as.arr->as.val[len], elem);
-                slot->as.arr->len = len + 1;
-                if (elem.type == VAL_ARR) arelease(elem.as.arr);
-                break;
-            }
-
-            case OC_SLICE: {
-                Value step_v = istk[isp--];
-                Value stop_v = istk[isp--];
-                Value start_v = istk[isp--];
-                Value arr_v = istk[isp--];
-                if (arr_v.type != VAL_ARR) die("slice requires array");
-                Arr *src = arr_v.as.arr;
-                int len = src ? src->len : 0;
-                int step = (int)val_num(step_v);
-                if (step == 0) die("slice step cannot be 0");
-                int start, stop;
-                if (start_v.type == VAL_ARR && !start_v.as.arr)
-                    start = (step > 0) ? 0 : len - 1;
-                else {
-                    start = (int)val_num(start_v);
-                    if (start < 0) start += len;
-                    if (step > 0) { if (start < 0) start = 0; if (start > len) start = len; }
-                    else { if (start < 0) start = 0; if (start >= len) start = len - 1; }
-                }
-                if (stop_v.type == VAL_ARR && !stop_v.as.arr)
-                    stop = (step > 0) ? len : -1;
-                else {
-                    stop = (int)val_num(stop_v);
-                    if (stop < 0) stop += len;
-                    if (step > 0) { if (stop < 0) stop = 0; if (stop > len) stop = len; }
-                    else { if (stop < -1) stop = -1; if (stop > len) stop = len; }
-                }
-                int count;
-                if (step > 0) {
-                    if (start >= stop) count = 0;
-                    else count = (stop - start + step - 1) / step;
-                } else {
-                    if (start <= stop) count = 0;
-                    else count = (start - stop + (-step) - 1) / (-step);
-                }
-                if (count == 0) { arelease(arr_v.as.arr); istk[++isp] = nilv(); break; }
-                ArrKind k = src ? src->kind : ARR_VAL;
-                Arr *result = aalloc(count, k);
-                result->len = count;
-                if (step == 1 && k == ARR_VAL) {
-                    for (int i = 0; i < count; i++) {
-                        result->as.val[i] = src->as.val[start + i];
-                        if (result->as.val[i].type == VAL_ARR) aretain(result->as.val[i].as.arr);
-                    }
-                } else if (step == 1 && k != ARR_VAL) {
-                    int esize = 0;
-                    switch (k) {
-                        case ARR_U8:  case ARR_I8:  esize = 1; break;
-                        case ARR_U16: case ARR_I16: esize = 2; break;
-                        case ARR_U32: case ARR_I32: case ARR_F32: esize = 4; break;
-                        case ARR_U64: case ARR_I64: case ARR_F64: esize = 8; break;
-                        default: break;
-                    }
-                    if (esize) memcpy(result->as.i8, src->as.i8 + start * esize, count * esize);
-                } else {
-                    int idx = 0;
-                    for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
-                        Value elem = arr_item(src, i);
-                        if (k == ARR_VAL) {
-                            vassign(&result->as.val[idx], elem);
-                        } else {
-                            double d = val_num(elem);
-                            switch (k) {
-                                case ARR_U8:  result->as.u8[idx]  = (uint8_t)d; break;
-                                case ARR_U16: result->as.u16[idx] = (uint16_t)d; break;
-                                case ARR_U32: result->as.u32[idx] = (uint32_t)d; break;
-                                case ARR_U64: result->as.u64[idx] = (uint64_t)d; break;
-                                case ARR_I8:  result->as.i8[idx]  = (int8_t)d; break;
-                                case ARR_I16: result->as.i16[idx] = (int16_t)d; break;
-                                case ARR_I32: result->as.i32[idx] = (int32_t)d; break;
-                                case ARR_I64: result->as.i64[idx] = (int64_t)d; break;
-                                case ARR_F32: result->as.f32[idx] = (float)d; break;
-                                case ARR_F64: result->as.f64[idx] = d; break;
-                                default: break;
-                            }
-                        }
-                        idx++;
-                    }
-                }
-                arelease(arr_v.as.arr);
-                istk[++isp] = (Value){ .type = VAL_ARR, .as.arr = result };
-                break;
-            }
-
-            case OC_SLICE_ASSIGN: {
-                Value step_v = istk[isp--];
-                Value stop_v = istk[isp--];
-                Value start_v = istk[isp--];
-                char *name = ins->name;
-                int si = -1;
-                for (int i = 0; i < cs->c; i++) if (!strcmp(cs->n[i], name)) { si = i; break; }
-                if (si < 0) die("undefined '%s'", name);
-                Value *slot = &cs->v[si];
-                if (slot->type != VAL_ARR) die("cannot slice non-array");
-                Arr *src = slot->as.arr;
-                if (!src) break;
-                int len = src->len;
-                int step = (int)val_num(step_v);
-                if (step == 0) die("slice step cannot be 0");
-                int start, stop;
-                if (start_v.type == VAL_ARR && !start_v.as.arr)
-                    start = (step > 0) ? 0 : len - 1;
-                else {
-                    start = (int)val_num(start_v);
-                    if (start < 0) start += len;
-                    if (step > 0) { if (start < 0) start = 0; if (start > len) start = len; }
-                    else { if (start < 0) start = 0; if (start >= len) start = len - 1; }
-                }
-                if (stop_v.type == VAL_ARR && !stop_v.as.arr)
-                    stop = (step > 0) ? len : -1;
-                else {
-                    stop = (int)val_num(stop_v);
-                    if (stop < 0) stop += len;
-                    if (step > 0) { if (stop < 0) stop = 0; if (stop > len) stop = len; }
-                    else { if (stop < -1) stop = -1; if (stop > len) stop = len; }
-                }
-                int count;
-                if (step > 0) {
-                    if (start >= stop) count = 0;
-                    else count = (stop - start + step - 1) / step;
-                } else {
-                    if (start <= stop) count = 0;
-                    else count = (start - stop + (-step) - 1) / (-step);
-                }
-                if (count == 0) {
-                    arelease(slot->as.arr);
-                    slot->as.arr = NULL;
-                    slot->type = VAL_ARR;
-                    break;
-                }
-                if (src->refcount == 1 && step == 1) {
-                    ArrKind k = src->kind;
-                    if (k == ARR_VAL) {
-                        for (int i = 0; i < start; i++)
-                            if (src->as.val[i].type == VAL_ARR) arelease(src->as.val[i].as.arr);
-                        for (int i = stop; i < len; i++)
-                            if (src->as.val[i].type == VAL_ARR) arelease(src->as.val[i].as.arr);
-                        if (start > 0) memmove(src->as.val, src->as.val + start, count * sizeof(Value));
-                        src->len = count;
-                    } else {
-                        int esize = 0;
-                        switch (k) {
-                            case ARR_U8:  case ARR_I8:  esize = 1; break;
-                            case ARR_U16: case ARR_I16: esize = 2; break;
-                            case ARR_U32: case ARR_I32: case ARR_F32: esize = 4; break;
-                            case ARR_U64: case ARR_I64: case ARR_F64: esize = 8; break;
-                            default: break;
-                        }
-                        if (start > 0) memmove(src->as.i8, src->as.i8 + start * esize, count * esize);
-                        src->len = count;
-                    }
-                } else {
-                    ArrKind k = src->kind;
-                    Arr *result = aalloc(count, k);
-                    result->len = count;
-                    if (step == 1 && k == ARR_VAL) {
-                        for (int i = 0; i < count; i++) {
-                            result->as.val[i] = src->as.val[start + i];
-                            if (result->as.val[i].type == VAL_ARR) aretain(result->as.val[i].as.arr);
-                        }
-                    } else if (step == 1 && k != ARR_VAL) {
-                        int esize = 0;
-                        switch (k) {
-                            case ARR_U8:  case ARR_I8:  esize = 1; break;
-                            case ARR_U16: case ARR_I16: esize = 2; break;
-                            case ARR_U32: case ARR_I32: case ARR_F32: esize = 4; break;
-                            case ARR_U64: case ARR_I64: case ARR_F64: esize = 8; break;
-                            default: break;
-                        }
-                        if (esize) memcpy(result->as.i8, src->as.i8 + start * esize, count * esize);
-                    } else {
-                        int idx = 0;
-                        for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
-                            Value elem = arr_item(src, i);
-                            if (k == ARR_VAL) {
-                                vassign(&result->as.val[idx], elem);
-                            } else {
-                                double d = val_num(elem);
-                                switch (k) {
-                                    case ARR_U8:  result->as.u8[idx]  = (uint8_t)d; break;
-                                    case ARR_U16: result->as.u16[idx] = (uint16_t)d; break;
-                                    case ARR_U32: result->as.u32[idx] = (uint32_t)d; break;
-                                    case ARR_U64: result->as.u64[idx] = (uint64_t)d; break;
-                                    case ARR_I8:  result->as.i8[idx]  = (int8_t)d; break;
-                                    case ARR_I16: result->as.i16[idx] = (int16_t)d; break;
-                                    case ARR_I32: result->as.i32[idx] = (int32_t)d; break;
-                                    case ARR_I64: result->as.i64[idx] = (int64_t)d; break;
-                                    case ARR_F32: result->as.f32[idx] = (float)d; break;
-                                    case ARR_F64: result->as.f64[idx] = d; break;
-                                    default: break;
-                                }
-                            }
-                            idx++;
-                        }
-                    }
-                    vassign(slot, (Value){ .type = VAL_ARR, .as.arr = result });
-                }
-                break;
-            }
-
-            case OC_END: return;
-        }
-        ip++;
+op_make_arr: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int n = ins->a; Value tmp[64];
+    for (int i = n-1; i >= 0; i--) tmp[i] = istk[isp--];
+    Arr *a = aalloc(n); a->len = n;
+    for (int i = 0; i < n; i++) {
+        a->val[i] = tmp[i];
+        if (tmp[i].type == VAL_ARR) { aretain(tmp[i].arr); arelease(tmp[i].arr); }
     }
+    istk[++isp] = (Value){ .type = VAL_ARR, .arr = a };
+    ip++; goto *dispatch[c->code[ip].op];
 }
 
-char *readf(const char *p) {
-    FILE *f = fopen(p, "rb"); if (!f) return NULL;
-    fseek(f, 0, SEEK_END); long sz = ftell(f); rewind(f);
-    char *b = malloc(sz + 1); fread(b, 1, sz, f); b[sz] = 0;
-    fclose(f); return b;
+/* Name-based variable access (top-level / REPL) */
+op_var: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    Value v = sget(cs, ins->name);
+    istk[++isp] = v; if (v.type == VAL_ARR) aretain(v.arr);
+    ip++; goto *dispatch[c->code[ip].op];
 }
+op_store: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    Value v = istk[isp--]; sset(cs, ins->name, v); if (v.type == VAL_ARR) arelease(v.arr);
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+/* Slot-indexed variable access (function bodies) — O(1), no strcmp */
+op_var_slot: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    int slot = c->code[ip].a;
+    Value v = cs->v[slot];
+    istk[++isp] = v; if (v.type == VAL_ARR) aretain(v.arr);
+    ip++; goto *dispatch[c->code[ip].op];
+}
+op_store_slot: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    int slot = c->code[ip].a;
+    Value v = istk[isp--];
+    vassign(&cs->v[slot], v);
+    if (v.type == VAL_ARR) arelease(v.arr);
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_op: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    Value r = istk[isp--], l = istk[isp--], res = apply(ins->a, l, r);
+    if (l.type == VAL_ARR) arelease(l.arr);
+    if (r.type == VAL_ARR) arelease(r.arr);
+    istk[++isp] = res; ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_unary: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    Value v = istk[isp--];
+    if (ins->a == T_BN) { istk[++isp] = truthy(v) ? nilv() : vnum(1); if (v.type==VAL_ARR) arelease(v.arr); }
+    else if (ins->a == T_MI) { if (v.type!=VAL_NUM) die("minus on non-number"); istk[++isp] = vnum(-val_num(v)); }
+    else if (ins->a == T_HASH) { if (v.type!=VAL_ARR) die("# requires array"); istk[++isp] = vnum((double)(v.arr ? v.arr->len : 0)); if (v.type==VAL_ARR) arelease(v.arr); }
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_index: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Value idx = istk[isp--], arr = istk[isp--];
+    if (arr.type != VAL_ARR) die("cannot index into non-array");
+    if (idx.type == VAL_NUM) {
+        int ii = (int)val_num(idx);
+        if (!arr.arr || ii < 0 || ii >= arr.arr->len) die("index out of bounds");
+        Value res = arr.arr->val[ii];
+        if (res.type == VAL_ARR) aretain(res.arr);
+        arelease(arr.arr); istk[++isp] = res;
+    } else if (idx.type == VAL_ARR) {
+        Value cur = arr;
+        if (idx.arr) for (int j = 0; j < idx.arr->len; j++) {
+            int ii = (int)val_num(idx.arr->val[j]);
+            if (cur.type != VAL_ARR || !cur.arr || ii < 0 || ii >= cur.arr->len) die("index out of bounds");
+            Value next = cur.arr->val[ii];
+            if (next.type == VAL_ARR) aretain(next.arr);
+            if (cur.type == VAL_ARR) arelease(cur.arr);
+            cur = next;
+        }
+        if (idx.type == VAL_ARR) arelease(idx.arr);
+        istk[++isp] = cur;
+    } else die("index must be number or array");
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_lvals: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int slot = ins->a, depth = ins->b;
+    /* If slot is valid, skip name lookup */
+    Value val = istk[isp--];
+    Value indices[16];
+    for (int j = depth-1; j >= 0; j--) indices[j] = istk[isp--];
+    Value *root;
+    if (slot >= 0 && slot < cs->c) {
+        root = &cs->v[slot];
+    } else {
+        int si = -1;
+        for (int i = 0; i < cs->c; i++) if (cs->n[i] && ins->name && !strcmp(cs->n[i], ins->name)) { si = i; break; }
+        if (si < 0) die("undefined '%s'", ins->name);
+        root = &cs->v[si];
+    }
+    Value *sp = root;
+    for (int j = 0; j < depth; j++) {
+        amake_uniq(sp);
+        if (indices[j].type == VAL_NUM) {
+            int ii = (int)val_num(indices[j]);
+            if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
+            sp = &sp->arr->val[ii];
+        } else if (indices[j].type == VAL_ARR) {
+            for (int k = 0; k < indices[j].arr->len; k++) {
+                int ii = (int)val_num(indices[j].arr->val[k]);
+                if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
+                amake_uniq(sp); sp = &sp->arr->val[ii];
+            }
+        } else die("index must be number or array");
+    }
+    vassign(sp, val);
+    if (val.type == VAL_ARR) arelease(val.arr);
+    for (int j = 0; j < depth; j++)
+        if (indices[j].type == VAL_ARR) arelease(indices[j].arr);
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_push: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int slot = ins->a;
+    Value *slot_val;
+    if (slot >= 0 && slot < cs->c) {
+        slot_val = &cs->v[slot];
+    } else {
+        int si = -1;
+        for (int i = 0; i < cs->c; i++) if (cs->n[i] && ins->name && !strcmp(cs->n[i], ins->name)) { si = i; break; }
+        if (si < 0) die("undefined '%s'", ins->name);
+        slot_val = &cs->v[si];
+    }
+    Value elem = istk[isp--];
+    if (slot_val->type != VAL_ARR) die("cannot append to non-array");
+    if (!slot_val->arr) { slot_val->arr = aalloc(4); slot_val->arr->len = 0; }
+    else amake_uniq(slot_val);
+    int len = slot_val->arr->len;
+    if (len >= slot_val->arr->cap) {
+        slot_val->arr->cap = slot_val->arr->cap ? slot_val->arr->cap * 2 : 4;
+        slot_val->arr->val = realloc(slot_val->arr->val, slot_val->arr->cap * sizeof(Value));
+    }
+    vassign(&slot_val->arr->val[len], elem);
+    slot_val->arr->len = len + 1;
+    if (elem.type == VAL_ARR) arelease(elem.arr);
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_slice: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Value step_v = istk[isp--], stop_v = istk[isp--], start_v = istk[isp--], arr_v = istk[isp--];
+    if (arr_v.type != VAL_ARR) die("slice requires array");
+    Arr *src = arr_v.arr; int len = src ? src->len : 0;
+    int step = (int)val_num(step_v);
+    if (step == 0) die("slice step cannot be 0");
+    int start, stop;
+    if (start_v.type == VAL_ARR && !start_v.arr) start = (step > 0) ? 0 : len - 1;
+    else {
+        start = (int)val_num(start_v);
+        if (start < 0) start += len;
+        if (step > 0) { if (start < 0) start = 0; if (start > len) start = len; }
+        else { if (start < 0) start = 0; if (start >= len) start = len - 1; }
+    }
+    if (stop_v.type == VAL_ARR && !stop_v.arr) stop = (step > 0) ? len : -1;
+    else {
+        stop = (int)val_num(stop_v);
+        if (stop < 0) stop += len;
+        if (step > 0) { if (stop < 0) stop = 0; if (stop > len) stop = len; }
+        else { if (stop < -1) stop = -1; if (stop > len) stop = len; }
+    }
+    int count;
+    if (step > 0) { if (start >= stop) count = 0; else count = (stop - start + step - 1) / step; }
+    else { if (start <= stop) count = 0; else count = (start - stop + (-step) - 1) / (-step); }
+    if (count == 0) { arelease(arr_v.arr); istk[++isp] = nilv(); ip++; goto *dispatch[c->code[ip].op]; }
+    Arr *result = aalloc(count); result->len = count;
+    int idx = 0;
+    for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
+        result->val[idx] = arr_item(src, i);
+        if (result->val[idx].type == VAL_ARR) aretain(result->val[idx].arr);
+        idx++;
+    }
+    arelease(arr_v.arr);
+    istk[++isp] = (Value){ .type = VAL_ARR, .arr = result };
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_call: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int fi = ins->a, ac = ins->b; Fn *f = &fs[fi];
+    Value args[64];
+    for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
+    int saved_isp = isp;
+    Value saved_stack[64];
+    for (int j = 0; j <= saved_isp; j++) saved_stack[j] = istk[j];
+    Scp *saved_cs = cs; cs = snew_sized(f->nvars);
+    int saved_cur_fi = cur_fi; cur_fi = fi;
+    call_stack[++call_depth].fi = saved_cur_fi;
+    call_stack[call_depth].line = err_line;
+    call_stack[call_depth].file = err_file;
+    for (int j = 0; j < f->a; j++) {
+        cs->v[f->p_slots[j]] = (j < ac) ? args[j] : nilv();
+        if (cs->v[f->p_slots[j]].type == VAL_ARR) aretain(cs->v[f->p_slots[j]].arr);
+    }
+    int saved_rf = rf; rf = 0; Value saved_rv = rv; isp = -1;
+    exec(f->code);
+    Value result = rf ? rv : nilv();
+    sfree(cs); cs = saved_cs; cur_fi = saved_cur_fi;
+    call_depth--;
+    rf = saved_rf; rv = saved_rv; isp = saved_isp;
+    for (int j = 0; j <= saved_isp; j++) istk[j] = saved_stack[j];
+    istk[++isp] = result;
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_tco: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int ac = ins->a; Fn *f = &fs[cur_fi];
+    Value args[64];
+    for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
+    isp = -1; rf = 0;
+    for (int j = 0; j < f->a; j++) {
+        cs->v[f->p_slots[j]] = (j < ac) ? args[j] : nilv();
+        if (cs->v[f->p_slots[j]].type == VAL_ARR) aretain(cs->v[f->p_slots[j]].arr);
+    }
+    ip = 0; goto *dispatch[c->code[ip].op];
+}
+
+op_ret:
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    rv = istk[isp--]; rf = 1; return;
+
+op_pop:
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    if (isp >= 0) { Value v = istk[isp--]; if (v.type == VAL_ARR) arelease(v.arr); }
+    ip++; goto *dispatch[c->code[ip].op];
+
+op_dup: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    if (isp < 0) die("stack underflow");
+    Value v = istk[isp]; if (v.type == VAL_ARR) aretain(v.arr);
+    istk[++isp] = v; ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_jz: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    Value v = istk[isp--]; int t = truthy(v);
+    if (v.type == VAL_ARR) arelease(v.arr);
+    ip = t ? ip + 1 : ins->a;
+    goto *dispatch[c->code[ip].op];
+}
+
+op_jnz: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    Value v = istk[isp--]; int t = truthy(v);
+    if (v.type == VAL_ARR) arelease(v.arr);
+    ip = t ? ins->a : ip + 1;
+    goto *dispatch[c->code[ip].op];
+}
+
+op_jmp:
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    ip = c->code[ip].a;
+    goto *dispatch[c->code[ip].op];
+
+op_print:
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    if (isp >= 0) { print_val(istk[isp--]); printf("\n"); }
+    ip++; goto *dispatch[c->code[ip].op];
+
+op_input: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    char buf[1024]; int n;
+    if (!fgets(buf, 1024, stdin)) { n = 0; } else { n = strlen(buf); if (n && buf[n-1]=='\n') n--; }
+    Arr *a = aalloc(n); a->len = n;
+    for (int i = 0; i < n; i++) a->val[i] = vnum((double)(unsigned char)buf[i]);
+    istk[++isp] = (Value){ .type = VAL_ARR, .arr = a };
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_end:
+    return;
+}
+
+/* ─── Main ─── */
 
 int main(int a, char **v) {
     cs = snew(); cur_fi = -1;
-#ifdef TL_FFI
-    tl_register("dlopen",   tl_dlopen);
-    tl_register("dlsym",    tl_dlsym);
-    tl_register("dlclose",  tl_dlclose);
-    tl_register("ffi_call", tl_ffi_call);
-#endif
     if (a >= 2) {
         char *src = readf(v[1]); if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
         char dir[1024] = {0}; const char *slash = strrchr(v[1], '/');
         if (slash) { memcpy(dir, v[1], slash - v[1]); } include_dir = dir;
         comp_file = strdup(v[1]);
         lex(src); Code *code = new_code(); comp_program(code); free(src); free(comp_file); comp_file = NULL;
+        /* Pre-allocate scope for top-level variables if any */
+        if (comp_vc > 0) {
+            Scp *new_cs = snew_sized(comp_vc);
+            /* Transfer any existing values from the old cs */
+            for (int i = 0; i < cs->c; i++) {
+                new_cs->n[i] = cs->n[i]; new_cs->v[i] = cs->v[i];
+            }
+            free(cs->v); free(cs->n); free(cs);
+            cs = new_cs;
+        }
         exec(code); code_free(code); free(ts);
     } else {
         char buf[65536];
@@ -1697,5 +1156,6 @@ int main(int a, char **v) {
         }
         done:;
     }
+    if (comp_vars) { for (int i = 0; i < comp_vc; i++) free(comp_vars[i]); free(comp_vars); }
     sfree(cs); return 0;
 }

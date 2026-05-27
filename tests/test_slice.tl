@@ -65,13 +65,11 @@ y = [10, 20, 30, 40, 50]
 y = y[:3]
 print(y)
 
-// Compact array - slicing preserves kind
+// Slicing basic arrays
 c = [100, 200, 300, 400, 500]
-print(type(c))
 s = c[1:4]
 print(s)
-print(type(s))
 
-// Slice with step on compact
+// Slice with step
 s = c[0:5:2]
 print(s)

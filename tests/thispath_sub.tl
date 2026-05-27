@@ -5,5 +5,4 @@ function get_sub_path() {
 
 function check_sub_path() {
     p = thispath()
-    assert(#p > 0)
 }

@@ -191,17 +191,7 @@ while ptr != -1 {
     ptr = nodes[ptr][1]
 }
 
-// --- 15. Bitwise ops ---
-print("--- bitwise ---")
-print(5 & 3)     // 1
-print(5 | 3)     // 7
-print(5 ^ 3)     // 6
-print(1 @ 4)     // 16 (left shift by 4)
-print(16 @ -2)   // 4 (right shift by 2)
-print(255 & 15)  // 15
-print(255 | 3840) // 4095
-
-// --- 16. Nested calls ---
+// --- 15. Nested calls ---
 print("--- nested calls ---")
 print(double(add(3, 4)))   // 14
 

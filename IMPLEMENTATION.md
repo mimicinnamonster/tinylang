@@ -1,138 +1,50 @@
 # TinyLang — Implementation Guide
 
-**~1090 lines of C.** Single-pass compiler to bytecode with stack-based VM,
-refcount+COW, tail call optimization, and array push optimization.
+**1,161 lines of C.** Single-pass compiler to bytecode with stack-based VM,
+computed goto dispatch, slot-indexed variable access, refcount+COW, and tail
+call optimization.
 
 ---
 
 ## 1. Value Representation
 
-### Type system (three independent axes)
-
-- **Size:** 8 → 16 → 32 → 64 bit
-- **Signedness:** unsigned (preferred) → signed
-- **Kind:** integer (precise) → float (F32/F64) → VAL (Value[])
+### Types
 
 ```c
-typedef enum { VAL_NUM, VAL_ARR, VAL_PTR } Type;
+typedef enum { VAL_NUM, VAL_ARR } Type;
 
-typedef enum {
-    NK_U8, NK_U16, NK_U32, NK_U64,
-    NK_I8, NK_I16, NK_I32, NK_I64,
-    NK_F32, NK_F64
-} NumKind;
-
-typedef enum {
-    ARR_U8, ARR_U16, ARR_U32, ARR_U64,
-    ARR_I8, ARR_I16, ARR_I32, ARR_I64,
-    ARR_F32, ARR_F64, ARR_VAL
-} ArrKind;
-```
-
-### Structs (16 bytes each, no waste)
-
-```c
 typedef struct Arr {
     int refcount, len, cap;
-    ArrKind kind;
-    union {
-        struct Value *val;    // ARR_VAL: heterogeneous Value[]
-        uint8_t *u8;          // ARR_U8:  raw uint8_t[]
-        uint16_t *u16;        // ARR_U16: raw uint16_t[]
-        uint32_t *u32;        // ARR_U32: raw uint32_t[]
-        uint64_t *u64;        // ARR_U64: raw uint64_t[]
-        int8_t *i8;           // ARR_I8:  raw int8_t[]
-        int16_t *i16;         // ARR_I16: raw int16_t[]
-        int32_t *i32;         // ARR_I32: raw int32_t[]
-        int64_t *i64;         // ARR_I64: raw int64_t[]
-        float *f32;           // ARR_F32: raw float[]
-        double *f64;          // ARR_F64: raw double[]
-    } as;
+    Value *val;              // always Value[], no compact backing stores
 } Arr;
 
 typedef struct Value {
     Type type;
-    NumKind nkind;           // fits in what was padding
-    union {
-        uint8_t u8; int8_t i8;
-        uint16_t u16; int16_t i16;
-        uint32_t u32; int32_t i32;
-        uint64_t u64; int64_t i64;
-        float f32; double f64;
-        Arr *arr;
-        void *ptr;
-    } as;
-} Value;  // still 16 bytes
+    double num;              // VAL_NUM: always double
+    Arr *arr;                // VAL_ARR
+} Value;                     // 24 bytes
 ```
 
-### Key: `vnum()` compresses, `val_num()` widens
+### Key helpers
 
 ```c
-Value vnum(double n) {
-    Value v = { .type = VAL_NUM, .nkind = NK_F64, .as.f64 = n };
-    v.nkind = detect_num_kind(n);  // find narrowest fit
-    switch (v.nkind) {             // store compactly
-        case NK_I8:  v.as.i8 = (int8_t)n; break;
-        case NK_F32: v.as.f32 = (float)n; break;
-        // ...
-    }
-    return v;
-}
-
-double val_num(Value v) {
-    switch (v.nkind) {
-        case NK_I8:  return v.as.i8;
-        case NK_F32: return v.as.f32;
-        case NK_F64: return v.as.f64;
-        // ...
-    }
-}
+Value vnum(double n) { return (Value){ .type = VAL_NUM, .num = n }; }
+double val_num(Value v) { return v.num; }
 ```
 
-Every operation site in the VM and `apply()` uses `val_num()` to read
-numbers transparently. `vassign()` uses a `*d = s` struct copy which
-carries `nkind` automatically.
-
-### Compact Array Detection (`detect_kind`)
-
-At `OC_MAKE_ARR` runtime, the values on the stack are inspected:
-
-1. All non-negative integers → narrowest unsigned (U8→U16→U32→U64)
-2. Any negative integers → narrowest signed (I8→I16→I32→I64)
-3. Non-integer → F32 if exact in float, else F64
-4. Non-numeric → ARR_VAL
-
-### Promotion Between Kinds (`promote_kind`)
-
-`kind_exactly_covers()` checks whether one kind can losslessly represent
-another. `promote_kind(a, b)` finds the smallest kind covering both by
-iterating candidates from smallest to largest:
-
-```
-U8 → I8 → U16 → I16 → U32 → I32 → F32 → U64 → I64 → F64 → VAL
-```
-
-This correctly handles cross-type scenarios:
-- U8 + I8 → I16 (neither can hold the other)
-- U16 + I8 → I32 (I16 max 32767 < U16 max 65535)
-- I32 + F32 → F64 (F32 can't exactly hold all I32 values)
-- U64 + I64 → VAL (neither fits in the other)
-
-### On mutation → VAL promotion
-
-`amake_uniq()` promotes any compact array to ARR_VAL before writing.
-This means compact types are a read-only optimization — writes always
-fall back to heterogeneous Value[] storage.
+No `detect_num_kind`, no `NumKind`, no 10-way union switch. Numbers are always
+doubles. Arrays are always `Value[]` — no `ArrKind`, no compact backing stores.
 
 ### Refcount helpers
 
 ```c
-Arr *aalloc(int cap, ArrKind k);  // kind-aware allocation
-void aretain(Arr *a);
-void arelease(Arr *a);            // kind-aware free
-Arr *adeep_copy(Arr *s);          // kind-aware memcpy
-void amake_uniq(Value *v);        // + promotes compact to VAL
-void vassign(Value *d, Value s);  // struct copy (carries nkind)
+Arr *aalloc(int cap);        // allocate Value[] array
+void aretain(Arr *a);         // bump refcount
+void arelease(Arr *a);        // decrement, free if 0 (recursive for sub-arrays)
+Arr *adeep_copy(Arr *s);      // deep copy (for COW)
+void amake_uniq(Value *v);    // COW: deep copy if refcount > 1
+void vassign(Value *d, Value s);  // assign with proper retain/release
+Value arr_item(Arr *a, int i);    // read element (always a->val[i])
 ```
 
 ---
@@ -142,13 +54,15 @@ void vassign(Value *d, Value s);  // struct copy (carries nkind)
 Produces a flat `Tok[]` array from source.
 
 - Skip whitespace, handle `//` comments
-- Every newline becomes `T_NL` (parser skips them at every entry point)
-- Numbers: `5`, `5.0`, `.5`, `5.`
+- Every newline becomes `T_NL` (parser skips at entry points)
+- Numbers: `5`, `5.0`, `.5`, `5.`, `0xFF` (hex)
 - Identifiers + keywords (`if`, `elif`, `else`, `while`, `function`, `return`, `nil`, `include`)
 - Strings: `"..."` with escape sequences (`\n`, `\t`, `\\`, `\"`, `\xHH`)
-- Single-char tokens: `( ) [ ] { } , ; + - * / % & | ^ @ ! = < > #`
+- Single-char tokens: `( ) [ ] { } , ; + - * / % ! = < > # : @`
+- Multi-char: `&&`, `||`, `!=`, `<=`, `>=`
 
-The token array is the sole input to the compiler phase.
+Not supported: binary literals (`0b101`), octal literals (`0123`), scientific
+notation (`1e-3`).
 
 ---
 
@@ -158,35 +72,21 @@ A single-pass recursive descent compiler that walks the token array and emits
 `Instr[]` bytecode. No intermediate AST — each parser function emits instructions
 directly.
 
-### Instruction Set (23 opcodes)
+### Instruction Set (24 opcodes)
 
 ```c
 typedef enum {
-    OC_NUM,      // push number constant
-    OC_NIL,      // push empty array (nil)
-    OC_STR,      // push pre-lexed string array
-    OC_MAKE_ARR, // pop N values, build array, push
-    OC_VAR,      // push variable value (by name)
-    OC_STORE,    // pop and assign to variable (by name)
-    OC_OP,       // pop r, pop l, apply binary op, push result
-    OC_UNARY,    // pop, apply unary op (!, -, #), push
-    OC_INDEX,    // pop idx, pop arr, push arr[idx]
-    OC_LVALS,    // lvalue store: walk COW chain, assign
-    OC_CALL,     // function call: pop args, exec body, push result
-    OC_TCO,      // tail call: rebind params, restart body
-    OC_JZ,       // pop, jump if falsy
-    OC_JMP,      // unconditional jump
-    OC_RET,      // set return flag and value, exit function
-    OC_POP,      // discard top of stack
-    OC_PRINT,    // built-in print (also used by REPL auto-print)
-    OC_INPUT,    // built-in input
-    OC_ASSERT,   // built-in assert (error-catching)
-    OC_CFUNC,    // call registered C function (FFI)
-    OC_PUSH,     // x = x + [elem]: pop elem, append to var array in-place
-    OC_TYPE,     // built-in type(): pop, inspect nkind/arrkind, push result
-    OC_SLICE,    // pop arr, start, stop, step; push new sliced array
-    OC_SLICE_ASSIGN, // pop start, stop, step; slice var[name] in-place or copy
-    OC_END,      // terminator
+    OC_NUM, OC_NIL, OC_STR, OC_MAKE_ARR,    // value producers
+    OC_VAR, OC_STORE,                        // name-based variable access (top-level)
+    OC_VAR_SLOT, OC_STORE_SLOT,             // slot-indexed variable access (functions)
+    OC_OP, OC_UNARY,                        // arithmetic / unary
+    OC_INDEX,                               // array indexing
+    OC_CALL, OC_TCO,                        // function call + tail call
+    OC_JZ, OC_JMP, OC_RET, OC_POP,          // control flow
+    OC_LVALS, OC_PUSH, OC_SLICE,            // array operations
+    OC_PRINT, OC_INPUT,                     // built-in I/O
+    OC_DUP, OC_JNZ,                         // short-circuit && ||
+    OC_END,                                 // terminator
 } OC;
 ```
 
@@ -194,17 +94,23 @@ typedef enum {
 
 ```c
 typedef struct Instr {
-    OC op; int a, b; double num; Arr *arr; char *name; Code *sub;
+    OC op; int a, b; double num; Arr *arr; char *name; Code *sub; int line; char *file;
 } Instr;
-
-typedef struct Code { Instr *code; int len, cap; } Code;
 ```
 
-- `a`, `b`: general-purpose (jump targets, argument counts, operator types)
+- `a`, `b`: general-purpose (slot indices, jump targets, argument counts, etc.)
 - `num`: for `OC_NUM`
 - `arr`: for `OC_STR` (pre-lexed string data)
-- `name`: for `OC_VAR`/`OC_STORE`/`OC_LVALS` (variable name)
-- `sub`: for `OC_ASSERT` (sub-code for the assertion expression)
+- `name`: for `OC_VAR`/`OC_STORE` (variable name, top-level only)
+- `sub`: unused
+
+### Compile-time variable tracking
+
+The compiler maintains a global `comp_vars[]` mapping variable names to slot
+indices. Inside function bodies, all variable reads/writes use `OC_VAR_SLOT`/
+`OC_STORE_SLOT` with the integer slot index — O(1) runtime access with no
+strcmp. The mapping is saved/restored around function compilation to isolate
+each function's variable namespace.
 
 ### Compiler functions
 
@@ -217,406 +123,178 @@ typedef struct Code { Instr *code; int len, cap; } Code;
 | `comp_prim(c)` | Primary expression (literal, ident, call, array, unary) |
 | `comp_if(c)` | `if`/`elif`/`else` with backpatching |
 | `comp_while(c)` | `while` with loop/exit jumps |
-| `comp_fn(c)` | Function definition + body compilation |
+| `comp_fn(c)` | Function definition + body + TCO detection |
+| `comp_include(c)` | `include` directive |
 
-### Control flow compilation
+### Push optimization detection
 
-**While loop:**
-```
-  [condition]       ← comp_expr
-  JZ exit           ← placeholder, patched later
-  [body]            ← comp_block
-  JMP loop          ← jump back to condition
-exit:               ← JZ target patched here
-```
+The compiler detects `x = x + [expr]` by lookahead on the token stream and
+emits `OC_PUSH` instead of generic concat. This appends the element directly
+in O(1) amortized.
 
-**If/elif/else:**
-```
-  [cond1]
-  JZ elif1          ← patch to elif1 condition
-  [body1]
-  JMP end
-elif1:
-  [cond2]
-  JZ else           ← or to end if no else
-  [body2]
-  JMP end
-else:
-  [body_else]
-end:
-```
+### TCO detection
 
-### Function compilation
-
-Functions are **pre-registered** in the function table before body compilation,
-enabling recursive self-calls. Body is compiled to its own `Code` object:
-
-```c
-Fn *f = &fs[fc++];
-f->n = name; f->p = params; f->a = arity;
-f->code = NULL;              // placeholder
-
-Code *body = new_code();
-comp_block(body);
-emit(body, OC_END);          // terminator (not OC_RET — see §4)
-f->code = body;
-```
-
-Tail call optimization is detected by scanning backwards past `OC_END`/`OC_RET`
-in the compiled body for a trailing `OC_CALL` to the same function. If found,
-the `OC_CALL` is mutated to `OC_TCO`.
+After compiling a function body, the compiler scans the last few instructions
+for `OC_CALL` to the same function in tail position. If found, it is mutated
+to `OC_TCO` — parameter rebinding + instruction pointer reset, no C stack
+growth.
 
 ---
 
-## 4. Stack-Based VM
+## 4. VM Executor (Computed Goto)
 
-### Execution loop
+### Dispatch mechanism
+
+The VM uses **computed goto** (GNU C extension `&&` address-of-label) instead
+of a `while`+`switch` loop:
 
 ```c
 void exec(Code *c) {
+    static void *dispatch[] = {
+        [OC_NUM] = &&op_num,
+        [OC_VAR] = &&op_var,
+        [OC_OP]  = &&op_op,
+        // ...
+    };
     int ip = 0;
-    while (ip < c->len && !rf) {     // rf checked each iteration
-        Instr *ins = &c->code[ip];
-        switch (ins->op) {
-            case OC_NUM:  istk[++isp] = vnum(ins->num); break;
-            case OC_VAR:  istk[++isp] = sget(cs, ins->name); break;
-            case OC_STORE: sset(cs, ins->name, istk[isp--]); break;
-            case OC_OP: {
-                Value r = istk[isp--], l = istk[isp--];
-                Value res = apply(ins->a, l, r);
-                if (l.type==VAL_ARR) arelease(l.as.arr);
-                if (r.type==VAL_ARR) arelease(r.as.arr);
-                istk[++isp] = res;
-                break;
-            }
-            case OC_JZ: {
-                Value v = istk[isp--];
-                if (!truthy(v)) { ip = ins->a; continue; }
-                break;
-            }
-            case OC_JMP: { ip = ins->a; continue; }
-            case OC_RET: rv = istk[isp--]; rf = 1; break;
-            case OC_END: return;
-            // ...
-        }
-        ip++;
-    }
+    goto *dispatch[c->code[ip].op];  // start
+
+op_num:
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    istk[++isp] = vnum(c->code[ip].num);
+    ip++; goto *dispatch[c->code[ip].op];
+
+op_var_slot: {
+    int slot = c->code[ip].a;
+    Value v = cs->v[slot];           // O(1), no strcmp
+    istk[++isp] = v; if (v.type == VAL_ARR) aretain(v.arr);
+    ip++; goto *dispatch[c->code[ip].op];
+}
+// ...
 }
 ```
 
-- `istk[4096]`: Value stack with `isp` pointer
-- `cs`: current scope (dynamic, name-based lookup via sset/sget)
-- `rf`/`rv`: return flag and value
-- Jumps use `continue` to skip the `ip++` at the bottom of the while loop
-- Stack values are saved/restored around function calls to prevent callee
-  overwrites (§5)
+Each opcode handler sets the error location, executes its operation, advances
+`ip`, and dispatches directly to the next handler — 1 jump per bytecode instead
+of 3 (switch + while check + branch back).
 
-### Function calls
+### Slot-indexed variable access
+
+Variables inside function bodies are accessed by integer slot index:
 
 ```c
-case OC_CALL: {
-    int fi = ins->a, ac = ins->b;
-    Fn *f = &fs[fi];
-    Value args[64];
-    for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
-    int saved_isp = isp;
-    /* save caller's stack below saved_isp */
-    Value saved[64];
-    for (int j = 0; j <= saved_isp; j++) saved[j] = istk[j];
-    Scp *saved_cs = cs; cs = snew();
-    int saved_cur_fi = cur_fi; cur_fi = fi;
-    for (int j = 0; j < f->a; j++)
-        sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
-    int saved_rf = rf; rf = 0; isp = -1;
-    exec(f->code);
-    Value result = rf ? rv : nilv();
-    sfree(cs); cs = saved_cs; cur_fi = saved_cur_fi;
-    rf = saved_rf; isp = saved_isp;
-    for (int j = 0; j <= saved_isp; j++) istk[j] = saved[j];  // restore
-    istk[++isp] = result;
+// OC_VAR_SLOT: push variable value (O(1) array lookup)
+case OC_VAR_SLOT:
+    istk[++isp] = cs->v[ins->a];
     break;
-}
+
+// OC_STORE_SLOT: assign to variable (O(1) array store)
+case OC_STORE_SLOT:
+    vassign(&cs->v[ins->a], istk[isp--]);
+    break;
 ```
 
-### Tail Call Optimization (TCO)
-
-```c
-case OC_TCO: {
-    int ac = ins->a;
-    Fn *f = &fs[cur_fi];
-    Value args[64];
-    for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
-    isp = -1; rf = 0;
-    for (int j = 0; j < f->a; j++)
-        sset(cs, f->p[j], (j < ac) ? args[j] : nilv());
-    ip = 0; continue;  // restart function body
-}
-```
-
-Instead of recursive C calls, TCO rebinds parameters in the current scope and
-resets the instruction pointer to 0. No C stack growth.
-
----
-
-## 5. Key Implementation Details
+Scopes are pre-allocated with `snew_sized(nvars)` — the exact number of
+variables is known after compilation. Parameters are bound by slot index
+directly, bypassing name lookup entirely.
 
 ### Stack save/restore around calls
 
 The VM uses a single global `istk` array. When a function call is made, the
-callee's `exec` pushes/pops on the same array, potentially overwriting the
-caller's stack values below `saved_isp`. To prevent this, the caller saves
-all values at indices `0..saved_isp` before calling `exec` and restores them
-after. The callee starts with `isp = -1`.
+caller saves `istk[0..saved_isp]` to a local array before calling `exec(f->code)`
+and restores them after. This prevents callee overwrites. With a max of 64
+saved entries, this is a 1KB memcpy per call — a known bottleneck for heavy
+function call workloads.
 
-### `return` vs implicit function exit
-
-- Explicit `return expr`: compiles as `[expr] OC_RET`. OC_RET pops the
-  expression result, stores it in `rv`, and sets `rf = 1`.
-- No return: the function body ends with `OC_END`. `rf` stays `0`, and
-  `OC_CALL` returns `nil` (via `nilv()` macro, typed as `VAL_ARR` with `NULL` arr).
-
-### `type()` built-in
-
-The `type()` built-in is handled directly in the compiler (before CReg and
-function table lookup) and compiled to the `OC_TYPE` opcode. At runtime, it
-pops one value from the stack and pushes a number representing the storage
-kind:
+### Function calls
 
 ```c
-case OC_TYPE: {
-    Value v = istk[isp--];
-    if (v.type == VAL_NUM)
-        istk[++isp] = vnum((double)v.nkind);          // 0-9
-    else if (v.type == VAL_ARR) {
-        if (v.as.arr)
-            istk[++isp] = vnum((double)(100 + v.as.arr->kind));  // 100-110
-        else
-            istk[++isp] = vnum(-1);                    // nil
-    } else
-        istk[++isp] = vnum(-2);                        // ptr
+case OC_CALL:
+    // 1. Pop args from stack
+    // 2. Save caller's stack (memcpy 64 Values)
+    // 3. Create pre-sized scope: snew_sized(f->nvars)
+    // 4. Bind params by slot index (O(1) each, no strcmp)
+    // 5. Save/restore rf/rv, call_depth
+    // 6. exec(f->code) — recursive C call
+    // 7. Restore everything
     break;
-}
 ```
 
-This is purely for testing and debugging — it exposes the internal type
-hierarchy that is otherwise invisible to the user.
-
-### `assert()` implementation
-
-The assert built-in compiles its argument expression into a separate `Code`
-sub-block. At runtime, `OC_ASSERT` sets up `setjmp`/`longjmp` around
-`exec(sub)`. If the sub-expression triggers `die()`, the error is caught,
-and the error message string is pushed as the result.
-
-### Array mutation (COW)
-
-Array lvalue assignment (`arr[i] = val`, `matrix[i][j] = val`) is handled by
-`OC_LVALS`. The instruction stores the root variable name and the number of
-index expressions. At runtime, it walks the chain:
-
-1. Start with root variable slot
-2. For each index: `amake_uniq(slot)` (COW if shared), then
-   `slot = &slot->as.arr->items[idx]`
-3. `vassign(slot, val)` — write the value into the final (private) slot
-
-### LVALS walk
-
-Array lvalue assignment walks from the root variable through each index.
-For each index, `amake_uniq(slot)` ensures copy-on-write, then the slot
-advances to the indexed element. The result is always correct regardless
-of sharing — no cursor caching is needed.
-
-### Push optimization (`OC_PUSH`)
-
-The compiler detects `x = x + [expr]` (same variable both sides, single-element
-array literal) and emits `OC_PUSH` instead of `OC_VAR + OC_MAKE_ARR +
-OC_OP + OC_STORE`. At runtime, `OC_PUSH`:
-
-1. Pops the element from the stack (the raw `expr` result, not an array)
-2. Creates the variable's array if it's nil (`arr = []` → first push)
-3. Calls `amake_uniq` on the variable slot (COW if shared with other vars)
-4. Grows capacity if needed (amortized O(1), doubles capacity)
-5. Writes the element via `vassign` into the new slot
-
-This avoids allocating a temporary 1-element array and the full
-concatenation copy. The `x = x + [elem]` pattern runs in O(1) per element
-instead of O(len(x)). Value semantics are preserved because the optimization
-only fires when the destination variable matches the source — `y = x + [1]`
-falls through to the general `+` path.
-
-### Slice compilation (`OC_SLICE` and `OC_SLICE_ASSIGN`)
-
-The compiler detects Python-style slice syntax (`arr[start:stop]` or
-`arr[start:stop:step]`) by scanning the tokens inside `[...]` for a `:` at
-depth 0. The scan checks for stop conditions (`]` or `,` at depth 0) before
-decrmenting depth, preventing false positives from a `:` in a later statement.
-
-When a slice is detected, the compiler emits:
-1. The array reference (via `OC_VAR`)
-2. The `start`, `stop`, and `step` expressions (or defaults: `OC_NIL` for
-   omitted bounds, `OC_NUM 1` for omitted step)
-3. `OC_SLICE` — pops all four operands, pushes a new array with the sliced
-   elements
-
-**Slice assignment optimization:** The compiler also detects `x = x[slice]`
-(same variable on both sides) before compiling the rvalue. Instead of
-`OC_VAR x + slice operands + OC_SLICE + OC_STORE`, it emits the slice
-operands directly followed by `OC_SLICE_ASSIGN name`. At runtime,
-`OC_SLICE_ASSIGN` checks refcount:
-- If `refcount == 1 && step == 1`: modifies the array in-place (memmove
-  elements, adjust `len`) — O(1) for truncation, O(N) for shift but no
-  allocation.
-- Otherwise: allocates a new array (same as `OC_SLICE`) and assigns it to
-  the variable via `vassign`, preserving value semantics.
-
-### Refcount leak fixes
-
-`OC_STORE`, `OC_LVALS`, and `OC_MAKE_ARR` popped values from the internal
-stack without releasing the retain from the corresponding `OC_VAR` push.
-This leaked +1 refcount per variable store, which prevented the push
-optimization from detecting exclusive ownership. These opcodes now properly
-release the stack reference after assignment.
-
-**OC_INDEX multi-index fix:** The multi-index traversal path (`arr[idx]` where
-`idx` is an array) released the root array `arr` inside the traversal loop
-as `cur` advanced, and then released it again after the loop. This double-
-release caused a use-after-free crash when refcounting was otherwise correct.
-The post-loop release was removed, and `idx` is properly released after use.
-
-### Include handling
-
-`include "path"` is handled at compile time. The compiler saves its token
-state, lexes the included file, compiles its statements into the current
-`Code`, then restores the previous token state. This is recursive — included
-files can themselves include other files.
-
-### REPL auto-print
-
-When the compiler emits a bare expression statement, it emits either `OC_POP`
-(to discard the value) or `OC_PRINT` (to display it). The decision is made
-at compile time by checking the global `comp_file` pointer:
-
-- **Script mode** (`comp_file` is set to the source file path): emits `OC_POP`
-  — the expression result is silently discarded, matching script semantics.
-- **REPL mode** (`comp_file` is NULL): emits `OC_PRINT` — the expression value
-  is printed to stdout followed by a newline.
-
-This applies to both identifier-led expressions and literal expressions:
+### TCO
 
 ```c
-// In comp_stmt, both the T_ID and default cases:
-emit(c, (Instr){ (comp_file ? OC_POP : OC_PRINT), 0, 0 });
-```
-
-The `OC_PRINT` VM handler includes a safety check (`if (isp >= 0)`) so that
-it no-ops when the stack is empty. This is necessary because the built-in
-`print()` function is compiled to its own `OC_PRINT` instruction (inside
-`comp_prim`), consuming its argument from the stack. The subsequent
-`OC_PRINT` from `comp_stmt` would otherwise fire on a stale stack entry.
-
-Each REPL iteration also resets `isp = -1` before calling `exec(code)` to
-prevent stale values from a previous iteration's stack from being misread
-as expression results.
-
----
-
-## 6. FFI Integration
-
-FFI is optional and enabled by `-DTL_FFI` at build time, which pulls in
-`<dlfcn.h>` and `<ffi.h>`.
-
-### C Function Registration
-
-```c
-typedef Value (*CFunc)(int, Value*);
-typedef struct { char *name; CFunc func; } CReg;
-static CReg *cregs; static int creg_count, creg_cap;
-
-void tl_register(const char *name, CFunc func);
-```
-
-C functions are registered before compilation. At compile time, `comp_prim()`
-checks the `cregs[]` array before falling through to TL function lookup. If
-a match is found, it emits `OC_CFUNC` with the CReg index.
-
-### OC_CFUNC opcode
-
-```c
-case OC_CFUNC: {
-    int ci = ins->a, ac = ins->b;
-    Value args[64];
-    for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
-    Value result = cregs[ci].func(ac, args);
-    istk[++isp] = result;
+case OC_TCO:
+    // 1. Pop args
+    // 2. Bind params by slot index (same scope, no allocation)
+    // 3. ip = 0; restart function body
     break;
-}
-```
-
-### Built-in FFI functions (behind TL_FFI)
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `dlopen` | `dlopen(path) → ptr` | Load a shared library |
-| `dlsym` | `dlsym(handle, name) → ptr` | Look up a symbol by name |
-| `dlclose` | `dlclose(handle) → []` | Unload a shared library |
-| `ffi_call` | `ffi_call(fn, sig, ...) → value` | Call a C function by pointer |
-
-`ffi_call` uses a signature string where the first character is the return
-type and the rest are argument types:
-
-| Char | C type |
-|------|--------|
-| `v` | `void` |
-| `i` | `int` |
-| `d` | `double` |
-| `p` | `void*` |
-| `s` | `const char*` (NUL-terminated) |
-
-Example:
-```
-lib = dlopen("libm.so")
-sqrt_fn = dlsym(lib, "sqrt")
-result = ffi_call(sqrt_fn, "dd", 9.0)   // → 3.0
 ```
 
 ---
 
-## 7. Line Count
+## 5. Array Operations
 
-**Total:** ~1160 lines.
+### COW on mutation
+
+```c
+void amake_uniq(Value *v) {
+    if (v->type != VAL_ARR || !v->arr) return;
+    if (v->arr->refcount > 1) {
+        Arr *old = v->arr;
+        v->arr = adeep_copy(old);      // copy on write
+        arelease(old);
+    }
+}
+```
+
+### Lvalue chain (arr[i][j] = val)
+
+`OC_LVALS` walks a chain starting from the root variable's slot. At each level,
+`amake_uniq` ensures exclusive ownership before advancing to the indexed
+element. The final slot receives the assigned value via `vassign`.
+
+### Push (arr = arr + [x])
+
+`OC_PUSH` is emitted when the compiler detects `x = x + [elem]`. It pops the
+element, calls `amake_uniq` on the target array (COW if shared), grows capacity
+if needed (doubles each realloc), and writes the element into the new slot.
+Amortized O(1).
+
+### Slice (arr[start:stop:step])
+
+`OC_SLICE` pops the array, start, stop, and step values from the stack, clamps
+bounds (handling negative indices and omitted bounds per Python semantics),
+copies elements into a new `Value[]` array, and pushes the result.
+
+---
+
+## 6. Line Count
+
+**Total:** 1,161 lines.
 
 | Component | Lines |
 |-----------|-------|
-| Value + ArrayData + refcount helpers | ~50 |
-| Lexer | ~110 |
-| Compiler — expressions + primaries | ~65 |
-| Compiler — statements (if, while, assign, block) | ~90 |
-| Compiler — functions, return, TCO | ~45 |
-| Compiler — include, program | ~35 |
-| Scope + function table | ~25 |
-| VM — exec loop, all opcodes | ~200 |
-| Built-ins (print, input, assert) | ~40 |
-| FFI helpers (tl_to_cstring, dlopen, dlsym, dlclose, ffi_call) | ~100 |
-| Main / REPL (including auto-print) | ~30 |
-| apply (operators + comparisons) | ~65 |
-| Includes + structs + enums + globals | ~60 |
-| print_val + truthy + veq + die | ~40 |
-| FFI registration (CReg, tl_register) | ~20 |
-| Include + readf | ~55 |
+| Includes, types, enums, globals | ~60 |
+| Value + Array helpers (vnum, val_num, aalloc, aretain, arelease, etc.) | ~60 |
+| `apply()` (operators) | ~65 |
+| `die()` (error handling) | ~50 |
+| `print_val()`, `truthy()`, `veq()` | ~40 |
+| Scope (snew, sfree, sget, sset, snew_sized) | ~30 |
+| Bytecode helpers (emit, new_code, code_free, readf, var_find, var_add) | ~30 |
+| Lexer | ~100 |
+| Compiler — all functions | ~280 |
+| VM executor — exec() with computed goto | ~280 |
+| Main / REPL | ~60 |
+| Include handling | ~40 |
 
 ---
 
-## 8. Implementation Order
+## 7. Performance Model
 
-1. `Value` + `Arr` + retain/release/COW
-2. Lexer
-3. Scope + function table
-4. Compiler: expressions (numbers, identifiers, binary ops, unary)
-5. Compiler: array expressions (literals, index, multi-index)
-6. Compiler: statements (assignment, if, while, blocks)
-7. Compiler: function definitions + return
-8. VM: exec loop with basic opcodes
-9. Built-ins (print, input) + `#` operator
-10. OC_ASSERT with error catching
-11. Main/REPL, compilation to bytecode, execution
-12. FFI: CReg system, `OC_CFUNC` opcode, dlopen/dlsym/dlclose/ffi_call
+- **Computed goto dispatch:** ~15% faster than switch (1 jump/bytecode vs 3)
+- **Slot-indexed variables:** ~50% reduction in variable access cost (O(1) vs
+  O(n) strcmp). Biggest win for variable-heavy loops.
+- **Combined speedup over original switch+strcmp VM:** 55-85% across benchmarks.
+- **TinyLang vs CPython:** ~2× faster on numeric workloads.
+- **TinyLang vs Node.js V8:** 4-31× slower (V8 JIT-compiles to native code).
+- **TinyLang vs naive C:** ~10-200× slower (interpreted dispatch overhead).
