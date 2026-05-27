@@ -30,7 +30,7 @@ typedef enum {
     T_LP, T_RP, T_LB, T_RB, T_LC, T_RC, T_CM, T_SEMI,
     T_PL, T_MI, T_ST, T_SL, T_PC,
     T_AM, T_PI, T_CA, T_SHL, T_SHR, T_BN,
-    T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
+    T_ASSIGN, T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
     T_HASH, T_COLON,
     T_NL, T_IF, T_ELIF, T_ELSE, T_WH, T_FN, T_RT, T_INCLUDE,
     T_AND, T_OR,
@@ -500,7 +500,7 @@ void lex(const char *s) {
             case '^': tk.t=T_CA; break;
             case '#': tk.t=T_HASH; break; case ':': tk.t=T_COLON; break;
             case '!': if (pc()=='='){ac();tk.t=T_NE;}else tk.t=T_BN; break;
-            case '=': tk.t=T_EQ; break;
+            case '=': if (pc()=='='){ac();tk.t=T_EQ;}else tk.t=T_ASSIGN; break;
             case '<': if(pc()=='<'){ac();tk.t=T_SHL;}else if(pc()=='='){ac();tk.t=T_LE;}else tk.t=T_LT; break;
             case '>': if(pc()=='>'){ac();tk.t=T_SHR;}else if(pc()=='='){ac();tk.t=T_GE;}else tk.t=T_GT; break;
             default: { char m[2]={c,0}; die("unexpected '%s'",m); }
@@ -865,7 +865,7 @@ void comp_stmt(Code *c) {
                     if (ts[pt].t == T_RB) bd--; pt++;
                 }
             }
-            int is_assign = (ts[pt].t == T_EQ);
+            int is_assign = (ts[pt].t == T_ASSIGN);
             if (is_assign) {
                 char *nm = strdup(ts[tp].s); tp++; int idx_count = 0;
                 while (ts[tp].t == T_LB) {
@@ -873,7 +873,7 @@ void comp_stmt(Code *c) {
                     do { comp_expr(c); idx_count++; } while (ts[tp].t == T_CM && (tp++, 1));
                     if (ts[tp].t != T_RB) die("expected ]"); tp++;
                 }
-                if (ts[tp].t != T_EQ) die("expected ="); tp++;
+                if (ts[tp].t != T_ASSIGN) die("expected ="); tp++;
                 int is_push = (idx_count == 0);
                 if (is_push) {
                     int pn = tp;

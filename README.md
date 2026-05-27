@@ -64,17 +64,17 @@ A full language in <1,500 lines of C. No required dependencies. Compiles in <1s.
 
 ```sh
 # Without readline (no line editing):
-cc -Wall -Wextra -O2 -lm -o tinylang tinylang.c
-./tinylang tests/test.tl
+cc -Wall -Wextra -O2 -lm -o tiny tinylang.c
+./tiny tests/test.tl
 
 # With optional readline support (line editing, history, arrow keys):
-cc -DREADLINE -Wall -Wextra -O2 -lm -o tinylang tinylang.c -lreadline
+cc -DREADLINE -Wall -Wextra -O2 -lm -o tiny tinylang.c -lreadline
 ```
 
 ### REPL
 
 ```sh
-./tinylang          # REPL with built-in input handling
+./tiny          # REPL with built-in input handling
 ```
 
 When compiled with `-DREADLINE`, the REPL provides full readline editing:
@@ -1197,7 +1197,7 @@ macOS, Linux, and BSDs all provide it; strict C99-or-only platforms may not.
 To check for these and other non-standard extensions at build time:
 
 ```sh
-cc -std=c99 -Wall -pedantic -o tinylang tinylang.c -lm
+cc -std=c99 -Wall -pedantic -o tiny tinylang.c -lm
 ```
 
 This will flag the GNU label-as-value and indirect-goto extensions as
@@ -1226,7 +1226,7 @@ block         := "{" stmt_list "}"
 expr          := logical_or
 logical_or    := logical_and ("||" logical_and)*
 logical_and   := comparison ("&&" comparison)*
-comparison    := shift (("=" | "!=" | "<" | ">" | "<=" | ">=") shift)?
+comparison    := shift (("==" | "!=" | "<" | ">" | "<=" | ">=") shift)?
 shift         := addition (("<<" | ">>") addition)*
 addition      := multiplication (("+" | "-") multiplication)*
 multiplication := primary (("*" | "/" | "%") primary)*

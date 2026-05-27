@@ -8,9 +8,9 @@ function sqrt(x) {
     guess = x / 2
     i = 0
     while i < 100 {
-        if guess = 0 { return x }
+        if guess == 0 { return x }
         new_guess = (guess + x / guess) / 2
-        if new_guess = guess { return guess }
+        if new_guess == guess { return guess }
         guess = new_guess
         i = i + 1
     }

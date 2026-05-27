@@ -2,7 +2,7 @@
 function println(x) { print(x) print("\n") }
 
 function fact_tco(n, acc) {
-    if n = 0 {
+    if n == 0 {
         return acc
     }
     return fact_tco(n - 1, n * acc)

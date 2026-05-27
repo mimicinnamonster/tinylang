@@ -30,7 +30,7 @@ function build_be(n, C) {
 
 function concat_be(n, m, C) {
     k = ceil_div(n + m, C)
-    if k = 1 { return -1 }
+    if k == 1 { return -1 }
     if n + m <= C { return -1 }
     return (n + m - C) / (k - 1)
 }

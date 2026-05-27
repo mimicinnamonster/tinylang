@@ -17,8 +17,8 @@ println(-5)
 
 // --- 2. Comparisons ---
 println("--- comparisons ---")
-println(5 = 5)     // 1
-println(5 = 6)     // []
+println(5 == 5)     // 1
+println(5 == 6)     // []
 println(5 != 6)    // 1
 println(5 < 6)     // 1
 println(5 > 6)     // []
@@ -81,9 +81,9 @@ println(#c)       // 4
 
 // --- 7. Array equality ---
 println("--- array equality ---")
-println([1, 2] = [1, 2])     // 1 (deep equal)
-println([1, 2] = [1, 3])     // [] (not equal)
-println([] = [])              // 1 (both empty)
+println([1, 2] == [1, 2])     // 1 (deep equal)
+println([1, 2] == [1, 3])     // [] (not equal)
+println([] == [])              // 1 (both empty)
 
 // --- 8. Strings ---
 println("--- strings ---")
@@ -117,7 +117,7 @@ println(#noop())    // 0 (returns [])
 // --- 10. Recursion ---
 println("--- recursion ---")
 function fact(n) {
-    if n = 0 {
+    if n == 0 {
         return 1
     }
     return n * fact(n - 1)
@@ -131,7 +131,7 @@ println("--- if/elif/else ---")
 function classify(n) {
     if n < 0 {
         return -1
-    } elif n = 0 {
+    } elif n == 0 {
         return 0
     } else {
         return 1
@@ -166,7 +166,7 @@ list = [1, [2, [3, []]]]
 println(list)
 
 function sum_list(lst) {
-    if lst = [] {
+    if lst == [] {
         return 0
     }
     return lst[0] + sum_list(lst[1])
@@ -226,7 +226,7 @@ println(mat2[idx])   // 2
 // --- 20. nil ---
 println("--- nil ---")
 n = nil
-println(n = [])     // 1
+println(n == [])     // 1
 println(n != [])    // []
 println(!n)         // 1
 
@@ -241,10 +241,10 @@ println(3 >= 5)    // []
 
 // --- 22. Mixed-type comparison ---
 println("--- mixed comparison ---")
-println(5 = "hello")  // [] (type mismatch = not equal)
-println(5 = [])       // []
-println([] = "")     // [] (empty array vs string)
-println(0 = [])       // []
+println(5 == "hello")  // [] (type mismatch = not equal)
+println(5 == [])       // []
+println([] == "")     // [] (empty array vs string)
+println(0 == [])       // []
 println(5 != "hello") // 1
 
 // --- 23. Modulo with negatives ---
@@ -328,7 +328,7 @@ function gimme() {
 println(gimme())         // []
 
 function gimme2(n) {
-    if n = 0 {
+    if n == 0 {
         return 99
     }
     // no else return — falls through on n != 0

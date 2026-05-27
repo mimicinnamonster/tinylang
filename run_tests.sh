@@ -8,7 +8,7 @@ TESTDIR="$DIR/tests"
 
 if [ ! -f "$TINYLANG" ]; then
     echo "Error: tinylang not found at $TINYLANG"
-    echo "Build it first: cc -o tinylang tinylang.c -lm"
+    echo "Build it first: cc -o tiny tinylang.c -lm"
     exit 1
 fi
 

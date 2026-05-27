@@ -32,7 +32,7 @@ function mandelbrot(size) {
                 i = i + 1
             }
 
-            if escaped = 0 {
+            if escaped == 0 {
                 total = total + 1
             }
 

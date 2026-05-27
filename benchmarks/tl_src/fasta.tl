@@ -62,7 +62,7 @@ function random_fasta(rng, symb, probs, n) {
                 }
                 j = j + 1
             }
-            if found = 0 {
+            if found == 0 {
                 buf = buf + [symb[ns - 1]]
             }
             i = i + 1

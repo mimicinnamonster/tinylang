@@ -342,7 +342,7 @@ expr          := logical_or
 
 logical_or    := logical_and ("||" logical_and)*
 logical_and   := comparison ("&&" comparison)*
-comparison    := shift (("=" | "!=" | "<" | ">" | "<=" | ">=") shift)?
+comparison    := shift (("==" | "!=" | "<" | ">" | "<=" | ">=") shift)?
 shift         := addition (("<<" | ">>") addition)*
 addition      := multiplication (("+" | "-") multiplication)*
 multiplication := primary (("*" | "/" | "%") primary)*

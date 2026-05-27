@@ -5,7 +5,7 @@
 function println(x) { print(x) print("\n") }
 
 function range(n, acc) {
-    if n = 0 {
+    if n == 0 {
         return acc
     }
     return range(n - 1, [n, acc])
