@@ -2,7 +2,7 @@
 // Based on the same algorithm as the C version.
 
 // Newton-Raphson square root
-function sqrt(x) {
+function sqrt(x=0) {
     if x <= 0 { return 0 }
     guess = x / 2
     i = 0
@@ -16,13 +16,13 @@ function sqrt(x) {
     return guess
 }
 
-function eval_A(i_val, j_val) {
+function eval_A(i_val=0, j_val=0) {
     i = i_val
     j = j_val
     return 1 / ((i + j) * (i + j + 1) / 2 + i + 1)
 }
 
-function eval_A_times_u(n_in, u) {
+function eval_A_times_u(n_in=0, u=[]) {
     n = n_in
     Au = []
     i = 0
@@ -39,7 +39,7 @@ function eval_A_times_u(n_in, u) {
     return Au
 }
 
-function eval_At_times_u(n_in, u) {
+function eval_At_times_u(n_in=0, u=[]) {
     n = n_in
     Au = []
     i = 0
@@ -56,7 +56,7 @@ function eval_At_times_u(n_in, u) {
     return Au
 }
 
-function run(n_in) {
+function run(n_in=0) {
     n = n_in
     u = []
     i = 0

@@ -47,6 +47,8 @@ run_test() {
         e_bad_octal)     expected_msg="invalid digit in octal literal";;
         e_percent_nonnum) expected_msg="'%' requires numbers";;
         e_ret_type_mismatch) expected_msg="inconsistent return type";;
+        e_destructure_nonarr) expected_msg="destructure requires array";;
+        e_default_after_required) expected_msg="must have a default value";;
         *)                expected_msg="error:";;
     esac
 

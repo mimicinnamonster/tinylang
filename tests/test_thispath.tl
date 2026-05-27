@@ -1,6 +1,6 @@
 // test_thispath.tl — test thispath() with includes
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 include "thispath_sub.tl"
 

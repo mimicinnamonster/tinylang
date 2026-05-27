@@ -1,6 +1,6 @@
 // include_test.tl — test include "path"
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 include "include_sub.tl"
 

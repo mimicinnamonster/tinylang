@@ -2,7 +2,7 @@
 // Tests that sharing an array is O(1) and mutation of shared data
 // only triggers one copy, not repeated copies.
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 // --- Test 1: Write to unique array (no COW needed) ---
 // Create a large array and write to every element.

@@ -1,6 +1,6 @@
 // Test: all expressions that evaluate to an array can be indexed with []
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 // --- 1. Array literal indexing ---
 println("--- array literal indexing ---")
@@ -97,7 +97,7 @@ println((arr2)[1:3])             // [2, 3]
 
 // --- 17. Nested function call with indexing ---
 println("--- nested fn indexing ---")
-function wrap(x) { return [x] }
+function wrap(x=0) { return [x] }
 function get_val() { return 42 }
 println(wrap(get_val())[0])       // 42
 

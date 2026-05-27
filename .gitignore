@@ -1,6 +1,9 @@
 # Compiled binary
 tiny
 tiny.dSYM/
+tinylang
+tinylang-asan
+tinylang-asan.dSYM/
 tiny-ffi
 tiny-ffi.dSYM/
 tiny-asan
@@ -19,3 +22,5 @@ benchmarks/c_bin/
 *.swo
 *~
 .DS_Store
+.pi/
+benchmarks/hashmap_c

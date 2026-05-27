@@ -2,7 +2,7 @@
 // Note: bitwise operators (& | ^) removed from VM.
 // Arithmetic, comparison, and logical operators only.
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 println("\n--- 1. Simple ---")
 println(5 + 3)            // 8

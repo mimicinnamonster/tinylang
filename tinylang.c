@@ -18,7 +18,7 @@
 #endif
 
 typedef enum { VAL_NUM, VAL_ARR } Type;
-typedef struct Arr { int refcount, len, cap; struct Value *val; } Arr;
+typedef struct Arr { int refcount, len, cap; struct Value *val; int is_slice; unsigned int hash_cache; struct Arr *parent; } Arr;
 typedef struct Value {
     Type type;
     double num;
@@ -47,10 +47,12 @@ typedef enum {
     OC_OP, OC_UNARY, OC_INDEX,
     OC_CALL, OC_TCO,
     OC_JZ, OC_JMP, OC_RET, OC_POP,
-    OC_LVALS, OC_PUSH, OC_SLICE,
+    OC_LVALS, OC_PUSH, OC_LVALS_PUSH, OC_SLICE,
     OC_PRINT, OC_INPUT,
     OC_DUP, OC_JNZ,
     OC_PUSH_ALL,
+    OC_SLICE_INPLACE,
+    OC_DESTRUCTURE,
     OC_END,
 } OC;
 
@@ -72,7 +74,7 @@ typedef struct { int fi; int line; char *file; } CallFrame;
 CallFrame call_stack[128]; int call_depth = -1;
 
 typedef enum { T_UNKNOWN = 0, T_NUM_TYPE = 1, T_ARR_TYPE = 2 } ExprType;
-typedef struct { char *n; int a; int nvars, *p_slots; ExprType ret_type, *init_types; Code *code; } Fn;
+typedef struct { char *n; int a; int nvars, *p_slots; ExprType ret_type, *init_types; Code *code; Value *def_vals; char *has_def; } Fn;
 Fn *fs; int fc, fm;
 
 jmp_buf repl_jmp; int repl_catching;
@@ -106,20 +108,28 @@ double val_num(Value v) { return v.num; }
 Arr *aalloc(int c) {
     Arr *a = calloc(1, sizeof(Arr)); a->refcount = 1;
     a->cap = c; a->val = c ? calloc(c, sizeof(Value)) : NULL;
+    a->is_slice = 0; a->parent = NULL;
     return a;
 }
 void aretain(Arr *a) { if (a) a->refcount++; }
 void arelease(Arr *a) {
     if (!a) return;
     if (--a->refcount > 0) return;
-    for (int i = 0; i < a->len; i++)
-        if (a->val[i].type == VAL_ARR) arelease(a->val[i].arr);
-    free(a->val); free(a);
+    if (a->is_slice) {
+        /* View: val belongs to parent, sub-arrays belong to parent */
+        arelease(a->parent);
+        free(a);
+    } else {
+        for (int i = 0; i < a->len; i++)
+            if (a->val[i].type == VAL_ARR) arelease(a->val[i].arr);
+        free(a->val); free(a);
+    }
 }
 Arr *adeep_copy(Arr *s) {
     if (!s) return NULL;
-    Arr *d = aalloc(s->cap); d->len = s->len;
-    for (int i = 0; i < s->len; i++) {
+    int n = s->len;
+    Arr *d = aalloc(n); d->len = n;
+    for (int i = 0; i < n; i++) {
         d->val[i] = s->val[i];
         if (d->val[i].type == VAL_ARR) aretain(d->val[i].arr);
     }
@@ -127,7 +137,12 @@ Arr *adeep_copy(Arr *s) {
 }
 void amake_uniq(Value *v) {
     if (v->type != VAL_ARR || !v->arr) return;
-    if (v->arr->refcount > 1) {
+    if (v->arr->is_slice) {
+        /* View: always flatten to owned copy before mutation */
+        Arr *old = v->arr;
+        v->arr = adeep_copy(old);
+        arelease(old);
+    } else if (v->arr->refcount > 1) {
         Arr *old = v->arr;
         v->arr = adeep_copy(old);
         arelease(old);
@@ -150,17 +165,58 @@ int is_string_arr(Arr *a) {
     return 1;
 }
 
-Arr *num_to_string_arr(double d) {
-    char buf[64];
+/* ─── FNV-1a hash (Git's strhash algorithm) ─── */
+unsigned int fnv1a_hash(Arr *a) {
+    unsigned int hash = 0x811c9dc5u; /* FNV32_BASE */
+    for (int i = 0; i < a->len; i++) {
+        unsigned int c = (unsigned int)val_num(a->val[i]);
+        hash = (hash * 0x01000193u) ^ c; /* FNV32_PRIME */
+    }
+    return hash;
+}
+unsigned int get_arr_hash(Arr *a) {
+    if (!a->hash_cache)
+        a->hash_cache = fnv1a_hash(a);
+    return a->hash_cache;
+}
+
+/* Write a number's decimal representation into buf, return length */
+static int num_to_buf(char *buf, double d) {
     if (d == (double)(int64_t)d)
-        snprintf(buf, sizeof(buf), "%lld", (int64_t)d);
+        return snprintf(buf, 64, "%lld", (int64_t)d);
     else
-        snprintf(buf, sizeof(buf), "%g", d);
-    int len = strlen(buf);
-    Arr *a = aalloc(len);
-    a->len = len;
-    for (int i = 0; i < len; i++)
+        return snprintf(buf, 64, "%g", d);
+}
+
+/* Optimized string + number concat: writes number digits directly into result,
+ * avoiding the intermediate Arr allocation that num_to_string_arr creates. */
+Arr *strcat_num(Arr *la, double d) {
+    char buf[64];
+    int rn = num_to_buf(buf, d);
+    int ln = la ? la->len : 0;
+    Arr *a = aalloc(ln + rn); a->len = ln + rn;
+    for (int i = 0; i < ln; i++) {
+        a->val[i] = la->val[i];
+        /* is_string_arr guarantees all elements are VAL_NUM, but retain for safety */
+        if (a->val[i].type == VAL_ARR) aretain(a->val[i].arr);
+    }
+    for (int i = 0; i < rn; i++)
+        a->val[ln + i] = vnum((double)(unsigned char)buf[i]);
+    return a;
+}
+
+/* Optimized number + string concat: same as strcat_num but number comes first. */
+Arr *num_strcat(double d, Arr *ra) {
+    char buf[64];
+    int ln = num_to_buf(buf, d);
+    int rn = ra ? ra->len : 0;
+    Arr *a = aalloc(ln + rn); a->len = ln + rn;
+    for (int i = 0; i < ln; i++)
         a->val[i] = vnum((double)(unsigned char)buf[i]);
+    for (int i = 0; i < rn; i++) {
+        a->val[ln + i] = ra->val[i];
+        if (a->val[ln + i].type == VAL_ARR) aretain(a->val[ln + i].arr);
+    }
     return a;
 }
 
@@ -222,30 +278,13 @@ Value apply(int op, Value l, Value r) {
                 return (Value){ .type = VAL_ARR, .arr = a };
             }
             if (l.type == VAL_ARR && rf && is_string_arr(l.arr)) {
-                /* string + number: convert number to string, then concat */
-                Arr *rstr = num_to_string_arr(rd);
-                Arr *la = l.arr;
-                int ln = la ? la->len : 0, rn = rstr->len;
-                Arr *a = aalloc(ln + rn); a->len = ln + rn;
-                for (int i = 0; i < ln; i++) { a->val[i] = la->val[i];
-                    if (a->val[i].type == VAL_ARR) aretain(a->val[i].arr); }
-                for (int i = 0; i < rn; i++) { a->val[ln + i] = rstr->val[i];
-                    if (a->val[ln + i].type == VAL_ARR) aretain(a->val[ln + i].arr); }
-                arelease(rstr);
-                return (Value){ .type = VAL_ARR, .arr = a };
+                /* string + number: write number digits directly into result,
+                 * no intermediate Arr allocation. */
+                return (Value){ .type = VAL_ARR, .arr = strcat_num(l.arr, rd) };
             }
             if (lf && r.type == VAL_ARR && is_string_arr(r.arr)) {
-                /* number + string: convert number to string, then concat */
-                Arr *lstr = num_to_string_arr(ld);
-                Arr *ra = r.arr;
-                int ln = lstr->len, rn = ra ? ra->len : 0;
-                Arr *a = aalloc(ln + rn); a->len = ln + rn;
-                for (int i = 0; i < ln; i++) { a->val[i] = lstr->val[i];
-                    if (a->val[i].type == VAL_ARR) aretain(a->val[i].arr); }
-                for (int i = 0; i < rn; i++) { a->val[ln + i] = ra->val[i];
-                    if (a->val[ln + i].type == VAL_ARR) aretain(a->val[ln + i].arr); }
-                arelease(lstr);
-                return (Value){ .type = VAL_ARR, .arr = a };
+                /* number + string: same direct-to-result optimization */
+                return (Value){ .type = VAL_ARR, .arr = num_strcat(ld, r.arr) };
             }
             die("'+' type mismatch");
         case T_MI:
@@ -664,11 +703,72 @@ void comp_return(Code *c) {
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     int pn = tp;
     ExprType rt = peek_expr_type(&pn);
+    /* Compile first expression */
+    comp_expr(c);
+    int count = 1;
+    /* Check for comma-separated expressions (implicit array return) */
+    while (ts[tp].t == T_CM) {
+        tp++;
+        comp_expr(c);
+        count++;
+    }
+    if (count > 1) {
+        emit(c, (Instr){OC_MAKE_ARR, count, 0, .num = 0});
+        rt = T_ARR_TYPE;  /* implicit array */
+    }
     if (fn_ret_seen && rt != T_UNKNOWN && fn_ret_type != T_UNKNOWN && rt != fn_ret_type)
         die("inconsistent return type");
     if (rt != T_UNKNOWN) { fn_ret_type = rt; fn_ret_seen = 1; }
-    comp_expr(c);
     emit(c, (Instr){OC_RET, 0, 0, .num = 0});
+}
+
+/* Evaluate a compile-time constant expression from the token stream.
+ * Returns the Value. Supports: numbers, strings, nil, array literals with
+ * constant elements, and unary minus on numbers. Designed for default
+ * parameter values. */
+Value eval_constant_expr(void) {
+    while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
+    Tok t = ts[tp];
+    /* Unary minus */
+    if (t.t == T_MI) {
+        tp++;
+        Value v = eval_constant_expr();
+        if (v.type != VAL_NUM) die("default value: expected number after '-'");
+        return vnum(-val_num(v));
+    }
+    switch (t.t) {
+        case T_NUM: tp++; return vnum(t.n);
+        case T_NIL: tp++; return nilv();
+        case T_STR: {
+            tp++;
+            Arr *orig = (Arr*)t.s;
+            Arr *copy = adeep_copy(orig);
+            return (Value){ .type = VAL_ARR, .arr = copy };
+        }
+        case T_LB: {
+            tp++;
+            /* Empty array = nil */
+            if (ts[tp].t == T_RB) { tp++; return nilv(); }
+            /* Evaluate elements */
+            Value elems[64];
+            int n = 0;
+            do {
+                if (n >= 64) die("too many elements in default array literal");
+                elems[n++] = eval_constant_expr();
+            } while (ts[tp].t == T_CM && (tp++, 1));
+            if (ts[tp].t != T_RB) die("expected ] in default array literal");
+            tp++;
+            Arr *a = aalloc(n); a->len = n;
+            for (int i = 0; i < n; i++) {
+                a->val[i] = elems[i];
+                if (elems[i].type == VAL_ARR) aretain(elems[i].arr);
+            }
+            return (Value){ .type = VAL_ARR, .arr = a };
+        }
+        default:
+            die("default value must be a constant (number, string, nil, or array literal)");
+    }
+    return nilv();
 }
 
 void comp_fn(Code *c) {
@@ -682,13 +782,18 @@ void comp_fn(Code *c) {
     Fn *f = &fs[fc++]; memset(f, 0, sizeof(Fn));
     f->n = name; f->code = NULL; f->p_slots = NULL;
 
-    /* Parse parameters */
+    /* Parse parameters with required defaults */
     char *params[64]; int pa = 0;
+    Value def_vals[64];
     if (ts[tp].t != T_RP) {
         do {
             if (ts[tp].t != T_ID) die("expected param name");
-            params[pa++] = strdup(ts[tp].s);
+            params[pa] = strdup(ts[tp].s);
             tp++;
+            if (ts[tp].t != T_ASSIGN) die("parameter '%s' must have a default value", params[pa]);
+            tp++;
+            def_vals[pa] = eval_constant_expr();
+            pa++;
         } while (ts[tp].t == T_CM && (tp++, 1));
     }
     if (ts[tp].t != T_RP) die("expected )"); tp++;
@@ -703,10 +808,28 @@ void comp_fn(Code *c) {
     comp_vars = NULL; comp_types = NULL; comp_vc = 0; comp_vm = 0;
     for (int i = 0; i < pa; i++) var_add(params[i]);
 
+    /* Set types from defaults */
+    for (int i = 0; i < pa; i++) {
+        int slot = var_find(params[i]);
+        set_var_type(slot, def_vals[i].type == VAL_NUM ? T_NUM_TYPE : T_ARR_TYPE);
+    }
+
     /* Register param slots for fast binding */
     f->p_slots = malloc(pa * sizeof(int));
     for (int i = 0; i < pa; i++) f->p_slots[i] = var_find(params[i]);
     f->a = pa;
+
+    /* Save default values in Fn struct */
+    if (pa > 0) {
+        f->def_vals = malloc(pa * sizeof(Value));
+        for (int i = 0; i < pa; i++) {
+            f->def_vals[i] = def_vals[i];
+            if (def_vals[i].type == VAL_ARR) aretain(def_vals[i].arr);
+        }
+    } else {
+        f->def_vals = NULL;
+    }
+    f->has_def = NULL;
 
     /* Compile body */
     fn_ret_type = T_UNKNOWN; fn_ret_seen = 0;
@@ -975,6 +1098,51 @@ void comp_stmt(Code *c) {
         case T_LC: comp_block(c); break;
         case T_INCLUDE: comp_include(c); break;
         case T_ID: {
+            /* Check for destructure: id, id, ... = expr */
+            {
+                int scan = tp;
+                int dvars[64], dvc = 0;
+                if (ts[scan].t == T_ID) {
+                    dvars[dvc++] = scan; scan++;
+                    while (ts[scan].t == T_CM || ts[scan].t == T_NL) {
+                        if (ts[scan].t == T_CM) { scan++; while (ts[scan].t == T_NL) scan++; }
+                        else { scan++; continue; }
+                        if (ts[scan].t != T_ID) break;
+                        dvars[dvc++] = scan; scan++;
+                    }
+                }
+                if (dvc >= 2 && ts[scan].t == T_ASSIGN) {
+                    /* Collect LHS variable slots */
+                    int var_slots[64];
+                    for (int i = 0; i < dvc; i++) {
+                        tp = dvars[i];
+                        char *nm = strdup(ts[tp].s); tp++;
+                        int slot = var_find(nm);
+                        if (slot < 0) slot = var_add(nm);
+                        var_slots[i] = slot;
+                        free(nm);
+                    }
+                    if (ts[tp].t != T_ASSIGN) die("expected =");
+                    tp++; /* skip = */
+                    /* Parse RHS — first expression */
+                    comp_expr(c);
+                    int rhs_count = 1;
+                    while (ts[tp].t == T_CM) {
+                        tp++;
+                        comp_expr(c);
+                        rhs_count++;
+                    }
+                    if (rhs_count > 1)
+                        emit(c, (Instr){OC_MAKE_ARR, rhs_count, 0, .num = 0});
+                    /* Store destructure slots in Arr* */
+                    Arr *slot_arr = aalloc(dvc);
+                    slot_arr->len = dvc;
+                    for (int i = 0; i < dvc; i++)
+                        slot_arr->val[i] = vnum((double)var_slots[i]);
+                    emit(c, (Instr){OC_DESTRUCTURE, dvc, 0, .arr = slot_arr});
+                    break;
+                }
+            }
             int pt = tp + 1;
             while (ts[pt].t == T_LB) {
                 pt++; int bd = 1;
@@ -1008,6 +1176,8 @@ void comp_stmt(Code *c) {
                         ts[tp + 1 + i] = ts[name_tp + i];
                         if (ts[tp + 1 + i].t == T_ID && ts[tp + 1 + i].s)
                             ts[tp + 1 + i].s = strdup(ts[tp + 1 + i].s);
+                        else if (ts[tp + 1 + i].t == T_STR && ts[tp + 1 + i].s)
+                            aretain((Arr*)ts[tp + 1 + i].s);
                     }
                     ts[tp + 1 + lhs] = (Tok){ .t = (TK)compound_op, .s = NULL, .l = comp_line };
                     tc += lhs + 1;
@@ -1017,39 +1187,135 @@ void comp_stmt(Code *c) {
                 {
                     /* Plain assignment (including rewritten compound) */
                     if (ts[tp].t != T_ASSIGN) die("expected ="); tp++;
-                    int is_push = (idx_count == 0);
-                    if (is_push) {
+                    /* Check for x = x[slice] — in-place slice optimization */
+                    int is_slice_assign = 0;
+                    if (idx_count == 0) {
                         int pn = tp;
                         while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                        is_push = ts[pn].t == T_ID && !strcmp(ts[pn].s, nm);
-                        if (is_push) {
+                        is_slice_assign = ts[pn].t == T_ID && !strcmp(ts[pn].s, nm);
+                        if (is_slice_assign) {
                             pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                            is_push = ts[pn].t == T_PL;
-                            if (is_push) {
-                                pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                                is_push = is_bracket_literal(pn);
-                                if (is_push) {
-                                    /* Skip past the brackets to check nothing follows (no chained operators) */
-                                    int scan = pn + 1, depth = 1;
-                                    while (depth > 0 && ts[scan].t != T_EOF) {
-                                        if (ts[scan].t == T_LP || ts[scan].t == T_LB) depth++;
-                                        if (ts[scan].t == T_RP || ts[scan].t == T_RB) depth--;
-                                        scan++;
-                                    }
-                                    while (ts[scan].t == T_NL || ts[scan].t == T_SEMI) scan++;
-                                    is_push = !is_binary_op(ts[scan].t);
+                            is_slice_assign = ts[pn].t == T_LB;
+                            if (is_slice_assign) {
+                                pn++; /* skip [ */
+                                int depth = 0, found_colon = 0;
+                                for (int pp = pn; pp < tc; pp++) {
+                                    if (depth == 0 && ts[pp].t == T_RB) break;
+                                    if (depth == 0 && ts[pp].t == T_COLON) { found_colon = 1; break; }
+                                    if (ts[pp].t == T_LB || ts[pp].t == T_LP) depth++;
+                                    if (ts[pp].t == T_RB || ts[pp].t == T_RP) depth--;
                                 }
+                                is_slice_assign = found_colon;
                             }
                         }
                     }
-                    if (is_push) {
+                    if (is_slice_assign) {
+                        /* Compile x = x[start:stop:step] as OC_SLICE_INPLACE */
                         int slot = var_find(nm);
                         if (slot < 0) slot = var_add(nm);
                         set_var_type(slot, T_ARR_TYPE);
-                        tp++; tp++; tp++;  /* skip arr, +, [ */
+                        tp++; tp++; /* skip x, [ */
+                        /* Compile start */
+                        if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
+                        else emit(c, (Instr){OC_NIL, 0, 0, .num = 0});
+                        if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
+                        /* Compile stop */
+                        if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
+                        else emit(c, (Instr){OC_NIL, 0, 0, .num = 0});
+                        /* Compile step (default 1) */
+                        if (ts[tp].t == T_COLON) {
+                            tp++;
+                            if (ts[tp].t != T_RB) comp_expr(c);
+                            else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+                        } else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+                        if (ts[tp].t != T_RB) die("expected ]"); tp++;
+                        emit(c, (Instr){OC_SLICE_INPLACE, slot, 0, .num = 0});
+                    } else {
+                        int is_push = 0;
+                        if (idx_count == 0) {
+                            /* Push detection for simple variable: var + [...] */
+                            int pn = tp;
+                            while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                            is_push = ts[pn].t == T_ID && !strcmp(ts[pn].s, nm);
+                            if (is_push) {
+                                pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                                is_push = ts[pn].t == T_PL;
+                                if (is_push) {
+                                    pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                                    is_push = is_bracket_literal(pn);
+                                    if (is_push) {
+                                        int scan = pn + 1, depth = 1;
+                                        while (depth > 0 && ts[scan].t != T_EOF) {
+                                            if (ts[scan].t == T_LP || ts[scan].t == T_LB) depth++;
+                                            if (ts[scan].t == T_RP || ts[scan].t == T_RB) depth--;
+                                            scan++;
+                                        }
+                                        while (ts[scan].t == T_NL || ts[scan].t == T_SEMI) scan++;
+                                        is_push = !is_binary_op(ts[scan].t);
+                                    }
+                                }
+                            }
+                        } else {
+                            /* Push detection for indexed LHS: var [...] + [...] */
+                            int pn = tp;
+                            while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                            is_push = ts[pn].t == T_ID && !strcmp(ts[pn].s, nm);
+                            if (is_push) {
+                                pn++;
+                                /* Skip past the index brackets (same count as compiled LHS) */
+                                for (int k = 0; k < idx_count && is_push; k++) {
+                                    while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                                    if (ts[pn].t != T_LB) { is_push = 0; break; }
+                                    pn++;
+                                    int bd = 1;
+                                    while (bd > 0 && ts[pn].t != T_EOF) {
+                                        if (ts[pn].t == T_LB || ts[pn].t == T_LP) bd++;
+                                        if (ts[pn].t == T_RB || ts[pn].t == T_RP) bd--;
+                                        pn++;
+                                    }
+                                }
+                                if (is_push) {
+                                    while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                                    is_push = ts[pn].t == T_PL;
+                                    if (is_push) {
+                                        pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                                        is_push = is_bracket_literal(pn);
+                                        if (is_push) {
+                                            int scan = pn + 1, bd = 1;
+                                            while (bd > 0 && ts[scan].t != T_EOF) {
+                                                if (ts[scan].t == T_LP || ts[scan].t == T_LB) bd++;
+                                                if (ts[scan].t == T_RP || ts[scan].t == T_RB) bd--;
+                                                scan++;
+                                            }
+                                            while (ts[scan].t == T_NL || ts[scan].t == T_SEMI) scan++;
+                                            is_push = !is_binary_op(ts[scan].t);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (is_push) {
+                        int slot = var_find(nm);
+                        if (slot < 0) slot = var_add(nm);
+                        set_var_type(slot, T_ARR_TYPE);
+                        tp++;  /* skip arr */
+                        /* Skip past index brackets in token stream (already compiled) */
+                        for (int k = 0; k < idx_count; k++) {
+                            tp++;  /* skip [ */
+                            int bd = 1;
+                            while (bd > 0 && ts[tp].t != T_EOF) {
+                                if (ts[tp].t == T_LB || ts[tp].t == T_LP) bd++;
+                                if (ts[tp].t == T_RB || ts[tp].t == T_RP) bd--;
+                                tp++;
+                            }
+                        }
+                        tp++; tp++;  /* skip +, [ */
                         do {
                             comp_expr(c);
-                            emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
+                            if (idx_count > 0)
+                                emit(c, (Instr){OC_LVALS_PUSH, slot, idx_count, .num = 0});
+                            else
+                                emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
                         } while (ts[tp].t == T_CM && (tp++, 1));
                         if (ts[tp].t != T_RB) die("expected ]"); tp++;
                     } else {
@@ -1090,6 +1356,7 @@ void comp_stmt(Code *c) {
                             set_var_type(slot, store_type);
                             emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
                         }
+                        }
                     }
                 }
                 free(nm);
@@ -1118,12 +1385,14 @@ void exec(Code *c) {
         [OC_VAR] = &&op_var,
         [OC_VAR_SLOT] = &&op_var_slot, [OC_STORE_SLOT] = &&op_store_slot,
         [OC_OP] = &&op_op, [OC_UNARY] = &&op_unary, [OC_INDEX] = &&op_index,
-        [OC_LVALS] = &&op_lvals, [OC_PUSH] = &&op_push, [OC_SLICE] = &&op_slice,
+        [OC_LVALS] = &&op_lvals, [OC_PUSH] = &&op_push, [OC_LVALS_PUSH] = &&op_lvals_push, [OC_SLICE] = &&op_slice,
         [OC_CALL] = &&op_call, [OC_TCO] = &&op_tco,
         [OC_RET] = &&op_ret, [OC_POP] = &&op_pop,
         [OC_DUP] = &&op_dup, [OC_JZ] = &&op_jz, [OC_JNZ] = &&op_jnz, [OC_JMP] = &&op_jmp,
         [OC_PRINT] = &&op_print, [OC_INPUT] = &&op_input,
         [OC_PUSH_ALL] = &&op_push_all,
+        [OC_SLICE_INPLACE] = &&op_slice_inplace,
+        [OC_DESTRUCTURE] = &&op_destructure,
         [OC_END] = &&op_end,
     };
     int ip = 0;
@@ -1215,17 +1484,30 @@ op_index: {
         if (res.type == VAL_ARR) aretain(res.arr);
         arelease(arr.arr); istk[++isp] = res;
     } else if (idx.type == VAL_ARR) {
-        Value cur = arr;
-        if (idx.arr) for (int j = 0; j < idx.arr->len; j++) {
-            int ii = (int)val_num(idx.arr->val[j]);
-            if (cur.type != VAL_ARR || !cur.arr || ii < 0 || ii >= cur.arr->len) die("index out of bounds");
-            Value next = cur.arr->val[ii];
-            if (next.type == VAL_ARR) aretain(next.arr);
-            if (cur.type == VAL_ARR) arelease(cur.arr);
-            cur = next;
+        if (idx.arr && idx.arr->len > 0 && is_string_arr(idx.arr)) {
+            /* String key → hash-based indexing */
+            if (!arr.arr || arr.arr->len == 0) die("cannot index into empty array");
+            unsigned int h = get_arr_hash(idx.arr);
+            int ii = (int)(h % (unsigned int)arr.arr->len);
+            Value res = arr.arr->val[ii];
+            if (res.type == VAL_ARR) aretain(res.arr);
+            arelease(arr.arr);
+            arelease(idx.arr);
+            istk[++isp] = res;
+        } else {
+            /* Generic array → chain of numeric indices */
+            Value cur = arr;
+            if (idx.arr) for (int j = 0; j < idx.arr->len; j++) {
+                int ii = (int)val_num(idx.arr->val[j]);
+                if (cur.type != VAL_ARR || !cur.arr || ii < 0 || ii >= cur.arr->len) die("index out of bounds");
+                Value next = cur.arr->val[ii];
+                if (next.type == VAL_ARR) aretain(next.arr);
+                if (cur.type == VAL_ARR) arelease(cur.arr);
+                cur = next;
+            }
+            if (idx.type == VAL_ARR) arelease(idx.arr);
+            istk[++isp] = cur;
         }
-        if (idx.type == VAL_ARR) arelease(idx.arr);
-        istk[++isp] = cur;
     } else die("index must be number or array");
     ip++; goto *dispatch[c->code[ip].op];
 }
@@ -1246,10 +1528,18 @@ op_lvals: {
             if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
             sp = &sp->arr->val[ii];
         } else if (indices[j].type == VAL_ARR) {
-            for (int k = 0; k < indices[j].arr->len; k++) {
-                int ii = (int)val_num(indices[j].arr->val[k]);
-                if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
+            if (indices[j].arr && indices[j].arr->len > 0 && is_string_arr(indices[j].arr)) {
+                /* String key → hash-based indexing */
+                if (sp->type != VAL_ARR || !sp->arr || sp->arr->len == 0) die("cannot index into empty array");
+                unsigned int h = get_arr_hash(indices[j].arr);
+                int ii = (int)(h % (unsigned int)sp->arr->len);
                 amake_uniq(sp); sp = &sp->arr->val[ii];
+            } else {
+                for (int k = 0; k < indices[j].arr->len; k++) {
+                    int ii = (int)val_num(indices[j].arr->val[k]);
+                    if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
+                    amake_uniq(sp); sp = &sp->arr->val[ii];
+                }
             }
         } else die("index must be number or array");
     }
@@ -1276,6 +1566,53 @@ op_push: {
     vassign(&slot_val->arr->val[len], elem);
     slot_val->arr->len = len + 1;
     if (elem.type == VAL_ARR) arelease(elem.arr);
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_lvals_push: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int slot = ins->a, depth = ins->b;
+    Value elem = istk[isp--];
+    Value indices[16];
+    for (int j = depth-1; j >= 0; j--) indices[j] = istk[isp--];
+    Value *sp = &cs->v[slot];
+    /* Navigate to the target bucket (same logic as op_lvals) */
+    for (int j = 0; j < depth; j++) {
+        amake_uniq(sp);
+        if (indices[j].type == VAL_NUM) {
+            int ii = (int)val_num(indices[j]);
+            if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
+            sp = &sp->arr->val[ii];
+        } else if (indices[j].type == VAL_ARR) {
+            if (indices[j].arr && indices[j].arr->len > 0 && is_string_arr(indices[j].arr)) {
+                if (sp->type != VAL_ARR || !sp->arr || sp->arr->len == 0) die("cannot index into empty array");
+                unsigned int h = get_arr_hash(indices[j].arr);
+                int ii = (int)(h % (unsigned int)sp->arr->len);
+                amake_uniq(sp); sp = &sp->arr->val[ii];
+            } else {
+                for (int k = 0; k < indices[j].arr->len; k++) {
+                    int ii = (int)val_num(indices[j].arr->val[k]);
+                    if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
+                    amake_uniq(sp); sp = &sp->arr->val[ii];
+                }
+            }
+        } else die("index must be number or array");
+    }
+    /* Now sp points to the bucket — push elem into it */
+    if (sp->type != VAL_ARR) die("cannot push into non-array");
+    if (!sp->arr) { sp->arr = aalloc(4); sp->arr->len = 0; }
+    else amake_uniq(sp);
+    int len = sp->arr->len;
+    if (len >= sp->arr->cap) {
+        sp->arr->cap = sp->arr->cap ? sp->arr->cap * 2 : 4;
+        sp->arr->val = realloc(sp->arr->val, sp->arr->cap * sizeof(Value));
+    }
+    vassign(&sp->arr->val[len], elem);
+    sp->arr->len = len + 1;
+    if (elem.type == VAL_ARR) arelease(elem.arr);
+    for (int j = 0; j < depth; j++)
+        if (indices[j].type == VAL_ARR) arelease(indices[j].arr);
     ip++; goto *dispatch[c->code[ip].op];
 }
 
@@ -1340,15 +1677,111 @@ op_slice: {
     if (step > 0) { if (start >= stop) count = 0; else count = (stop - start + step - 1) / step; }
     else { if (start <= stop) count = 0; else count = (start - stop + (-step) - 1) / (-step); }
     if (count == 0) { arelease(arr_v.arr); istk[++isp] = nilv(); ip++; goto *dispatch[c->code[ip].op]; }
-    Arr *result = aalloc(count); result->len = count;
-    int idx = 0;
-    for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
-        result->val[idx] = arr_item(src, i);
-        if (result->val[idx].type == VAL_ARR) aretain(result->val[idx].arr);
-        idx++;
+    if (step == 1) {
+        /* Zero-copy view: share parent's backing store */
+        Arr *view = malloc(sizeof(Arr));
+        view->refcount = 1;
+        view->len = count;
+        view->cap = count;
+        view->val = src->val + start;
+        view->is_slice = 1;
+        view->parent = src;
+        view->hash_cache = 0;
+        aretain(src);
+        arelease(arr_v.arr);
+        istk[++isp] = (Value){ .type = VAL_ARR, .arr = view };
+    } else {
+        /* Strided slice: must copy */
+        Arr *result = aalloc(count); result->len = count;
+        int idx = 0;
+        for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
+            result->val[idx] = arr_item(src, i);
+            if (result->val[idx].type == VAL_ARR) aretain(result->val[idx].arr);
+            idx++;
+        }
+        arelease(arr_v.arr);
+        istk[++isp] = (Value){ .type = VAL_ARR, .arr = result };
     }
-    arelease(arr_v.arr);
-    istk[++isp] = (Value){ .type = VAL_ARR, .arr = result };
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_slice_inplace: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int slot = ins->a;
+    Value step_v = istk[isp--], stop_v = istk[isp--], start_v = istk[isp--];
+    Value *slot_val = &cs->v[slot];
+    if (slot_val->type != VAL_ARR || !slot_val->arr) die("slice requires array");
+    Arr *src = slot_val->arr;
+    int len = src->len;
+    int step = (int)val_num(step_v);
+    if (step == 0) die("slice step cannot be 0");
+    int start, stop;
+    if (start_v.type == VAL_ARR && !start_v.arr) start = (step > 0) ? 0 : len - 1;
+    else {
+        start = (int)val_num(start_v);
+        if (start < 0) start += len;
+        if (step > 0) { if (start < 0) start = 0; if (start > len) start = len; }
+        else { if (start < 0) start = 0; if (start >= len) start = len - 1; }
+    }
+    if (stop_v.type == VAL_ARR && !stop_v.arr) stop = (step > 0) ? len : -1;
+    else {
+        stop = (int)val_num(stop_v);
+        if (stop < 0) stop += len;
+        if (step > 0) { if (stop < 0) stop = 0; if (stop > len) stop = len; }
+        else { if (stop < -1) stop = -1; if (stop > len) stop = len; }
+    }
+    int count;
+    if (step > 0) { if (start >= stop) count = 0; else count = (stop - start + step - 1) / step; }
+    else { if (start <= stop) count = 0; else count = (start - stop + (-step) - 1) / (-step); }
+    if (count == 0) {
+        arelease(slot_val->arr);
+        *slot_val = nilv();
+        ip++; goto *dispatch[c->code[ip].op];
+    }
+    if (src->refcount == 1 && !src->is_slice && step == 1) {
+        /* In-place: exclusively owned, contiguous slice — memmove + trim.
+         * Safe for all-number arrays (common case). Falls back to view
+         * if any element in the kept range is a sub-array. */
+        int has_arr = 0;
+        for (int i = start; i < start + count && !has_arr; i++)
+            if (src->val[i].type == VAL_ARR) has_arr = 1;
+        if (!has_arr) {
+            /* All numbers in kept range: memmove and trim.
+             * Elements at [count, old_len) are tail — release any sub-arrays there. */
+            for (int i = count; i < src->len; i++)
+                if (src->val[i].type == VAL_ARR) arelease(src->val[i].arr);
+            memmove(src->val, src->val + start, count * sizeof(Value));
+            src->len = count;
+            ip++; goto *dispatch[c->code[ip].op];
+        }
+    }
+    /* Fall back to zero-copy view (or copy for strided) */
+    if (step == 1) {
+        Arr *view = malloc(sizeof(Arr));
+        view->refcount = 1;
+        view->len = count;
+        view->cap = count;
+        view->val = src->val + start;
+        view->is_slice = 1;
+        view->parent = src;
+        view->hash_cache = 0;
+        aretain(src);
+        arelease(slot_val->arr);
+        slot_val->arr = view;
+    } else {
+        Arr *result = aalloc(count); result->len = count;
+        int idx = 0;
+        for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
+            result->val[idx] = arr_item(src, i);
+            if (result->val[idx].type == VAL_ARR) aretain(result->val[idx].arr);
+            idx++;
+        }
+        arelease(slot_val->arr);
+        slot_val->arr = result;
+    }
+    if (start_v.type == VAL_ARR) arelease(start_v.arr);
+    if (stop_v.type == VAL_ARR) arelease(stop_v.arr);
     ip++; goto *dispatch[c->code[ip].op];
 }
 
@@ -1367,8 +1800,16 @@ op_call: {
     call_stack[call_depth].line = err_line;
     call_stack[call_depth].file = err_file;
     for (int j = 0; j < f->a; j++) {
-        cs->v[f->p_slots[j]] = (j < ac) ? args[j] : nilv();
-        if (cs->v[f->p_slots[j]].type == VAL_ARR) aretain(cs->v[f->p_slots[j]].arr);
+        if (j < ac) {
+            cs->v[f->p_slots[j]] = args[j];
+            if (args[j].type == VAL_ARR) aretain(args[j].arr);
+        } else if (f->def_vals) {
+            Value d = f->def_vals[j];
+            cs->v[f->p_slots[j]] = d;
+            if (d.type == VAL_ARR) aretain(d.arr);
+        } else {
+            cs->v[f->p_slots[j]] = nilv();
+        }
     }
     int saved_rf = rf; rf = 0; Value saved_rv = rv; isp = -1;
     exec(f->code);
@@ -1389,8 +1830,16 @@ op_tco: {
     for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
     isp = -1; rf = 0;
     for (int j = 0; j < f->a; j++) {
-        cs->v[f->p_slots[j]] = (j < ac) ? args[j] : nilv();
-        if (cs->v[f->p_slots[j]].type == VAL_ARR) aretain(cs->v[f->p_slots[j]].arr);
+        if (j < ac) {
+            cs->v[f->p_slots[j]] = args[j];
+            if (args[j].type == VAL_ARR) aretain(args[j].arr);
+        } else if (f->def_vals) {
+            Value d = f->def_vals[j];
+            cs->v[f->p_slots[j]] = d;
+            if (d.type == VAL_ARR) aretain(d.arr);
+        } else {
+            cs->v[f->p_slots[j]] = nilv();
+        }
     }
     ip = 0; goto *dispatch[c->code[ip].op];
 }
@@ -1446,6 +1895,30 @@ op_input: {
     Arr *a = aalloc(n); a->len = n;
     for (int i = 0; i < n; i++) a->val[i] = vnum((double)(unsigned char)buf[i]);
     istk[++isp] = (Value){ .type = VAL_ARR, .arr = a };
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_destructure: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int count = ins->a;
+    Arr *slots = ins->arr;
+    Value arr_val = istk[isp--];
+    if (arr_val.type != VAL_ARR) die("destructure requires array");
+    Arr *arr = arr_val.arr;
+    int len = arr ? arr->len : 0;
+    for (int i = 0; i < count; i++) {
+        int slot = (int)val_num(slots->val[i]);
+        if (i < len) {
+            Value elem = arr->val[i];
+            if (elem.type == VAL_ARR) aretain(elem.arr);
+            vassign(&cs->v[slot], elem);
+            if (elem.type == VAL_ARR) arelease(elem.arr);
+        } else {
+            vassign(&cs->v[slot], nilv());
+        }
+    }
+    arelease(arr_val.arr);
     ip++; goto *dispatch[c->code[ip].op];
 }
 

@@ -1,6 +1,6 @@
 // Comprehensive test of all TinyLang features
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 // --- 1. Numbers ---
 println("--- numbers ---")
@@ -99,13 +99,13 @@ println(#s2)
 
 // --- 9. Functions ---
 println("--- functions ---")
-function double(x) {
+function double(x=0) {
     return x * 2
 }
 println(double(5))
 println(double(double(5)))
 
-function add(a, b) {
+function add(a=0, b=0) {
     return a + b
 }
 println(add(3, 4))
@@ -116,7 +116,7 @@ println(#noop())    // 0 (returns [])
 
 // --- 10. Recursion ---
 println("--- recursion ---")
-function fact(n) {
+function fact(n=0) {
     if n == 0 {
         return 1
     }
@@ -128,7 +128,7 @@ println(fact(10))  // 3628800
 
 // --- 11. if/elif/else ---
 println("--- if/elif/else ---")
-function classify(n) {
+function classify(n=0) {
     if n < 0 {
         return -1
     } elif n == 0 {
@@ -149,7 +149,7 @@ while i < 5 {
 }
 println(i)          // 5
 
-function fact_while(n) {
+function fact_while(n=0) {
     result = 1
     i = 1
     while i <= n {
@@ -165,7 +165,7 @@ println("--- linked list ---")
 list = [1, [2, [3, []]]]
 println(list)
 
-function sum_list(lst) {
+function sum_list(lst=[]) {
     if lst == [] {
         return 0
     }
@@ -302,19 +302,19 @@ println(dyn[1][0])      // 30
 
 // --- 28. Function arity flexibility ---
 println("--- function arity ---")
-function add2(a, b) {
+function add2(a=0, b=0) {
     return a + b
 }
 println(add2(3, 4))             // 7
 println(add2(3, 4, 5, 6))       // 7 (extra args ignored)
 
-function second(a, b) {
+function second(a=0, b=0) {
     return b
 }
 println(second(5))              // [] (b defaults to [])
 println(second(5, 99))          // 99
 
-function first(a, b) {
+function first(a=0, b=0) {
     return a
 }
 println(first(42))              // 42
@@ -327,7 +327,7 @@ function gimme() {
 }
 println(gimme())         // []
 
-function gimme2(n) {
+function gimme2(n=0) {
     if n == 0 {
         return 99
     }
@@ -372,13 +372,13 @@ println(#[[1,2],[3,4]]) // 2
 
 // --- 33. Function calling another function ---
 println("--- mutual calls ---")
-function inc(x) {
+function inc(x=0) {
     return x + 1
 }
-function dec(x) {
+function dec(x=0) {
     return x - 1
 }
-function apply_twice(fn, x) {
+function apply_twice(fn=0, x=0) {
     // not first-class, so call explicitly
     return x
 }
@@ -388,7 +388,7 @@ println(inc(inc(inc(0)))) // 3
 
 // --- 34. Nested if/elif without else ---
 println("--- nested if/elif ---")
-function sign(n) {
+function sign(n=0) {
     if n > 0 {
         return 1
     } elif n < 0 {
@@ -411,7 +411,7 @@ println("big: " + 1000000)     // big: 1000000
 println(99 + " bottles")       // 99 bottles
 println("a" + 1 + "b")         // a1b
 
-function greet(name) {
+function greet(name="") {
     return "hello " + name
 }
 println(greet("world"))        // hello world

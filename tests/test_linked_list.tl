@@ -3,7 +3,7 @@
 // We use dynamic indexing arr[indices] to write at the tail
 // without creating shared references (no COW copies)
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 arr = [0, []]       // first node
 path = [1]           // indices to reach the current tail

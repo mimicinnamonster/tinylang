@@ -1,6 +1,6 @@
 // Test OC_PUSH: x = x + [elem] optimization
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 // 1. Basic append
 arr = []

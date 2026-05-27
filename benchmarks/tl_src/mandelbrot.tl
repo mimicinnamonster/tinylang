@@ -2,7 +2,7 @@
 // Computes Mandelbrot set and reports pixel count
 // (Binary image output not feasible with print's newline behavior)
 
-function mandelbrot(size) {
+function mandelbrot(size=200) {
     w = size
     h = size
     total = 0

@@ -1,9 +1,9 @@
 // Test that slice assignment optimization works
 // By constructing a large array and slicing it repeatedly
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
-function build(n) {
+function build(n=0) {
     r = []
     i = 0
     while i < n {

@@ -52,7 +52,7 @@ y /= 2 + 3
 print(y)     // 4
 
 // Inside a function
-function test_fn(n) {
+function test_fn(n=0) {
     r = n
     r += 10
     r *= 2

@@ -1,7 +1,7 @@
 // Scalar operations — simplified (no compact types, no bitwise)
 // All numbers are doubles, arrays are Value[]
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 println("=== 1. Basic numbers ===")
 println(0)
@@ -47,27 +47,27 @@ println(50 > -100)
 println(70000 > 100)
 
 println("=== 6. Function parameters and returns ===")
-function double(x) { return x * 2 }
+function double(x=0) { return x * 2 }
 println(double(5))
 println(double(-10))
 println(double(1.5))
 
-function half(x) { return x / 2 }
+function half(x=0) { return x / 2 }
 println(half(10))
 println(half(9))
 
-function negate(x) { return -x }
+function negate(x=0) { return -x }
 println(negate(42))
 println(negate(-100))
 
-function add_many(a, b, c) {
+function add_many(a=0, b=0, c=0) {
     a = a + b
     return a + c
 }
 println(add_many(10, 20, 30))
 println(add_many(-5, 10, -3))
 
-function factorial(n) {
+function factorial(n=0) {
     if n <= 1 { return 1 }
     return n * factorial(n - 1)
 }

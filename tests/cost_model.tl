@@ -20,9 +20,9 @@
 //      concat in hot paths (benchmarks use OC_PUSH loops).
 //
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
-function realloc_copies(n) {
+function realloc_copies(n=0) {
     if n <= 4 { return 0 }
     copies = 0
     cap = 4
@@ -33,7 +33,7 @@ function realloc_copies(n) {
     return copies
 }
 
-function ceil_div(x, y) {
+function ceil_div(x=0, y=1) {
     // Integer ceiling division: ceil(x / y)
     result = 0
     while result * y < x {
@@ -42,14 +42,14 @@ function ceil_div(x, y) {
     return result
 }
 
-function show(label, c_total, r_total) {
+function show(label="", c_total=0, r_total=0) {
     println(label)
     println(c_total)
     println(r_total)
 }
 
 // Scenario B: Append literal [1,2,3] using multi-push fix
-function scenario_append_literal(n, m, a, C) {
+function scenario_append_literal(n=0, m=0, a=0, C=64) {
     // contiguous: m writes (push), no element copies
     c_total = m + a
 
@@ -62,7 +62,7 @@ function scenario_append_literal(n, m, a, C) {
 }
 
 // Scenario C: Concat two existing arrays
-function scenario_concat_arrays(n, m, a, C) {
+function scenario_concat_arrays(n=0, m=0, a=0, C=64) {
     // contiguous: copy all n + m elements
     c_total = n + m + a
 
@@ -75,7 +75,7 @@ function scenario_concat_arrays(n, m, a, C) {
 }
 
 // Scenario A: Build from scratch via pushes
-function scenario_build(n, a, C) {
+function scenario_build(n=0, a=0, C=64) {
     // contiguous: n writes + realloc copies
     c_total = n + realloc_copies(n) + a
 
@@ -87,7 +87,7 @@ function scenario_build(n, a, C) {
 }
 
 // Sweeps: show cost at each a to see crossover
-function sweep_append(n, m, C) {
+function sweep_append(n=0, m=0, C=64) {
     println("sweep B n=" + n)
     a = 0
     while a <= 200 {
@@ -103,7 +103,7 @@ function sweep_append(n, m, C) {
     println("---")
 }
 
-function sweep_concat(n, m, C) {
+function sweep_concat(n=0, m=0, C=64) {
     println("sweep C n=" + n)
     a = 0
     while a <= 200 {
@@ -119,7 +119,7 @@ function sweep_concat(n, m, C) {
     println("---")
 }
 
-function sweep_build(n, C) {
+function sweep_build(n=0, C=64) {
     println("sweep A n=" + n)
     a = 0
     while a <= 200 {

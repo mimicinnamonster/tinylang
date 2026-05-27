@@ -1,6 +1,6 @@
 // test_include_expr.tl — test include with thispath() expressions
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 // Include using thispath() + relative filename
 // thispath() inside include returns the directory of the current file

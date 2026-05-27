@@ -2,15 +2,15 @@
 // Prints break-even reads (a) for each (n, C) combination
 // 0 = contiguous always wins, -1 = rope always wins
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
-function ceil_div(x, y) {
+function ceil_div(x=0, y=1) {
     result = 0
     while result * y < x { result = result + 1 }
     return result
 }
 
-function realloc_copies(n) {
+function realloc_copies(n=0) {
     if n <= 4 { return 0 }
     copies = 0
     cap = 4
@@ -21,21 +21,21 @@ function realloc_copies(n) {
     return copies
 }
 
-function build_be(n, C) {
+function build_be(n=0, C=64) {
     k = ceil_div(n, C)
     rc = realloc_copies(n)
     if k * C >= rc { return 0 }
     return (rc - k * C) / (k - 1)
 }
 
-function concat_be(n, m, C) {
+function concat_be(n=0, m=0, C=64) {
     k = ceil_div(n + m, C)
     if k == 1 { return -1 }
     if n + m <= C { return -1 }
     return (n + m - C) / (k - 1)
 }
 
-function concat_eq(n, C) {
+function concat_eq(n=0, C=64) {
     return concat_be(n, n, C)
 }
 

@@ -187,6 +187,7 @@ occurs twice.
 | Position | What `=` means |
 |----------|---------------|
 | `x = 5` at statement start | **assignment** |
+| `x, y = [1, 2]` comma-separated idents | **destructure assignment** |
 | `arr[0] = 5` lvalue chain | **assignment** |
 | `if x = 5 { }` | **comparison** |
 | `print(x = 5)` inside `()` | **comparison** |
@@ -229,16 +230,33 @@ while condition { ... }
 ## 8. Functions
 
 ```
-function name(params) { statements }
+function name(param=value, ...) { statements }
 ```
 
 - `function` keyword
-- `return expr` exits and returns `expr`; no return → returns `[]`
+- `return expr` exits and returns `expr`; `return e1, e2, e3` is sugar for
+  `return [e1, e2, e3]` (implicit array); no return → returns `[]`
 - Defined only at top level (no nested functions)
 - Define-before-use (no forward references)
 - Recursion works; tail calls are optimized (TCO) — no stack growth for
   `return f(...)` in tail position
 - Not first-class — cannot be stored in variables or passed as arguments
+- **Every parameter must have a default value.** This ensures all parameter
+  types are known at compile time. Missing arguments use the default value
+  instead. Defaults are compile-time constants — numbers, strings, `nil`,
+  or array literals with constant elements:
+
+  ```tinylang
+  function add(a=0, b=10) { return a + b }
+  add(5)       // 15  (b=10 from default)
+  add()        // 0   (a=0, b=10 both from defaults)
+
+  function first(arr=[10, 20, 30]) { return arr[0] }
+  first()      // 10
+
+  // Error: parameter without default
+  // function bad(a=5, b) { }  // compile-time error
+  ```
 
 ---
 
@@ -281,6 +299,143 @@ and store-back. A runtime fallback handles non-array RHS for string concat.
 
 Both optimizations are guarded by compile-time type tracking — they only
 fire when the target variable is known to be an array.
+
+### Slice in-place optimization
+
+`x = x[slice]` is similarly detected at compile time (same lookahead pattern
+as push detection) and emits a single fused opcode `OC_SLICE_INPLACE` instead
+of the normal variable-read + slice + store-back sequence.
+
+At runtime:
+- **Exclusive ownership + numbers + step==1:** The array is mutated in-place
+  via `memmove` + trim. No allocation, no view chaining.
+- **Shared array, sub-arrays, or step!=1:** Falls back to creating a zero-copy
+  view (or full copy for strided slices).
+
+This prevents view chain accumulation in loops like `while i < n { x = x[1:] }`
+when `x` is an all-number array.
+
+---
+
+## 9.5. Hashmaps (String-Keyed Indexing)
+
+Any array can be used as a hashmap by indexing with a string key: `arr["key"]`.
+The string's hash determines the array index, computed using the **FNV-1a**
+algorithm (same as Git's `strhash`):
+
+```c
+unsigned int fnv1a_hash(Arr *a) {
+    unsigned int hash = 0x811c9dc5u;  // FNV32_BASE
+    for (int i = 0; i < a->len; i++) {
+        unsigned int c = (unsigned int)val_num(a->val[i]);
+        hash = (hash * 0x01000193u) ^ c;  // FNV32_PRIME
+    }
+    return hash;
+}
+```
+
+The index is `hash(key) % len(array)`. This is deterministic — the same string
+always maps to the same slot for a given array size.
+
+### Buckets
+
+The array acts as a fixed-size hash table. Each slot is a **bucket**:
+
+```tinylang
+// Array of 100 buckets for hashing
+map = [[]] * 100
+
+// These may collide (map to the same bucket)
+map["foo"] = "first"
+map["bar"] = "second"  // overwrites if same bucket as "foo"
+```
+
+On collision, the value is simply **overwritten** — the last write wins:
+
+```tinylang
+arr = [0, 0, 0]
+arr["hello"] = 111
+arr["world"] = 222   // overwrites if same bucket
+print(arr[1])         // whichever key hashed to slot 1
+```
+
+### Collision-Safe Append Pattern
+
+To store multiple values per key without overwriting on collision:
+
+```tinylang
+// Initialize: each bucket is an empty array
+map = [[]] * 100
+
+// Append to the bucket — arr[key] += [value] desugars to
+// arr[key] = arr[key] + [value], which pushes into the bucket's array
+map["foo"] += ["first_value"]
+map["foo"] += ["second_value"]
+map["bar"] += ["other"]
+
+// Even if "foo" and "bar" collide to the same bucket, the values
+// are accumulated in that bucket's array:
+print(map[bucket])  // ["first_value", "second_value", "other"]
+```
+
+Key points:
+- `arr["key"] += [val]` uses the same push optimization as `x = x + [elem]`
+- If two keys collide, their values simply share the same bucket array
+- Without `+=`, colliding keys silently overwrite — use `+=` when you need
+  collision-safe storage
+
+### Hash Caching
+
+The FNV-1a hash is computed **once per unique string value** and cached on the
+underlying `Arr` struct. Subsequent accesses with the same string (whether
+literal or variable) use the cached hash in O(1):
+
+```tinylang
+key = "expensive"
+while i < 10000 {
+    print(map[key])   // hash computed once, cached for 9999 iterations
+    i = i + 1
+}
+```
+
+### Distinction from Numeric Indexing
+
+String-keyed access is detected **at runtime**: if the index value is an array
+whose bytes are all printable ASCII (a "string"), it uses hash-based indexing.
+Otherwise, it uses the existing chain-of-numeric-indices behavior:
+
+```tinylang
+arr["abc"]     // hash-based (string: printable ASCII)
+arr[[0, 1]]    // chain-based (numbers 0,1 — non-printable)
+arr[[10, 20]]  // chain-based (10=newline, 20=not printable → chain)
+```
+
+This means `arr[[104, 101, 108, 108, 111]]` ("hello" as raw bytes) is also
+treated as a hash key, since all bytes are printable. For dynamic index chains,
+always use literal or constructed arrays of numbers.
+
+### Supported Syntax
+
+```tinylang
+// Read
+val = arr["key"]
+
+// Write
+arr["key"] = val
+
+// Multi-index (chained hash)
+arr["a", "b"]        // arr[hash("a")][hash("b")]
+arr["a"]["b"]        // same, chained brackets
+
+// Compound assignment (collision-safe append)
+arr["key"] += [val]   // push val into bucket
+arr["key"] -= [val]   // arr[key] = arr[key] - [val]
+arr["key"] *= n       // arr[key] = arr[key] * n
+
+// Variable as key
+k = input()
+arr[k] = val
+```
 
 ---
 
@@ -381,12 +536,15 @@ include_path  := string | include_expr
 include_expr  := thispath "(" ")" ("+" string)*
 
 assignment    := lvalue ("=" | "+=" | "-=" | "*=" | "/=" ) expr
+               | destructure
 lvalue        := identifier ("[" expr "]")*
+destructure   := identifier "," identifier ("," identifier)* "=" rhs_list
+rhs_list      := expr ("," expr)*
 
 if_stmt       := "if" expr block ("elif" expr block)* ("else" block)?
 while_stmt    := "while" expr block
 func_def      := "function" identifier "(" params ")" block
-ret_stmt      := "return" expr
+ret_stmt      := "return" expr ("," expr)*
 expr_stmt     := expr
 
 block         := "{" stmt_list "}"
@@ -407,7 +565,8 @@ call          := identifier "(" args ")"
 index         := primary "[" expr "]"
 slice         := primary "[" expr? ":" expr? (":" expr?)? "]"
 
-params        := /* empty */ | identifier ("," identifier)*
+params        := /* empty */ | param ("," param)*
+param         := identifier "=" expr
 args          := /* empty */ | expr ("," expr)*
 ```
 
@@ -421,6 +580,8 @@ args          := /* empty */ | expr ("," expr)*
   O(n) strcmp over scope names
 - **COW+refcounting** — array copies only on shared mutation; read-only sharing
   is O(1)
+- **Zero-copy slice views** — contiguous slices are O(1) views into the parent's
+  backing store; flattened to owned copies only on mutation
 - **Compile-time type tracking** — first-assigned type per variable; inferred
   function return types; drives push optimization decisions
 - **Push optimization** — `x = x + [e]` is O(1) amortized; `OC_PUSH_ALL` handles

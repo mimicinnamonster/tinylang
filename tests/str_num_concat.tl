@@ -1,6 +1,6 @@
 // Test string + number concatenation
 
-function println(x) { print(x) print("\n") }
+function println(x=0) { print(x) print("\n") }
 
 // --- Basic string + number ---
 println("--- string + number ---")
@@ -37,7 +37,7 @@ println("a" + 1 + "b")         // a1b
 
 // With function return values
 println("--- with functions ---")
-function greet(name) {
+function greet(name="") {
     return "hello " + name
 }
 println(greet("world"))        // hello world

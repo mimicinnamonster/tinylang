@@ -6,14 +6,14 @@ function make_rng() {
     return [42.0]
 }
 
-function next_rand(rng) {
+function next_rand(rng=[42.0]) {
     seed = rng[0]
     seed = (seed * 3877 + 29573) % 139968
     rng[0] = seed
     return seed
 }
 
-function repeat_fasta(seq, n) {
+function repeat_fasta(seq=[], n=0) {
     len = #seq
     pos = 0
     while n > 0 {
@@ -33,7 +33,7 @@ function repeat_fasta(seq, n) {
     }
 }
 
-function random_fasta(rng, symb, probs, n) {
+function random_fasta(rng=[42.0], symb=[], probs=[], n=0) {
     // Build cumulative probabilities
     cum = []
     sum = 0.0
@@ -73,7 +73,7 @@ function random_fasta(rng, symb, probs, n) {
     }
 }
 
-function run(n) {
+function run(n=0) {
     rng = make_rng()
 
     alu = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"

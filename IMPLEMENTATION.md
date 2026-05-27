@@ -1,8 +1,9 @@
 # TinyLang — Implementation Guide
 
-**~1,555 lines of C.** Single-pass compiler to bytecode with stack-based VM,
+**~1,700 lines of C.** Single-pass compiler to bytecode with stack-based VM,
 computed goto dispatch, slot-indexed variable access, compile-time type
-tracking, refcount+COW, and tail call optimization.
+tracking, refcount+COW, zero-copy slice views, tail call optimization,
+and array destructuring.
 
 ---
 
@@ -16,6 +17,8 @@ typedef enum { VAL_NUM, VAL_ARR } Type;
 typedef struct Arr {
     int refcount, len, cap;
     Value *val;              // always Value[], no compact backing stores
+    int is_slice;            // 1 = view into parent's backing store
+    Arr *parent;             // backing Arr (NULL for owned arrays)
 } Arr;
 
 typedef struct Value {
@@ -38,11 +41,11 @@ doubles. Arrays are always `Value[]` — no `ArrKind`, no compact backing stores
 ### Refcount helpers
 
 ```c
-Arr *aalloc(int cap);        // allocate Value[] array
+Arr *aalloc(int cap);        // allocate Value[] array (always owned)
 void aretain(Arr *a);         // bump refcount
-void arelease(Arr *a);        // decrement, free if 0 (recursive for sub-arrays)
-Arr *adeep_copy(Arr *s);      // deep copy (for COW)
-void amake_uniq(Value *v);    // COW: deep copy if refcount > 1
+void arelease(Arr *a);        // decrement, free if 0 (releases parent for views)
+Arr *adeep_copy(Arr *s);      // deep copy (creates owned copy from view or Arr)
+void amake_uniq(Value *v);    // COW: flatten views; deep copy if refcount > 1
 void vassign(Value *d, Value s);  // assign with proper retain/release
 Value arr_item(Arr *a, int i);    // read element (always a->val[i])
 ```
@@ -72,7 +75,7 @@ A single-pass recursive descent compiler that walks the token array and emits
 `Instr[]` bytecode. No intermediate AST — each parser function emits instructions
 directly.
 
-### Instruction Set (23 opcodes)
+### Instruction Set (25 opcodes)
 
 ```c
 typedef enum {
@@ -87,6 +90,8 @@ typedef enum {
     OC_PRINT, OC_INPUT,                     // built-in I/O
     OC_DUP, OC_JNZ,                         // short-circuit && ||
     OC_PUSH_ALL,                            // push all elements from any array expr
+    OC_SLICE_INPLACE,                       // x = x[slice] in-place mutation
+    OC_DESTRUCTURE,                         // array destructure into multiple variables
     OC_END,                                 // terminator
 } OC;
 ```
@@ -135,12 +140,70 @@ scope creation. Function scopes use `Fn.init_types[]` (saved from
 `main()` after compilation. This eliminates runtime type guards in
 `op_push` and `op_push_all`.
 
+### Default parameter values
+
+Every function parameter must have a default value. This ensures all
+parameter types are known at compile time — the default's type determines
+the parameter's entry in `comp_types[]`, driving type inference within
+the function body without needing to see call sites.
+
+**Parsing:** In `comp_fn`, after each parameter name, the compiler expects
+a `=` token followed by a compile-time constant expression. The helper
+`eval_constant_expr()` evaluates it to a `Value`, supporting:
+- Numbers (`5`, `3.14`, `0xFF`)
+- Strings (`"hello"`)
+- `nil` / `[]`
+- Array literals (`[1, 2, 3]`, `[1, [2, 3], "str"]`)
+- Unary minus (`-5`)
+
+```c
+if (ts[tp].t == T_ASSIGN) {
+    tp++;
+    def_vals[pa] = eval_constant_expr();
+}
+```
+
+**Type tracking:** After collecting all parameters, each default's type
+is recorded via `set_var_type()`:
+
+```c
+for (int i = 0; i < pa; i++) {
+    int slot = var_find(params[i]);
+    set_var_type(slot, def_vals[i].type == VAL_NUM ? T_NUM_TYPE : T_ARR_TYPE);
+}
+```
+
+**Storage:** Default values are stored in `Fn.def_vals[]` (parallel array
+to `p_slots[]`). At call time, `op_call` checks `f->def_vals` for missing
+arguments instead of falling back to `nilv()`:
+
+```c
+for (int j = 0; j < f->a; j++) {
+    if (j < ac) {
+        cs->v[f->p_slots[j]] = args[j];
+        if (args[j].type == VAL_ARR) aretain(args[j].arr);
+    } else if (f->def_vals) {
+        Value d = f->def_vals[j];
+        cs->v[f->p_slots[j]] = d;
+        if (d.type == VAL_ARR) aretain(d.arr);
+    } else {
+        cs->v[f->p_slots[j]] = nilv();
+    }
+}
+```
+
+**Memory model:** Array defaults are allocated once at compile time and
+shared across all function calls. Copy-on-write ensures safety — if the
+parameter is mutated, `amake_uniq` detects the shared refcount and
+transparently deep-copies before mutation. This means read-only access
+is free (no allocation), while mutation triggers a one-time copy.
+
 ### Compiler functions
 
 | Function | Compiles |
 |----------|----------|
 | `comp_program(c)` | Top-level statement loop |
-| `comp_stmt(c)` | One statement (if, while, fn, return, assign, expr) |
+| `comp_stmt(c)` | One statement (if, while, fn, return, assign, destructure, expr) |
 | `comp_block(c)` | `{ stmt_list }` |
 | `comp_expr(c)` | Expression (leaves one value on stack) |
 | `comp_prim(c)` | Primary expression (literal, ident, call, array, unary) |
@@ -203,6 +266,84 @@ before the plain handler sees it, the same lookahead fires and emits
 **`is_bracket_literal` helper:** Checks whether tokens at a given position
 form a `[...]` bracket pair (any contents). Used by push optimization
 lookahead.
+
+### Destructure assignment detection
+
+When `comp_stmt` encounters a `T_ID` token, it scans ahead for a
+comma-separated list of identifiers followed by `T_ASSIGN`. If found,
+the statement is compiled as an array destructure instead of a regular
+assignment.
+
+```c
+if (dvc >= 2 && ts[scan].t == T_ASSIGN) {
+    // Collect LHS variable slots
+    for (int i = 0; i < dvc; i++) {
+        tp = dvars[i];
+        char *nm = strdup(ts[tp].s); tp++;
+        int slot = var_find(nm);
+        if (slot < 0) slot = var_add(nm);
+        var_slots[i] = slot;
+    }
+    tp++; /* skip = */
+    // Compile RHS — first expression
+    comp_expr(c);
+    while (ts[tp].t == T_CM) {
+        tp++;
+        comp_expr(c);
+        rhs_count++;
+    }
+    // Wrap multiple RHS expressions in an implicit array
+    if (rhs_count > 1)
+        emit(c, (Instr){OC_MAKE_ARR, rhs_count, 0, .num = 0});
+    // Emit OC_DESTRUCTURE with slot indices stored in Arr*
+    Arr *slot_arr = aalloc(dvc);
+    slot_arr->len = dvc;
+    for (int i = 0; i < dvc; i++)
+        slot_arr->val[i] = vnum((double)var_slots[i]);
+    emit(c, (Instr){OC_DESTRUCTURE, dvc, 0, .arr = slot_arr});
+}
+```
+
+The RHS is compiled as one or more comma-separated expressions. If more
+than one, they are wrapped in `OC_MAKE_ARR` to form an implicit array.
+This is what enables `x, y = y, x` — the RHS compiles to pushing `y`,
+then `x`, then wrapping in `[y, x]`, then destructuring. All RHS
+expressions are fully evaluated before any assignment takes effect,
+making swaps safe.
+
+### Comma-separated return values
+
+The same implicit-array pattern applies to `return` statements. When the
+compiler sees `return 1, 2, 3`, it compiles each expression and wraps
+them in `OC_MAKE_ARR`, exactly as if the user wrote `return [1, 2, 3]`.
+Type inference tracks this: a comma-separated return infers array return
+type, so `return 1, 2` followed by `return 42` produces a compile-time
+`"inconsistent return type"` error.
+
+```tinylang
+function foo() {
+    return 1, 2, 3        // sugar for return [1, 2, 3]
+}
+a, b, c = foo()            // destructure works naturally
+print(a)                   // 1
+```
+
+In `comp_return`, after the first expression is compiled, the compiler
+checks for `T_CM` and continues compiling additional expressions:
+
+```c
+comp_expr(c);
+int count = 1;
+while (ts[tp].t == T_CM) {
+    tp++;
+    comp_expr(c);
+    count++;
+}
+if (count > 1) {
+    emit(c, (Instr){OC_MAKE_ARR, count, 0, .num = 0});
+    rt = T_ARR_TYPE;
+}
+```
 
 ### Push optimization detection
 
@@ -380,10 +521,18 @@ integers print as decimal without a decimal point, floats use `%g`.
 
 ### COW on mutation
 
+`amake_uniq` handles both owned arrays (deep copy if shared) and slice views
+(always flatten to owned copy — views can never be mutated in-place since they
+share memory with the parent):
+
 ```c
 void amake_uniq(Value *v) {
     if (v->type != VAL_ARR || !v->arr) return;
-    if (v->arr->refcount > 1) {
+    if (v->arr->is_slice) {
+        Arr *old = v->arr;
+        v->arr = adeep_copy(old);      // flatten view to owned copy
+        arelease(old);
+    } else if (v->arr->refcount > 1) {
         Arr *old = v->arr;
         v->arr = adeep_copy(old);      // copy on write
         arelease(old);
@@ -410,30 +559,289 @@ from the stack, calls `amake_uniq` on the target, then iterates the RHS
 pushing each element in a loop. If the RHS is not an array at runtime, it falls
 back to `apply(T_PL, ...)` for correct type-error behavior.
 
-### Slice (arr[start:stop:step])
+### Destructure (`OC_DESTRUCTURE`)
+
+When the compiler detects a comma-separated list of identifiers on the left
+of `=`, it emits `OC_DESTRUCTURE` with the variable slot indices packed in a
+small `Arr*` (each slot index stored as a `vnum` value in the array). The
+opcode pops the RHS array from the stack, then iterates its elements
+left-to-right, assigning each to the corresponding variable slot via
+`vassign`. Beyond the array length, missing elements get `[]` (nil). Extra
+RHS elements are silently ignored.
+
+```c
+op_destructure: {
+    Instr *ins = &c->code[ip];
+    int count = ins->a;
+    Arr *slots = ins->arr;           // slot indices packed as num values
+    Value arr_val = istk[isp--];
+    if (arr_val.type != VAL_ARR) die("destructure requires array");
+    Arr *arr = arr_val.arr;
+    int len = arr ? arr->len : 0;
+    for (int i = 0; i < count; i++) {
+        int slot = (int)val_num(slots->val[i]);
+        if (i < len) {
+            vassign(&cs->v[slot], arr->val[i]);
+        } else {
+            vassign(&cs->v[slot], nilv());
+        }
+    }
+    arelease(arr_val.arr);
+    ip++; goto *dispatch[c->code[ip].op];
+}
+```
+
+**Implicit array RHS:** When the RHS has commas (`x, y = a, b`), the compiler
+wraps the comma-separated expressions in `OC_MAKE_ARR` before the destructure.
+This means all expressions are evaluated before any assignment takes effect,
+making `x, y = y, x` a safe in-place swap.
+
+**No array copy:** Destructure reads directly from the RHS array's backing
+store — no intermediate copy is made. Proper refcounting ensures elements
+retained by the destructured variables keep the data alive after the source
+array is released.
+
+### Slice (arr[start:stop:step]) — Zero-Copy Views
 
 `OC_SLICE` pops the array, start, stop, and step values from the stack, clamps
 bounds (handling negative indices and omitted bounds per Python semantics),
-copies elements into a new `Value[]` array, and pushes the result.
+and creates a result.
+
+**When step == 1 (contiguous view):** The VM creates a lightweight *slice view*
+that shares the parent's backing store via pointer arithmetic. No elements are
+copied — the view records a pointer offset into the parent's `val[]` and retains
+the parent to keep it alive.
+
+```c
+if (step == 1) {
+    /* Zero-copy view: share parent's backing store */
+    Arr *view = malloc(sizeof(Arr));
+    view->refcount = 1;
+    view->len = count;
+    view->cap = count;
+    view->val = src->val + start;   // pointer arithmetic into parent
+    view->is_slice = 1;
+    view->parent = src;
+    aretain(src);
+    arelease(arr_v.arr);
+    istk[++isp] = (Value){ .type = VAL_ARR, .arr = view };
+}
+```
+
+**When step != 1 (strided view):** The VM falls back to allocating a new owned
+`Arr` and copying selected elements, exactly as before.
+
+### In-place slice optimization (`OC_SLICE_INPLACE`)
+
+When the compiler detects `x = x[start:stop:step]` (the same variable on both
+sides, with a slice expression), it emits a single fused opcode
+`OC_SLICE_INPLACE` instead of the normal `OC_VAR_SLOT + slice + OC_STORE_SLOT`
+sequence. This eliminates the intermediate view allocation and store-back.
+
+At runtime, if the array is exclusively owned (`refcount == 1`, not a view)
+and all elements in the kept range are numbers (not sub-arrays), the VM
+mutates the array in-place using `memmove` and trims `len`:
+
+```c
+if (src->refcount == 1 && !src->is_slice && step == 1) {
+    int has_arr = 0;
+    for (int i = start; i < start + count && !has_arr; i++)
+        if (src->val[i].type == VAL_ARR) has_arr = 1;
+    if (!has_arr) {
+        for (int i = count; i < src->len; i++)
+            if (src->val[i].type == VAL_ARR) arelease(src->val[i].arr);
+        memmove(src->val, src->val + start, count * sizeof(Value));
+        src->len = count;
+    }
+}
+```
+
+If the array is shared, a view, or contains sub-arrays, `OC_SLICE_INPLACE`
+falls back to creating a zero-copy view (or a full copy for strided slices).
+This mirrors the pattern used by `OC_PUSH`/`OC_PUSH_ALL`: exclusive ownership
+enables direct mutation, shared data falls back to COW-safe paths.
+
+### View lifetime and parent chain
+
+Views form a chain: `view → parent → ... → ultimate owned Arr`. Each view
+retains (`aretain`) its parent, keeping the entire chain alive. When a view
+is released, it releases its parent (not its `val`, which belongs to the
+parent). The parent is freed only when all views into it are released.
+
+```c
+void arelease(Arr *a) {
+    if (!a) return;
+    if (--a->refcount > 0) return;
+    if (a->is_slice) {
+        /* View: val belongs to parent, sub-arrays belong to parent */
+        arelease(a->parent);
+        free(a);                        // Arr struct only, not val
+    } else {
+        for (int i = 0; i < a->len; i++)
+            if (a->val[i].type == VAL_ARR) arelease(a->val[i].arr);
+        free(a->val); free(a);
+    }
+}
+```
+
+### COW flattens views on mutation
+
+`amake_uniq` gained a new path: when the value is a slice view, it is
+**always flattened to an owned copy** before mutation. Views share memory
+with the parent, so in-place modification would corrupt the parent.
+
+```c
+void amake_uniq(Value *v) {
+    if (v->type != VAL_ARR || !v->arr) return;
+    if (v->arr->is_slice) {
+        /* View: always flatten to owned copy before mutation */
+        Arr *old = v->arr;
+        v->arr = adeep_copy(old);   // copies viewed elements into new Arr
+        arelease(old);              // releases parent through view chain
+    } else if (v->arr->refcount > 1) {
+        Arr *old = v->arr;
+        v->arr = adeep_copy(old);
+        arelease(old);
+    }
+}
+```
+
+`adeep_copy` also handles views: it allocates a new owned `Arr` of size `s->len`
+and copies each viewed element (retaining sub-arrays). The result is always an
+owned array independent of the view's parent.
+
+This means all mutation paths — indexed assignment (`arr[i] = x`), push
+(`arr = arr + [x]`), push-all, and lvalue chains — automatically flatten views
+before modifying them, preserving value semantics transparently.
+
+### 6.6 String-Keyed Hashmaps
+
+When an array is indexed by a string (e.g. `arr["key"]`), the array acts as a
+fixed-size hashmap. The string's FNV-1a hash is computed modulo the array
+length to determine the index:
+
+```c
+#define FNV32_BASE  ((unsigned int) 0x811c9dc5)
+#define FNV32_PRIME ((unsigned int) 0x01000193)
+
+unsigned int fnv1a_hash(Arr *a) {
+    unsigned int hash = FNV32_BASE;
+    for (int i = 0; i < a->len; i++)
+        hash = (hash * FNV32_PRIME) ^ (unsigned int)val_num(a->val[i]);
+    return hash;
+}
+```
+
+This is the same algorithm Git uses in its `hashmap.c` `strhash()` function.
+
+#### Runtime Detection
+
+String-keyed access is detected in `op_index` and `op_lvals` at runtime.
+When the index value is an array (`VAL_ARR`) and `is_string_arr()` returns
+true (all bytes are printable ASCII or common whitespace), the VM computes
+`hash(key) % len(array)` and uses that as the index. Non-string arrays
+continue to use the dynamic chain-of-indices behavior.
+
+```c
+op_index: {
+    // ...
+    } else if (idx.type == VAL_ARR) {
+        if (idx.arr && idx.arr->len > 0 && is_string_arr(idx.arr)) {
+            /* String key → hash-based indexing */
+            if (!arr.arr || arr.arr->len == 0)
+                die("cannot index into empty array");
+            unsigned int h = get_arr_hash(idx.arr);
+            int ii = (int)(h % (unsigned int)arr.arr->len);
+            // ... return arr.arr->val[ii]
+        } else {
+            /* Generic array → chain of numeric indices */
+            // ... existing multi-index chain logic
+        }
+    }
+}
+```
+
+The same distinction applies in `op_lvals` for assignment, enabling
+`arr["key"] = val` to use hash-based writes.
+
+#### Hash Caching
+
+The `Arr` struct has a `hash_cache` field that fits in existing struct
+padding at zero size cost. The first time a string is used as a key, its
+hash is computed and stored. Subsequent accesses use the cached value,
+making repeated `arr["foo"]` in loops O(1) after the first iteration:
+
+```c
+unsigned int get_arr_hash(Arr *a) {
+    if (!a->hash_cache)
+        a->hash_cache = fnv1a_hash(a);
+    return a->hash_cache;
+}
+```
+
+The sentinel works because FNV-1a can never produce `0` — `FNV32_BASE`
+(`0x811C9DC5`) has bit 31 set, XOR with byte values only affects bits 0-7,
+and multiplication by the odd prime `FNV32_PRIME` can never yield zero
+from a non-zero input.
+
+Caching is per `Arr` object. String literals compile to persistent `OC_STR`
+instructions whose `Arr*` lives for the entire program run, so their hash
+is computed at most once. Variables holding strings also cache on their
+underlying `Arr`, so loops with stable string variables pay the hash cost
+only on the first iteration.
+
+#### Collision Model
+
+The array is a fixed-size hash table with **no collision resolution** — if
+two keys map to the same bucket, the last write wins. Users who need
+collision-safe storage should use the append pattern:
+
+```tinylang
+map = [[]] * 100          // each bucket is an array
+map["foo"] += ["val"]    // push into bucket
+```
+
+The `+=` compound assignment desugars to `arr["key"] = arr["key"] + [val]`,
+which goes through the standard push optimization. Even if `"foo"` and
+`"bar"` collide, both values accumulate in the same bucket array.
+
+#### Compound Assignment with String Indices
+
+When the compiler encounters `arr["key"] += expr`, it performs the standard
+token rewrite to `arr["key"] = arr["key"] + expr`. The copy of T_STR tokens
+during the rewrite properly retains the `Arr*` reference count to prevent
+double-free during cleanup:
+
+```c
+for (int i = 0; i < lhs; i++) {
+    ts[tp + 1 + i] = ts[name_tp + i];
+    if (ts[tp + 1 + i].t == T_ID && ts[tp + 1 + i].s)
+        ts[tp + 1 + i].s = strdup(ts[tp + 1 + i].s);
+    else if (ts[tp + 1 + i].t == T_STR && ts[tp + 1 + i].s)
+        aretain((Arr*)ts[tp + 1 + i].s);
+}
+```
 
 ---
 
 ## 7. Line Count
 
-**Total:** ~1,555 lines.
+**Total:** ~1,750 lines.
 
 | Component | Lines |
 |-----------|-------|
-| Includes, types, enums, globals | ~60 |
-| Value + Array helpers | ~70 |
+| Includes, types, enums, globals | ~65 |
+| Value + Array helpers (incl. view support, FNV-1a hash) | ~100 |
 | `apply()` (operators) | ~85 |
 | `die()` (error handling) | ~50 |
 | `print_val()`, `truthy()`, `veq()` | ~40 |
 | Scope (snew, sfree, sget, snew_sized) | ~25 |
 | Bytecode helpers + Type tracking | ~45 |
 | Lexer | ~100 |
-| Compiler — all functions (incl. type inference) | ~320 |
-| VM executor — exec() with computed goto | ~310 |
+| Compiler — all functions (incl. type inference, destructure detection,
+  default params via `eval_constant_expr()`) | ~395 |
+| VM executor — exec() with computed goto (incl. OC_DESTRUCTURE,
+  string-keyed hashmap indexing) | ~365 |
 | Main / REPL | ~70 |
 | Include handling + expression eval | ~60 |
 
@@ -444,6 +852,8 @@ copies elements into a new `Value[]` array, and pushes the result.
 - **Computed goto dispatch:** ~15% faster than switch (1 jump/bytecode vs 3)
 - **Slot-indexed variables:** ~50% reduction in variable access cost (O(1) vs
   O(n) strcmp). Biggest win for variable-heavy loops.
+- **Zero-copy slice views:** contiguous slices (`step == 1`) are O(1) — no
+  allocation or copying regardless of slice size. Strided slices still O(n).
 - **Combined speedup over original switch+strcmp VM:** 55-85% across benchmarks.
 - **TinyLang vs CPython:** ~2× faster on numeric workloads.
 - **TinyLang vs Node.js V8:** 4-31× slower (V8 JIT-compiles to native code).

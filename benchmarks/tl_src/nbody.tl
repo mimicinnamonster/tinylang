@@ -3,7 +3,7 @@
 // Arrays must end on same line as last element (parser limitation)
 
 // Newton-Raphson square root
-function sqrt(x) {
+function sqrt(x=0) {
     if x <= 0 { return 0 }
     guess = x / 2
     i = 0
@@ -45,7 +45,7 @@ function init_bodies() {
         [15.3796971148509165, -25.9193146099879641, 0.179258772950371181, nep_vx, nep_vy, nep_vz, nep_mass]]
 }
 
-function offset_momentum(bodies) {
+function offset_momentum(bodies=[[]]) {
     px = 0
     py = 0
     pz = 0
@@ -64,7 +64,7 @@ function offset_momentum(bodies) {
     return bodies
 }
 
-function advance(bodies) {
+function advance(bodies=[[]]) {
     vels = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
     i = 0
     while i < 5 {
@@ -114,7 +114,7 @@ function advance(bodies) {
     return result
 }
 
-function energy(bodies) {
+function energy(bodies=[[]]) {
     e = 0.0
     i = 0
     while i < 5 {
@@ -139,7 +139,7 @@ function energy(bodies) {
     return e
 }
 
-function run(n) {
+function run(n=0) {
     bodies = init_bodies()
     bodies = offset_momentum(bodies)
     print(energy(bodies))
