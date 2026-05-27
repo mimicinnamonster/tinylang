@@ -1,4 +1,3 @@
-- utf8
 - builtins: split, env, args, time, date, thisfile, hash
 - switch instead of compute goto (compiler should optimise, check output ASSEMBLY)
 - fun/ret/for

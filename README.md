@@ -16,11 +16,10 @@ language decision that kept things simple — no runtime type dispatch, no hash
 table lookups, no GC, no intermediate representations.  The result is a
 bytecode interpreter that punches well above its weight class.
 
-There are exactly two types: `number` and `array` (strings are just arrays of
-numbers), no pointers, references, or aliasing, and arrays use refcount+copy-on-write to
-give value semantics without GC.  No closures, no pointers, no first-class
-functions, no runtime type checks.  Everything is static.  Everything is simple.
-Everything is easy to optimise.
+There are exactly three types: `number`, `array`, and `string`. Under the hood
+strings are implemented as byte arrays (with a marker flag) — all array operations
+work on them. No closures, no pointers, no first-class functions, no GC.
+Everything is static.  Everything is simple.  Everything is easy to optimise.
 
 The compiler tracks the type of every variable and every function return value
 at compile time. First assignment determines a variable's type permanently;
@@ -193,15 +192,21 @@ All tests must pass before committing.
 
 ### Types
 
-TinyLang has exactly **two runtime types: `number` and `array`**.
+TinyLang has exactly **three types: `number`, `array`, and `string`**.
 
 - **`number`** — always a C `double`. Supports integer and floating-point values,
   hex literals, and arithmetic.
 - **`array`** — a heterogeneous `Value[]` sequence that can hold numbers and
   sub-arrays freely. The empty array `[]` is the only falsey value and serves
   as `nil`/`null`/`false`.
+- **`string`** — a byte array (implemented as an `array` under the hood with a
+  marker flag). All array operations work on strings: indexing, slicing,
+  concatenation, length, and push optimization. Strings are distinguishable
+  from generic arrays at compile time for correct hashmap-vs-index-chain
+  distinction and for string-specific formatting in `print()`.
 
-There is no dedicated boolean, null, string, or pointer type.
+```tinylang
+// Numbers
 
 ```tinylang
 // Numbers
@@ -218,13 +223,17 @@ matrix = [[1, 2], [3, 4]]    // nested
 empty = []                   // empty array = nil/false
 ```
 
-### Strings (syntactic sugar for byte arrays)
+### Strings
 
-Strings are syntactic sugar for arrays of byte values. There is no string type —
-`"abc"` compiles to `[97, 98, 99]`. The `print` function special-cases arrays
-whose elements are all printable ASCII by printing them as readable text rather
-than `[104, 101, 108, 108, 111]`. `print` does **not** add a trailing newline —
-include `\n` in your strings when you want one.
+Strings are a distinct type implemented as byte arrays under the hood.
+`"abc"` creates a string containing bytes `[97, 98, 99]`. All array operations
+work on strings: indexing, slicing, concatenation, length, push, and repetition.
+The `print` function displays strings as text rather than `[value, ...]`, and
+string-keyed hashmap access uses FNV-1a hashing (`arr["key"]`) rather than
+multi-index chaining.
+
+`print` does **not** add a trailing newline — include `\n` in your strings
+when you want one.
 
 ```tinylang
 s = "hello"
@@ -256,8 +265,8 @@ Supported escape sequences:
 
 #### String Operations
 
-Since strings are arrays, all array operations work: indexing, slicing, length,
-concatenation, and push optimization.
+Since strings are byte arrays underneath, all array operations work:
+indexing, slicing, length, concatenation, and push optimization.
 
 ```tinylang
 greet = "hello"
@@ -1166,15 +1175,16 @@ naive switch+strcmp VM is **55–85% across benchmarks.**
 ### 3. Compile-Time Type Tracking
 
 The compiler maintains a parallel `comp_types[]` array alongside `comp_vars[]`,
-tracking whether each variable holds a number (`T_NUM_TYPE`) or an array
-(`T_ARR_TYPE`). A `peek_expr_type()` function walks the token stream ahead
-of compilation to infer expression types from literals, variables, function
-calls, and binary operators.
+tracking whether each variable holds a number (`T_NUM_TYPE`), generic array
+(`T_ARR_TYPE`), or string (`T_STR_TYPE`). A `peek_expr_type()` function walks
+the token stream ahead of compilation to infer expression types from literals,
+variables, function calls, and binary operators.
 
 Key properties:
 - **First assignment determines type.** `set_var_type()` records the type on
   first assignment; any subsequent attempt to assign a different type halts
-  at compile time with `"type mismatch"`.
+  at compile time with `"type mismatch"`. This means `x = "hello"; x = [1,2,3]`
+  is an error — a string variable cannot become a generic array.
 - **Function return types are checked.** Each `return expr` infers its type;
   all returns in a function must agree. Functions with no return get
   `ret_type = T_ARR_TYPE` (they return `[]`).

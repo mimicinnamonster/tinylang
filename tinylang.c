@@ -18,7 +18,7 @@
 #endif
 
 typedef enum { VAL_NUM, VAL_ARR } Type;
-typedef struct Arr { int refcount, len, cap; struct Value *val; int is_slice; unsigned int hash_cache; struct Arr *parent; } Arr;
+typedef struct Arr { int refcount, len, cap; struct Value *val; int is_slice; unsigned int hash_cache; struct Arr *parent; int is_string; } Arr;
 typedef struct Value {
     Type type;
     double num;
@@ -58,7 +58,7 @@ typedef enum {
 
 typedef struct Code { struct Instr *code; int len, cap; } Code;
 typedef struct Instr {
-    OC op; int a, b; double num; Arr *arr; char *name; Code *sub; int line; char *file;
+    OC op; int a, b; double num; Arr *arr; char *name; int line; char *file;
 } Instr;
 
 Tok *ts; int tc, tp;
@@ -73,8 +73,8 @@ char *err_file; int err_line;
 typedef struct { int fi; int line; char *file; } CallFrame;
 CallFrame call_stack[128]; int call_depth = -1;
 
-typedef enum { T_UNKNOWN = 0, T_NUM_TYPE = 1, T_ARR_TYPE = 2 } ExprType;
-typedef struct { char *n; int a; int nvars, *p_slots; ExprType ret_type, *init_types; Code *code; Value *def_vals; char *has_def; } Fn;
+typedef enum { T_UNKNOWN = 0, T_NUM_TYPE = 1, T_ARR_TYPE = 2, T_STR_TYPE = 3 } ExprType;
+typedef struct { char *n; int a; int nvars, *p_slots; ExprType ret_type; Code *code; Value *def_vals; } Fn;
 Fn *fs; int fc, fm;
 
 jmp_buf repl_jmp; int repl_catching;
@@ -108,7 +108,7 @@ double val_num(Value v) { return v.num; }
 Arr *aalloc(int c) {
     Arr *a = calloc(1, sizeof(Arr)); a->refcount = 1;
     a->cap = c; a->val = c ? calloc(c, sizeof(Value)) : NULL;
-    a->is_slice = 0; a->parent = NULL;
+    a->is_slice = 0; a->parent = NULL; a->is_string = 0;
     return a;
 }
 void aretain(Arr *a) { if (a) a->refcount++; }
@@ -155,14 +155,14 @@ void vassign(Value *d, Value s) {
 }
 Value arr_item(Arr *a, int i) { return a->val[i]; }
 
+/* Returns 1 if the array was created as a string literal or by string
+ * operations (input, string+string, string+number, etc.)  Arrays built
+ * from [...] literals or numeric operations do NOT have this flag.
+ * This distinguishes text strings from generic byte arrays used as
+ * multi-index chains.
+ */
 int is_string_arr(Arr *a) {
-    if (!a) return 0;
-    for (int i = 0; i < a->len; i++) {
-        if (a->val[i].type != VAL_NUM) return 0;
-        int c = (int)val_num(a->val[i]);
-        if (c != 10 && c != 13 && c != 9 && (c < 32 || c > 126)) return 0;
-    }
-    return 1;
+    return a && a->is_string;
 }
 
 /* ─── FNV-1a hash (Git's strhash algorithm) ─── */
@@ -195,6 +195,7 @@ Arr *strcat_num(Arr *la, double d) {
     int rn = num_to_buf(buf, d);
     int ln = la ? la->len : 0;
     Arr *a = aalloc(ln + rn); a->len = ln + rn;
+    a->is_string = la ? la->is_string : 1;
     for (int i = 0; i < ln; i++) {
         a->val[i] = la->val[i];
         /* is_string_arr guarantees all elements are VAL_NUM, but retain for safety */
@@ -211,6 +212,7 @@ Arr *num_strcat(double d, Arr *ra) {
     int ln = num_to_buf(buf, d);
     int rn = ra ? ra->len : 0;
     Arr *a = aalloc(ln + rn); a->len = ln + rn;
+    a->is_string = ra ? ra->is_string : 1;
     for (int i = 0; i < ln; i++)
         a->val[i] = vnum((double)(unsigned char)buf[i]);
     for (int i = 0; i < rn; i++) {
@@ -227,17 +229,9 @@ void print_val(Value v) {
         else printf("%g", d);
     } else if (v.type == VAL_ARR) {
         Arr *a = v.arr;
-        int is_str = a ? 1 : 0;
-        if (a) {
-            for (int i = 0; i < a->len && is_str; i++) {
-                if (a->val[i].type != VAL_NUM) { is_str = 0; break; }
-                int c = (int)val_num(a->val[i]);
-                if (c != 10 && c != 13 && c != 9 && (c < 32 || c > 126)) is_str = 0;
-            }
-            if (is_str) {
-                for (int i = 0; i < a->len; i++) putchar((int)val_num(a->val[i]));
-                return;
-            }
+        if (is_string_arr(a)) {
+            for (int i = 0; i < a->len; i++) putchar((int)val_num(a->val[i]));
+            return;
         }
         putchar('[');
         if (a) for (int i = 0; i < a->len; i++) {
@@ -271,6 +265,7 @@ Value apply(int op, Value l, Value r) {
                 Arr *la = l.arr, *ra = r.arr;
                 int ln = la ? la->len : 0, rn = ra ? ra->len : 0;
                 Arr *a = aalloc(ln + rn); a->len = ln + rn;
+    a->is_string = (la ? la->is_string : 0) || (ra ? ra->is_string : 0);
                 for (int i = 0; i < ln; i++) { a->val[i] = la->val[i];
                     if (a->val[i].type == VAL_ARR) aretain(a->val[i].arr); }
                 for (int i = 0; i < rn; i++) { a->val[ln + i] = ra->val[i];
@@ -296,6 +291,7 @@ Value apply(int op, Value l, Value r) {
                 Arr *la = l.arr; int bl = la ? la->len : 0, n = (int)rd;
                 if (n <= 0) return nilv();
                 Arr *a = aalloc(bl * n); a->len = bl * n;
+                a->is_string = la ? la->is_string : 0;
                 for (int i = 0; i < bl; i++) { a->val[i] = la->val[i];
                     if (a->val[i].type == VAL_ARR) aretain(a->val[i].arr); }
                 for (int i = 1; i < n; i++)
@@ -415,7 +411,6 @@ void code_free(Code *c) {
     for (int i = 0; i < c->len; i++) {
         free(c->code[i].name); free(c->code[i].file);
         if (c->code[i].arr) arelease(c->code[i].arr);
-        code_free(c->code[i].sub);
     }
     free(c->code); free(c);
 }
@@ -531,7 +526,7 @@ void lex(const char *s) {
                     }
                 } else { if (c==0||c=='\n') die("unterminated string"); b[i++]=c; }
             }
-            Arr *a = aalloc(i); a->len = i;
+            Arr *a = aalloc(i); a->len = i; a->is_string = 1;
             for (int j = 0; j < i; j++) a->val[j] = vnum((double)(unsigned char)b[j]);
             tk.t = T_STR; tk.s = (char*)a; goto em;
         }
@@ -578,7 +573,7 @@ void comp_prim(Code *c) {
                 else if (!strcmp(t.s, "input")) emit(c, (Instr){OC_INPUT, 0, 0, .num = 0});
                 else if (!strcmp(t.s, "thispath")) {
                     int n = comp_file ? strlen(comp_file) : 0;
-                    Arr *a = aalloc(n); a->len = n;
+                    Arr *a = aalloc(n); a->len = n; a->is_string = 1;
                     for (int j = 0; j < n; j++) a->val[j] = vnum((double)(unsigned char)comp_file[j]);
                     emit(c, (Instr){OC_STR, 0, 0, .arr = a});
                 } else {
@@ -811,7 +806,8 @@ void comp_fn(Code *c) {
     /* Set types from defaults */
     for (int i = 0; i < pa; i++) {
         int slot = var_find(params[i]);
-        set_var_type(slot, def_vals[i].type == VAL_NUM ? T_NUM_TYPE : T_ARR_TYPE);
+        set_var_type(slot, def_vals[i].type == VAL_NUM ? T_NUM_TYPE :
+            (def_vals[i].arr && def_vals[i].arr->is_string ? T_STR_TYPE : T_ARR_TYPE));
     }
 
     /* Register param slots for fast binding */
@@ -829,7 +825,6 @@ void comp_fn(Code *c) {
     } else {
         f->def_vals = NULL;
     }
-    f->has_def = NULL;
 
     /* Compile body */
     fn_ret_type = T_UNKNOWN; fn_ret_seen = 0;
@@ -837,10 +832,6 @@ void comp_fn(Code *c) {
     f->code = body;
     f->nvars = comp_vc;
     f->ret_type = fn_ret_seen ? fn_ret_type : T_ARR_TYPE;
-
-    /* Save per-variable init types before freeing */
-    f->init_types = malloc(comp_vc * sizeof(ExprType));
-    memcpy(f->init_types, comp_types, comp_vc * sizeof(ExprType));
 
     /* Free function's var table */
     for (int i = 0; i < comp_vc; i++) free(comp_vars[i]);
@@ -1013,7 +1004,8 @@ static ExprType peek_expr_type(int *pn) {
     switch (ts[*pn].t) {
         case T_NUM: (*pn)++; t = T_NUM_TYPE; break;
         case T_NIL: case T_STR: case T_LB: {
-            /* nil, string, or bracket literal — all produce arrays */
+            /* nil, string, or bracket literal */
+            int is_str = (ts[*pn].t == T_STR);
             if (ts[*pn].t == T_LB) {
                 /* skip past the bracket literal */
                 int d = 1; (*pn)++;
@@ -1025,7 +1017,7 @@ static ExprType peek_expr_type(int *pn) {
             } else {
                 (*pn)++;
             }
-            t = T_ARR_TYPE;
+            t = is_str ? T_STR_TYPE : T_ARR_TYPE;
             break;
         }
         case T_LP: {
@@ -1073,11 +1065,19 @@ static ExprType peek_expr_type(int *pn) {
         if (t == T_UNKNOWN || rt == T_UNKNOWN) {
             t = T_UNKNOWN;
         } else if (op == T_PL) {
-            /* +: num+num=num; arr+arr=arr; arr+num=arr; num+arr=arr */
-            t = (t == T_NUM_TYPE && rt == T_NUM_TYPE) ? T_NUM_TYPE : T_ARR_TYPE;
+            /* +: num+num=num; str+str=arr; str+num=arr; num+str=arr */
+            if (t == T_STR_TYPE || rt == T_STR_TYPE)
+                t = T_STR_TYPE;
+            else
+                t = (t == T_NUM_TYPE && rt == T_NUM_TYPE) ? T_NUM_TYPE : T_ARR_TYPE;
         } else if (op == T_ST) {
-            /* *: num*num=num; arr*num=arr (repeat) */
-            t = (t == T_ARR_TYPE && rt == T_NUM_TYPE) ? T_ARR_TYPE : T_NUM_TYPE;
+            /* *: num*num=num; arr*num=arr (repeat); str*num=str */
+            if (t == T_STR_TYPE && rt == T_NUM_TYPE)
+                t = T_STR_TYPE;
+            else if (t == T_ARR_TYPE && rt == T_NUM_TYPE)
+                t = T_ARR_TYPE;
+            else
+                t = T_NUM_TYPE;
         } else {
             /* All other binary ops produce numbers */
             t = T_NUM_TYPE;
@@ -1687,12 +1687,14 @@ op_slice: {
         view->is_slice = 1;
         view->parent = src;
         view->hash_cache = 0;
+        view->is_string = src->is_string;
         aretain(src);
         arelease(arr_v.arr);
         istk[++isp] = (Value){ .type = VAL_ARR, .arr = view };
     } else {
         /* Strided slice: must copy */
         Arr *result = aalloc(count); result->len = count;
+        result->is_string = src->is_string;
         int idx = 0;
         for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
             result->val[idx] = arr_item(src, i);
@@ -1766,11 +1768,13 @@ op_slice_inplace: {
         view->is_slice = 1;
         view->parent = src;
         view->hash_cache = 0;
+        view->is_string = src->is_string;
         aretain(src);
         arelease(slot_val->arr);
         slot_val->arr = view;
     } else {
         Arr *result = aalloc(count); result->len = count;
+        result->is_string = src->is_string;
         int idx = 0;
         for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
             result->val[idx] = arr_item(src, i);
@@ -1892,7 +1896,7 @@ op_input: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     char buf[1024]; int n;
     if (!fgets(buf, 1024, stdin)) { n = 0; } else { n = strlen(buf); if (n && buf[n-1]=='\n') n--; }
-    Arr *a = aalloc(n); a->len = n;
+    Arr *a = aalloc(n); a->len = n; a->is_string = 1;
     for (int i = 0; i < n; i++) a->val[i] = vnum((double)(unsigned char)buf[i]);
     istk[++isp] = (Value){ .type = VAL_ARR, .arr = a };
     ip++; goto *dispatch[c->code[ip].op];
@@ -1950,7 +1954,7 @@ int main(int a, char **v) {
         }
         for (int i = 0; i < comp_vc; i++) {
             if (!cs->n[i]) cs->n[i] = strdup(comp_vars[i]);
-            if (comp_types[i] == T_ARR_TYPE && cs->v[i].type == VAL_NUM)
+            if ((comp_types[i] == T_ARR_TYPE || comp_types[i] == T_STR_TYPE) && cs->v[i].type == VAL_NUM)
                 cs->v[i] = (Value){ .type = VAL_ARR };
         }
         exec(code); code_free(code); free(ts);
@@ -2010,7 +2014,7 @@ int main(int a, char **v) {
             }
             for (int i = 0; i < comp_vc; i++) {
                 if (!cs->n[i]) cs->n[i] = strdup(comp_vars[i]);
-                if (comp_types[i] == T_ARR_TYPE && cs->v[i].type == VAL_NUM)
+                if ((comp_types[i] == T_ARR_TYPE || comp_types[i] == T_STR_TYPE) && cs->v[i].type == VAL_NUM)
                     cs->v[i] = (Value){ .type = VAL_ARR };
             }
             { int _sr = repl_catching; repl_catching = 1;

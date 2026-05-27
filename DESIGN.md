@@ -4,7 +4,8 @@
 
 ## 1. Type System
 
-- **Two runtime types:** `number` (double) and `array` (Value[])
+- **Three types:** `number` (double), `array` (Value[]), and `string` (byte array
+  with a compile-time marker, implemented as an array under the hood)
 - No null/bool type — `[]` (empty array) serves as nil/false/absence
 - `nil` is syntactic sugar for `[]`
 - No `ptr` type — FFI has been removed
