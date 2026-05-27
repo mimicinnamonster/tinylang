@@ -599,13 +599,8 @@ void comp_while(Code *c) {
 
 void comp_return(Code *c) {
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
-    int is_tc = (cur_fi >= 0 && ts[tp].t == T_ID &&
-                 !strcmp(ts[tp].s, fs[cur_fi].n) && ts[tp+1].t == T_LP);
     comp_expr(c);
-    if (is_tc && c->code[c->len-1].op == OC_CALL) {
-        Instr *last = &c->code[c->len-1];
-        last->op = OC_TCO; last->a = last->b; last->b = 0;
-    } else if (!is_tc) emit(c, (Instr){OC_RET, 0, 0, .num = 0});
+    emit(c, (Instr){OC_RET, 0, 0, .num = 0});
 }
 
 void comp_fn(Code *c) {
