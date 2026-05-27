@@ -9,7 +9,12 @@
 - `nil` is syntactic sugar for `[]`
 - No `ptr` type — FFI has been removed
 - First assignment determines variable type permanently
-- `x = 0; x = "hello"` → type error, halts
+- `x = 0; x = "hello"` → compile error: `"type mismatch"`
+- Compiler tracks types in `comp_types[]` — first-assigned type per variable
+- Function return types inferred and checked across all `return` statements
+- `peek_expr_type()` infers expression types at compile time (literals,
+  variables, function calls, binary operators)
+- Indexed expressions (`arr[i]`) are `T_UNKNOWN` — element types not tracked
 - Numbers are always C `double` (no compact type optimizations)
 - Arrays are **heterogeneous** — can hold numbers and sub-arrays freely
 - Array elements accessed by `arr[idx]` — 0-indexed, bounds checked, halts on OOB
@@ -264,8 +269,18 @@ pairs = [1, 2] * 3    // [1, 2, 1, 2, 1, 2]
 
 ### Push optimization
 
-`x = x + [expr]` is detected at compile time and compiled to `OC_PUSH` —
-appends the element to the array in O(1) amortized instead of O(n) copy.
+`x = x + [expr]` is detected at compile time. For bracket literals, each
+element gets its own `OC_PUSH` — appends in O(1) amortized instead of O(n)
+copy. Multi-element literals `[a, b, c]` emit one `OC_PUSH` per element,
+avoiding the temporary array entirely.
+
+For non-literal RHS expressions (function calls, variables, slices, chained
+`+`), the compiler emits `OC_PUSH_ALL` — reads the RHS array from the stack
+and pushes all its elements in-place, avoiding the final concatenated copy
+and store-back. A runtime fallback handles non-array RHS for string concat.
+
+Both optimizations are guarded by compile-time type tracking — they only
+fire when the target variable is known to be an array.
 
 ---
 
@@ -406,7 +421,12 @@ args          := /* empty */ | expr ("," expr)*
   O(n) strcmp over scope names
 - **COW+refcounting** — array copies only on shared mutation; read-only sharing
   is O(1)
-- **Push optimization** — `x = x + [e]` is O(1) amortized
+- **Compile-time type tracking** — first-assigned type per variable; inferred
+  function return types; drives push optimization decisions
+- **Push optimization** — `x = x + [e]` is O(1) amortized; `OC_PUSH_ALL` handles
+  any array expression in-place
+- **Slot initialization** — array-typed slots pre-initialized to `[]` at scope
+  creation, eliminating runtime type guards
 - **TCO** — tail-recursive functions reuse the same C stack frame
 - **Memory** — arrays are always `Value[]` (no compact backing stores), each
   Value is 24 bytes

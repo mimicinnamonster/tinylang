@@ -22,6 +22,13 @@ give value semantics without GC.  No closures, no pointers, no first-class
 functions, no runtime type checks.  Everything is static.  Everything is simple.
 Everything is easy to optimise.
 
+The compiler tracks the type of every variable and every function return value
+at compile time. First assignment determines a variable's type permanently;
+type changes are detected at compile time, not at runtime. Function return
+types are inferred from the body and checked for consistency across all
+return statements. Array-type slots are initialized to `[]` at scope-creation
+time, eliminating the need for runtime type guards on array operations.
+
 ```tinylang
 // Everything here compiles to flat bytecode in one pass.
 // No AST, no runtime type checks, no GC pauses.
@@ -54,11 +61,11 @@ print(orig[0][1])                      // 2 (unchanged)
 print(copy[0][1])                      // 99
 ```
 
-A full language in <1,500 lines of C. No required dependencies. Compiles in <1s.
+A full language in <1,600 lines of C. No required dependencies. Compiles in <1s.
 
 | Language | Lines | Compilation | Dispatch | Variables | GC | AST |
 |----------|-------|-------------|----------|-----------|----|------|
-| TinyLang | ~1,190 | Single-pass | Computed goto | Slot-indexed O(1) | None | None |
+| TinyLang | ~1,555 | Single-pass | Computed goto | Slot-indexed O(1) | None | None |
 | Python | ~700K+ | Multi-pass | Switch + eval loop | Dict O(log n) | Generational | Full |
 | Lua | ~25K | Multi-pass | Switch | Table O(log n) | Incremental | Full |
 | JavaScript (V8) | Millions | Multi-tier JIT | Native code | Inline cache | Generational | Full |
@@ -587,10 +594,17 @@ neg_repeat = [5] * (-1)  // []
 
 `x = x + [elem]` is detected at compile time and compiled to a `OC_PUSH`
 instruction — appends the element directly in amortized O(1) instead of
-copying the entire array.
+copying the entire array. Multi-element array literals `[a, b, c]` also
+use `OC_PUSH` (one per element), avoiding the temporary array entirely.
+
+The compiler also detects `x = x + expr` where `x` is a known array and
+the RHS is any expression yielding an array (function call, variable, slice,
+chained `+`, etc.) and emits `OC_PUSH_ALL`. This pushes all elements of the
+RHS array into `x` in-place, avoiding the final concatenated copy and
+store-back. A runtime fallback handles non-array RHS (e.g., string concat).
 
 ```tinylang
-// These use OC_PUSH (O(1) each):
+// OC_PUSH (O(1) each):
 arr = []
 i = 0
 while i < 1000 {
@@ -599,9 +613,13 @@ while i < 1000 {
 }
 print(#arr)              // 1000
 
-// Multi-element falls back to normal concat:
+// Multi-element: also OC_PUSH, one per element
 multi = [1]
-multi = multi + [2, 3, 4]  // not push-optimized
+multi = multi + [2, 3, 4]  // 3 OC_PUSH instructions
+
+// OC_PUSH_ALL — push all from any array expression
+arr = arr + fn_that_returns_array()
+arr = arr + ([1, 2] + [3, 4]) + another_fn()
 ```
 
 ### Value Semantics (Copy-on-Write)
@@ -916,19 +934,49 @@ case OC_VAR_SLOT:
 variable-heavy loops. Combined with computed goto, the total speedup over a
 naive switch+strcmp VM is **55–85% across benchmarks.**
 
-### 3. Push Optimization (`OC_PUSH`)
+### 3. Compile-Time Type Tracking
 
-The compiler detects the pattern `x = x + [elem]` by lookahead on the
-token stream and emits `OC_PUSH` instead of generic array concatenation.
+The compiler maintains a parallel `comp_types[]` array alongside `comp_vars[]`,
+tracking whether each variable holds a number (`T_NUM_TYPE`) or an array
+(`T_ARR_TYPE`). A `peek_expr_type()` function walks the token stream ahead
+of compilation to infer expression types from literals, variables, function
+calls, and binary operators.
+
+Key properties:
+- **First assignment determines type.** `set_var_type()` records the type on
+  first assignment; any subsequent attempt to assign a different type halts
+  at compile time with `"type mismatch"`.
+- **Function return types are checked.** Each `return expr` infers its type;
+  all returns in a function must agree. Functions with no return get
+  `ret_type = T_ARR_TYPE` (they return `[]`).
+- **Indexed expressions are unknown.** `arr[i]` returns `T_UNKNOWN` — element
+  types are not tracked at compile time.
+- **Binary operator inference.** `num + num = num`; anything else with `+` =
+  array; `arr * num = array`; all other ops produce numbers. Unknown
+  operands produce unknown results.
+
+The type information drives the push optimization decisions and enables
+slot initialization at scope creation time.
+
+### 4. Push Optimization (`OC_PUSH` / `OC_PUSH_ALL`)
+
+The compiler detects `x = x + [...]` by lookahead on the token stream.
+Single and multi-element bracket literals each get their own `OC_PUSH`
+instruction — no temporary array is allocated.
+
+For non-literal RHS expressions (function calls, variables, slices, chained
+`+`), the compiler emits `OC_PUSH_ALL`. This reads the RHS array from the
+stack and pushes all its elements into `x` in-place. A runtime fallback
+handles non-array RHS for edge cases like string concatenation.
 
 ```tinylang
-// These all compile to OC_PUSH:
-arr = arr + [i]          // single element append
-path = path + [body]     // push a computed value
-list = list + [[i]]      // push a sub-array
+// OC_PUSH — per-element append:
+arr = arr + [i]          // single element
+arr = arr + [1, 2, 3]    // multi-element: 3 OC_PUSH instructions
 
-// Not push-optimized (falls back to normal concat):
-arr = arr + [1, 2, 3]    // multi-element literal
+// OC_PUSH_ALL — push all from any array expression:
+arr = arr + fn_that_returns_array()
+arr = arr + ([1, 2] + [3, 4]) + another_fn()
 ```
 
 **Why it matters:** Normal array concatenation (`OC_OP` with `T_PL`) allocates
@@ -937,10 +985,15 @@ references — O(n) time and O(n) memory. `OC_PUSH` appends directly with
 amortized O(1) — it calls `amake_uniq` (COW if shared), doubles capacity on
 realloc, and writes one element.
 
-For building arrays in loops (e.g., spectral-norm's `Au = Au + [sum]`), this
-turns O(n²) memory traffic into O(n).
+`OC_PUSH_ALL` eliminates the final concatenated copy and store-back.
+For `x = x + a + b + c`, the naive path creates 3 temporary arrays and one
+store-back copy; push-all creates only 1 temporary (from the RHS expression
+tree) and zero store-back copies.
 
-### 4. Copy-on-Write (COW) Arrays
+Both optimizations are guarded by compile-time type tracking — they only fire
+when `x` is known to be an array.
+
+### 5. Copy-on-Write (COW) Arrays
 
 Arrays use reference counting with copy-on-write to implement value semantics
 without unnecessary copying:
@@ -968,7 +1021,7 @@ This avoids GC pauses (deterministic cleanup) while keeping memory usage low.
 In benchmarks, TinyLang uses **3–12× less memory than Node.js** for the same
 computation.
 
-### 5. Tail Call Optimization (TCO)
+### 6. Tail Call Optimization (TCO)
 
 Detected at compile time: if the last instruction before `OC_END` (or `OC_RET`)
 is a call to the same function, the compiler mutates it to `OC_TCO`.
@@ -985,7 +1038,7 @@ Without TCO, `fact_tco(1000, 1)` would recurse 1,000 C stack frames deep and
 overflow. With TCO, each iteration reuses the same frame — `fact_tco(100000, 1)`
 runs just as safely as iteration 1.
 
-### 6. Single-Pass Compilation (No AST)
+### 7. Single-Pass Compilation (No AST)
 
 The compiler walks the pre-lexed token array and emits bytecode directly —
 no intermediate AST (Abstract Syntax Tree) is built:
@@ -998,7 +1051,7 @@ This means compilation is essentially free — the entire program is compiled in
 a single pass with no tree allocations, no visitor patterns, and no memory
 overhead for intermediate representations.
 
-### 7. Parameter Binding by Slot Index
+### 8. Parameter Binding by Slot Index
 
 Function parameters are bound directly by slot index at call time, bypassing
 name lookup entirely:
@@ -1014,7 +1067,7 @@ for (int j = 0; j < f->a; j++)
     cs->v[f->p_slots[j]] = (j < ac) ? args[j] : nilv();
 ```
 
-### 8. Pre-Sized Scopes
+### 9. Pre-Sized Scopes with Slot Initialization
 
 When a function is called, its scope is allocated with the exact number of
 variables known at compile time (`snew_sized(f->nvars)`). No incremental
@@ -1026,10 +1079,13 @@ growing, no reallocation during execution.
 |-------------|-----------------|-------------|
 | Computed goto dispatch | ~15% | 1 jump/bytecode vs 3 (switch) |
 | Slot-indexed variables | ~50% on var access | O(1) array index vs O(n) strcmp |
+| Compile-time type tracking | Enables all below | Static types eliminate runtime dispatch |
 | Push optimization | O(n²)→O(n) on array builds | Amortized O(1) append vs full copy |
+| Push-all (`OC_PUSH_ALL`) | Eliminates final copy+store | In-place mutation for any RHS array expr |
 | COW sharing | Variable, workload-dependent | Zero-copy reads, copy only on write |
+| Slot initialization | Eliminates runtime guards | Array slots pre-initialized to `[]` |
 | Single-pass compiler | ~0 (constant factor) | No AST allocation overhead |
-| Combined (dispatch + slots) | **55–85%** | Across all benchmarks |
+| Combined (dispatch + slots + types) | **55–85%** | Across all benchmarks |
 
 ---
 
@@ -1054,10 +1110,10 @@ reasonable time, Python included for reference):
 
 | Benchmark | Size | C (-O2) | Node.js | Python 3 | TinyLang |
 |-----------|------|---------|---------|----------|----------|
-| spectral-norm | N=5500 | **2.75s** | **1.93s** | 212.70s | N/A |
-| n-body | N=5M | **0.59s** | **0.52s** | 93.10s | N/A |
-| mandelbrot | 200×200 | **0.18s** | **0.05s** | 0.47s | **1.58s** |
-| fasta | N=25000 | **0.16s** | **0.07s** | 0.31s | **0.57s** |
+| spectral-norm | N=5500 | **2.49s** | **1.92s** | 212.70s | N/A |
+| n-body | N=5M | **0.41s** | **0.52s** | 93.10s | N/A |
+| mandelbrot | 200×200 | **<0.01s** | **0.05s** | 0.47s | **0.26s** |
+| fasta | N=25000 | **<0.01s** | **0.06s** | 0.31s | **0.15s** |
 
 > **Note:** Node.js is faster than C on these workloads because V8's
 > JIT compiler inlines tiny functions, vectorizes loops via ARM NEON, and
@@ -1072,10 +1128,10 @@ in seconds:
 
 | Benchmark | Size | C (-O2) | Node.js | Python 3 | TinyLang |
 |-----------|------|---------|---------|----------|----------|
-| spectral-norm | N=100 | **<0.01s** | **0.05s** | 0.35s | **0.19s** |
-| n-body | N=5000 | **<0.01s** | **0.05s** | 0.18s | **0.45s** |
-| mandelbrot | 200×200 | **0.18s** | **0.05s** | 0.47s | **1.58s** |
-| fasta | N=25000 | **0.16s** | **0.07s** | 0.31s | **0.57s** |
+| spectral-norm | N=100 | **<0.01s** | **0.05s** | 0.35s | **0.07s** |
+| n-body | N=5000 | **<0.01s** | **0.05s** | 0.18s | **0.19s** |
+| mandelbrot | 200×200 | **<0.01s** | **0.05s** | 0.47s | **0.26s** |
+| fasta | N=25000 | **<0.01s** | **0.06s** | 0.31s | **0.15s** |
 
 All results shown as **real (wall-clock) time** — lower is better:
 
@@ -1201,14 +1257,19 @@ Benchmark source files:
 
 ## Implementation
 
-- ~1,190 lines of C, single file
+- ~1,555 lines of C, single file
 - Optional GNU Readline/libedit integration for line editing and history
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
 - Stack-based VM: computed goto dispatch, `Value istk[4096]` stack
 - Slot-indexed variable access: O(1) instead of O(n) strcmp
-- Deep copy on assignment, refcount+COW arrays with push optimization
+- Compile-time type tracking: `comp_types[]` parallel to `comp_vars[]`
+- Function return type inference and consistency checking
+- `OC_PUSH` for per-element array append (single and multi-element literals)
+- `OC_PUSH_ALL` for push-all from any array expression (function, variable, slice, chained `+`)
+- Deep copy on assignment, refcount+COW arrays
 - Tail call optimization: parameter rebinding + ip reset (no C stack growth)
-- Comprehensive test suite (25+ happy-path tests, 20 error tests)
+- Slot initialization at scope creation for array-typed variables
+- Comprehensive test suite (30+ happy-path tests, 20 error tests)
 
 For detailed implementation notes, see [`IMPLEMENTATION.md`](IMPLEMENTATION.md).
 For design rationale and language semantics, see [`DESIGN.md`](DESIGN.md).

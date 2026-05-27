@@ -3,7 +3,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-TINYLANG="$SCRIPT_DIR/../tinylang"
+TINYLANG="$SCRIPT_DIR/../tiny"
 NODE="$(which node)"
 C_BIN="$SCRIPT_DIR/c_bin"
 C_SRC="$SCRIPT_DIR/c_src"

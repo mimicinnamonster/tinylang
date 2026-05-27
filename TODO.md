@@ -1,0 +1,5 @@
+- array push with multiple elements
+- array slices cow
+- utf8
+- builtins: split, env, args, time, date
+- switch instead of compute goto (compiler should optimise, check output ASSEMBLY)

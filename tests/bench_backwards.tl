@@ -11,9 +11,9 @@ while i > -1 {
 
 // Verify by counting nodes
 len = 0
-i = list
-while i {
+node = list
+while node {
   len = len + 1
-  i = i[1]
+  node = node[1]
 }
 print(len); print("\n")

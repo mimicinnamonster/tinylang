@@ -13,9 +13,9 @@ while i < 10000 {
 
 // Verify by counting nodes
 len = 0
-i = arr
-while i {
+node = arr
+while node {
   len = len + 1
-  i = i[1]
+  node = node[1]
 }
 print(len); print("\n")

@@ -1,8 +1,8 @@
 # TinyLang — Implementation Guide
 
-**~1,190 lines of C.** Single-pass compiler to bytecode with stack-based VM,
-computed goto dispatch, slot-indexed variable access, refcount+COW, and tail
-call optimization.
+**~1,555 lines of C.** Single-pass compiler to bytecode with stack-based VM,
+computed goto dispatch, slot-indexed variable access, compile-time type
+tracking, refcount+COW, and tail call optimization.
 
 ---
 
@@ -72,12 +72,12 @@ A single-pass recursive descent compiler that walks the token array and emits
 `Instr[]` bytecode. No intermediate AST — each parser function emits instructions
 directly.
 
-### Instruction Set (24 opcodes)
+### Instruction Set (23 opcodes)
 
 ```c
 typedef enum {
     OC_NUM, OC_NIL, OC_STR, OC_MAKE_ARR,    // value producers
-    OC_VAR, OC_STORE,                        // name-based variable access (top-level)
+    OC_VAR,                                 // name-based variable access (top-level, read-only)
     OC_VAR_SLOT, OC_STORE_SLOT,             // slot-indexed variable access (functions)
     OC_OP, OC_UNARY,                        // arithmetic / unary
     OC_INDEX,                               // array indexing
@@ -86,6 +86,7 @@ typedef enum {
     OC_LVALS, OC_PUSH, OC_SLICE,            // array operations
     OC_PRINT, OC_INPUT,                     // built-in I/O
     OC_DUP, OC_JNZ,                         // short-circuit && ||
+    OC_PUSH_ALL,                            // push all elements from any array expr
     OC_END,                                 // terminator
 } OC;
 ```
@@ -104,13 +105,35 @@ typedef struct Instr {
 - `name`: for `OC_VAR`/`OC_STORE` (variable name, top-level only)
 - `sub`: unused
 
-### Compile-time variable tracking
+### Compile-time variable and type tracking
 
 The compiler maintains a global `comp_vars[]` mapping variable names to slot
-indices. Inside function bodies, all variable reads/writes use `OC_VAR_SLOT`/
-`OC_STORE_SLOT` with the integer slot index — O(1) runtime access with no
-strcmp. The mapping is saved/restored around function compilation to isolate
-each function's variable namespace.
+indices, and a parallel `comp_types[]` array tracking whether each variable
+holds a number (`T_NUM_TYPE`) or an array (`T_ARR_TYPE`). Inside function
+bodies, all variable reads/writes use `OC_VAR_SLOT`/`OC_STORE_SLOT` with the
+integer slot index — O(1) runtime access with no strcmp. The mapping is
+saved/restored around function compilation to isolate each function's variable
+namespace.
+
+**`set_var_type(slot, type)`** — Records the type on first assignment. Any
+subsequent attempt to assign a different type halts with `"type mismatch"` at
+compile time.
+
+**`peek_expr_type(int *pn)`** — Infers the type of an expression by walking
+the token stream ahead of compilation, without consuming tokens. Handles
+literals, variables, function calls, `+` (num+num=num, else=array), `*
+(arr*num=array), all other ops (num), indexed expressions (unknown), and
+chained binary operators.
+
+**Function return types** — Tracked per function in `Fn.ret_type`. Each
+`return expr` infers its type; mismatches between returns halt at compile
+time. Functions with no return get `ret_type = T_ARR_TYPE` (they return `[]`).
+
+**Slot initialization** — Array-typed slots are pre-initialized to `[]` at
+scope creation. Function scopes use `Fn.init_types[]` (saved from
+`comp_types[]` before freeing); top-level/REPL scopes are initialized in
+`main()` after compilation. This eliminates runtime type guards in
+`op_push` and `op_push_all`.
 
 ### Compiler functions
 
@@ -173,20 +196,34 @@ from its own set of tokens, so the index expression is evaluated twice at
 runtime. This is identical to writing `a[i] = a[i] + 10` explicitly.
 
 **Push optimization:** Because `arr += [elem]` rewrites to `arr = arr + [elem]`
-before the plain handler sees it, the same lookahead (`id + [single]`) fires
-and emits `OC_PUSH`.
+before the plain handler sees it, the same lookahead fires and emits
+`OC_PUSH` (for bracket literals) or `OC_PUSH_ALL` (for other array
+ expressions).
 
-**`is_single_elem_bracket` helper:** A shared helper checks whether tokens
-starting at a given position form a `[single_expression]` (no comma at
-depth 1). Used by the push optimization lookahead in both `=` and
-rewritten-compound paths, though the rewrite means only the `=` path's
-lookahead actually runs.
+**`is_bracket_literal` helper:** Checks whether tokens at a given position
+form a `[...]` bracket pair (any contents). Used by push optimization
+lookahead.
 
 ### Push optimization detection
 
-The compiler detects `x = x + [expr]` by lookahead on the token stream and
-emits `OC_PUSH` instead of generic concat. This appends the element directly
-in O(1) amortized.
+The compiler detects `x = x + [...]` by lookahead on the token stream.
+
+**Three tiers, in order of preference:**
+
+1. **Per-element push (`OC_PUSH`):** Fires when the RHS is a bare bracket
+   literal `[a, b, ...]` with no chained operators following. Each element
+   gets its own `OC_PUSH` — zero temporary arrays allocated. Works for both
+   single and multi-element literals.
+
+2. **Push-all (`OC_PUSH_ALL`):** Fires when the RHS starts with `x + ` and
+   `x` is a known array (from `comp_types[]`). The compiler skips `x + `
+   and compiles the remaining RHS expression normally. At runtime,
+   `op_push_all` reads the RHS array from the stack and pushes all its
+   elements into `x` in-place. A fallback handles non-array RHS via
+   `apply(T_PL, ...)` for edge cases like string concatenation.
+
+3. **Normal `+`:** Everything else — `apply(T_PL, ...)` creates a new
+   concatenated array and stores it back.
 
 ### TCO detection
 
@@ -326,6 +363,19 @@ non-printable bytes and correctly produce a type error.
 The `num_to_string_arr()` helper formats numbers identically to `print_val()`:
 integers print as decimal without a decimal point, floats use `%g`.
 
+### Removed opcodes and dead code
+
+| What | Why |
+|------|-----|
+| `OC_STORE` / `op_store` / `sset()` | Never emitted — all stores use `OC_STORE_SLOT` |
+| `Fn.p` field | Never written or read |
+| `vempty()` function | Same as `nilv()` macro, never called |
+| `op_push` LHS type guard | Slot is always initialized to `[]` for array-typed vars |
+| `op_push_all` LHS type guard | Same |
+| Slot-based op else-branches | Name lookup fallback was dead — `comp_vars` persists across REPL lines |
+
+---
+
 ## 6. Array Operations
 
 ### COW on mutation
@@ -347,12 +397,18 @@ void amake_uniq(Value *v) {
 `amake_uniq` ensures exclusive ownership before advancing to the indexed
 element. The final slot receives the assigned value via `vassign`.
 
-### Push (arr = arr + [x])
+### Push (arr = arr + [x]) / Push-all (arr = arr + expr)
 
 `OC_PUSH` is emitted when the compiler detects `x = x + [elem]`. It pops the
 element, calls `amake_uniq` on the target array (COW if shared), grows capacity
 if needed (doubles each realloc), and writes the element into the new slot.
-Amortized O(1).
+Amortized O(1). Multi-element bracket literals `[a, b, c]` emit one `OC_PUSH`
+per element.
+
+`OC_PUSH_ALL` handles any array expression on the RHS. It reads the RHS array
+from the stack, calls `amake_uniq` on the target, then iterates the RHS
+pushing each element in a loop. If the RHS is not an array at runtime, it falls
+back to `apply(T_PL, ...)` for correct type-error behavior.
 
 ### Slice (arr[start:stop:step])
 
@@ -364,21 +420,21 @@ copies elements into a new `Value[]` array, and pushes the result.
 
 ## 7. Line Count
 
-**Total:** ~1,190 lines.
+**Total:** ~1,555 lines.
 
 | Component | Lines |
 |-----------|-------|
 | Includes, types, enums, globals | ~60 |
-| Value + Array helpers (vnum, val_num, aalloc, aretain, arelease, etc.) | ~70 |
+| Value + Array helpers | ~70 |
 | `apply()` (operators) | ~85 |
 | `die()` (error handling) | ~50 |
 | `print_val()`, `truthy()`, `veq()` | ~40 |
-| Scope (snew, sfree, sget, sset, snew_sized) | ~30 |
-| Bytecode helpers (emit, new_code, code_free, readf, var_find, var_add) | ~30 |
+| Scope (snew, sfree, sget, snew_sized) | ~25 |
+| Bytecode helpers + Type tracking | ~45 |
 | Lexer | ~100 |
-| Compiler — all functions | ~280 |
-| VM executor — exec() with computed goto | ~280 |
-| Main / REPL | ~60 |
+| Compiler — all functions (incl. type inference) | ~320 |
+| VM executor — exec() with computed goto | ~310 |
+| Main / REPL | ~70 |
 | Include handling + expression eval | ~60 |
 
 ---

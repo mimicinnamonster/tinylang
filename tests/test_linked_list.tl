@@ -15,8 +15,8 @@ while i < 500 {
 }
 
 // Traverse
-i = arr
-while i {
-  println(i[0])
-  i = i[1]
+node = arr
+while node {
+  println(node[0])
+  node = node[1]
 }

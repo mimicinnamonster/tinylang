@@ -42,7 +42,7 @@ typedef struct { char **n; Value *v; int c, m; } Scp;
 
 typedef enum {
     OC_NUM, OC_NIL, OC_STR, OC_MAKE_ARR,
-    OC_VAR, OC_STORE,
+    OC_VAR,
     OC_VAR_SLOT, OC_STORE_SLOT,
     OC_OP, OC_UNARY, OC_INDEX,
     OC_CALL, OC_TCO,
@@ -50,6 +50,7 @@ typedef enum {
     OC_LVALS, OC_PUSH, OC_SLICE,
     OC_PRINT, OC_INPUT,
     OC_DUP, OC_JNZ,
+    OC_PUSH_ALL,
     OC_END,
 } OC;
 
@@ -70,20 +71,34 @@ char *err_file; int err_line;
 typedef struct { int fi; int line; char *file; } CallFrame;
 CallFrame call_stack[128]; int call_depth = -1;
 
-typedef struct { char *n, **p; int a; int nvars, *p_slots; Code *code; } Fn;
+typedef enum { T_UNKNOWN = 0, T_NUM_TYPE = 1, T_ARR_TYPE = 2 } ExprType;
+typedef struct { char *n; int a; int nvars, *p_slots; ExprType ret_type, *init_types; Code *code; } Fn;
 Fn *fs; int fc, fm;
 
 jmp_buf repl_jmp; int repl_catching;
 
-/* Compile-time variable tracking: name → slot index */
+/* Compile-time variable tracking: name → slot index + type */
 static char **comp_vars;
+static ExprType *comp_types;
 static int comp_vc, comp_vm;
+
+/* Compile-time return type tracking for current function */
+static ExprType fn_ret_type;
+static int fn_ret_seen;
+
+void die(const char *f, ...);
+
+static void set_var_type(int slot, ExprType t) {
+    if (comp_types[slot] != T_UNKNOWN && t != T_UNKNOWN && comp_types[slot] != t)
+        die("type mismatch");
+    if (t != T_UNKNOWN)
+        comp_types[slot] = t;
+}
 
 /* ─── Value helpers ─── */
 
 Value vnum(double n) { return (Value){ .type = VAL_NUM, .num = n }; }
 double val_num(Value v) { return v.num; }
-Value vempty(void) { return (Value){ .type = VAL_ARR }; }
 #define nilv() ((Value){ .type = VAL_ARR })
 
 /* ─── Array runtime ─── */
@@ -280,9 +295,10 @@ Value apply(int op, Value l, Value r) {
         default: die("unknown op");
     } return nilv();
 }
-void die(const char *f, ...);
 
 /* ─── Error handling ─── */
+
+static ExprType peek_expr_type(int *pn);
 
 void die(const char *f, ...) {
     va_list ap; va_start(ap, f);
@@ -344,15 +360,6 @@ Value sget(Scp *s, const char *n) {
     for (int i = 0; i < s->c; i++) if (s->n[i] && !strcmp(s->n[i], n)) return s->v[i];
     die("undefined '%s'", n); return nilv();
 }
-void sset(Scp *s, const char *n, Value v) {
-    for (int i = 0; i < s->c; i++)
-        if (s->n[i] && !strcmp(s->n[i], n)) { vassign(&s->v[i], v); return; }
-    if (s->c >= s->m) { s->m = s->m ? s->m*2 : 4;
-        s->n = realloc(s->n, s->m*sizeof(char*)); s->v = realloc(s->v, s->m*sizeof(Value));
-        for (int i = s->c; i < s->m; i++) s->n[i] = NULL; }
-    s->n[s->c] = strdup(n); s->v[s->c] = v;
-    if (v.type == VAL_ARR) aretain(v.arr); s->c++;
-}
 int ffind(const char *n) { for (int i = 0; i < fc; i++) if (!strcmp(fs[i].n, n)) return i; return -1; }
 
 /* ─── Bytecode helpers ─── */
@@ -387,8 +394,10 @@ int var_find(const char *n) {
 int var_add(const char *n) {
     int s = comp_vc++;
     if (comp_vc > comp_vm) { comp_vm = comp_vm ? comp_vm*2 : 16;
-        comp_vars = realloc(comp_vars, comp_vm * sizeof(char*)); }
+        comp_vars = realloc(comp_vars, comp_vm * sizeof(char*));
+        comp_types = realloc(comp_types, comp_vm * sizeof(ExprType)); }
     comp_vars[s] = strdup(n);
+    comp_types[s] = T_UNKNOWN;
     return s;
 }
 
@@ -653,6 +662,11 @@ void comp_while(Code *c) {
 
 void comp_return(Code *c) {
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
+    int pn = tp;
+    ExprType rt = peek_expr_type(&pn);
+    if (fn_ret_seen && rt != T_UNKNOWN && fn_ret_type != T_UNKNOWN && rt != fn_ret_type)
+        die("inconsistent return type");
+    if (rt != T_UNKNOWN) { fn_ret_type = rt; fn_ret_seen = 1; }
     comp_expr(c);
     emit(c, (Instr){OC_RET, 0, 0, .num = 0});
 }
@@ -682,10 +696,11 @@ void comp_fn(Code *c) {
 
     /* Save top-level var state, restore after function body */
     char **saved_vars = comp_vars;
+    ExprType *saved_types = comp_types;
     int saved_vc = comp_vc, saved_vm = comp_vm;
 
     /* Reset var table for this function body */
-    comp_vars = NULL; comp_vc = 0; comp_vm = 0;
+    comp_vars = NULL; comp_types = NULL; comp_vc = 0; comp_vm = 0;
     for (int i = 0; i < pa; i++) var_add(params[i]);
 
     /* Register param slots for fast binding */
@@ -694,16 +709,23 @@ void comp_fn(Code *c) {
     f->a = pa;
 
     /* Compile body */
+    fn_ret_type = T_UNKNOWN; fn_ret_seen = 0;
     Code *body = new_code(); comp_block(body); emit(body, (Instr){OC_END, 0, 0, .num = 0});
     f->code = body;
     f->nvars = comp_vc;
+    f->ret_type = fn_ret_seen ? fn_ret_type : T_ARR_TYPE;
+
+    /* Save per-variable init types before freeing */
+    f->init_types = malloc(comp_vc * sizeof(ExprType));
+    memcpy(f->init_types, comp_types, comp_vc * sizeof(ExprType));
 
     /* Free function's var table */
     for (int i = 0; i < comp_vc; i++) free(comp_vars[i]);
-    free(comp_vars);
+    free(comp_vars); free(comp_types);
 
     /* Restore top-level var state */
     comp_vars = saved_vars;
+    comp_types = saved_types;
     comp_vc = saved_vc;
     comp_vm = saved_vm;
 
@@ -848,17 +870,97 @@ void comp_include(Code *c) {
     include_dir = saved_dir; free(comp_file); comp_file = saved_file; free(content);
 }
 
-/* Check if tokens at pn form a single-element array literal [expr] (no commas) */
-static int is_single_elem_bracket(int pn) {
+/* Check if tokens at pn form a bracket literal [...] */
+static int is_bracket_literal(int pn) {
     if (ts[pn].t != T_LB) return 0;
     pn++; int depth = 1;
     while (depth > 0 && ts[pn].t != T_EOF) {
         if (ts[pn].t == T_LP || ts[pn].t == T_LB) depth++;
         if (ts[pn].t == T_RP || ts[pn].t == T_RB) depth--;
-        if (depth == 1 && ts[pn].t == T_CM) return 0;
         pn++;
     }
     return 1;
+}
+
+/* Peek at token stream to determine expression type at compile time.
+ * Advances pn past the expression. Returns T_UNKNOWN if indeterminate. */
+static ExprType peek_expr_type(int *pn) {
+    while (ts[*pn].t == T_NL || ts[*pn].t == T_SEMI) (*pn)++;
+    ExprType t = T_UNKNOWN;
+    switch (ts[*pn].t) {
+        case T_NUM: (*pn)++; t = T_NUM_TYPE; break;
+        case T_NIL: case T_STR: case T_LB: {
+            /* nil, string, or bracket literal — all produce arrays */
+            if (ts[*pn].t == T_LB) {
+                /* skip past the bracket literal */
+                int d = 1; (*pn)++;
+                while (d > 0 && ts[*pn].t != T_EOF) {
+                    if (ts[*pn].t == T_LP || ts[*pn].t == T_LB) d++;
+                    if (ts[*pn].t == T_RP || ts[*pn].t == T_RB) d--;
+                    (*pn)++;
+                }
+            } else {
+                (*pn)++;
+            }
+            t = T_ARR_TYPE;
+            break;
+        }
+        case T_LP: {
+            (*pn)++; /* skip ( */
+            t = peek_expr_type(pn);
+            if (ts[*pn].t == T_RP) (*pn)++;
+            break;
+        }
+        case T_MI: case T_BN: { (*pn)++; t = peek_expr_type(pn); break; }
+        case T_HASH: { (*pn)++; peek_expr_type(pn); t = T_NUM_TYPE; break; }
+        case T_ID: {
+            char *nm = ts[*pn].s; (*pn)++;
+            if (ts[*pn].t == T_LP) {
+                /* function call */
+                (*pn)++; /* skip ( */
+                int d = 1;
+                while (d > 0 && ts[*pn].t != T_EOF) {
+                    if (ts[*pn].t == T_LP || ts[*pn].t == T_LB) d++;
+                    if (ts[*pn].t == T_RP || ts[*pn].t == T_RB) d--;
+                    (*pn)++;
+                }
+                int fi = ffind(nm);
+                t = (fi >= 0) ? fs[fi].ret_type : T_UNKNOWN;
+            } else {
+                int slot = var_find(nm);
+                t = (slot >= 0) ? comp_types[slot] : T_UNKNOWN;
+            }
+            break;
+        }
+        default: break;
+    }
+    /* Index brackets [...] — result type is unknown */
+    while (ts[*pn].t == T_LB) {
+        int d = 1; (*pn)++;
+        while (d > 0 && ts[*pn].t != T_EOF) {
+            if (ts[*pn].t == T_LP || ts[*pn].t == T_LB) d++;
+            if (ts[*pn].t == T_RP || ts[*pn].t == T_RB) d--;
+            (*pn)++;
+        }
+        t = T_UNKNOWN;
+    }
+    while (t != T_UNKNOWN && is_binary_op(ts[*pn].t)) {
+        int op = ts[*pn].t; (*pn)++;
+        ExprType rt = peek_expr_type(pn);
+        if (t == T_UNKNOWN || rt == T_UNKNOWN) {
+            t = T_UNKNOWN;
+        } else if (op == T_PL) {
+            /* +: num+num=num; arr+arr=arr; arr+num=arr; num+arr=arr */
+            t = (t == T_NUM_TYPE && rt == T_NUM_TYPE) ? T_NUM_TYPE : T_ARR_TYPE;
+        } else if (op == T_ST) {
+            /* *: num*num=num; arr*num=arr (repeat) */
+            t = (t == T_ARR_TYPE && rt == T_NUM_TYPE) ? T_ARR_TYPE : T_NUM_TYPE;
+        } else {
+            /* All other binary ops produce numbers */
+            t = T_NUM_TYPE;
+        }
+    }
+    return t;
 }
 
 void comp_stmt(Code *c) {
@@ -925,27 +1027,67 @@ void comp_stmt(Code *c) {
                             is_push = ts[pn].t == T_PL;
                             if (is_push) {
                                 pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                                is_push = is_single_elem_bracket(pn);
+                                is_push = is_bracket_literal(pn);
+                                if (is_push) {
+                                    /* Skip past the brackets to check nothing follows (no chained operators) */
+                                    int scan = pn + 1, depth = 1;
+                                    while (depth > 0 && ts[scan].t != T_EOF) {
+                                        if (ts[scan].t == T_LP || ts[scan].t == T_LB) depth++;
+                                        if (ts[scan].t == T_RP || ts[scan].t == T_RB) depth--;
+                                        scan++;
+                                    }
+                                    while (ts[scan].t == T_NL || ts[scan].t == T_SEMI) scan++;
+                                    is_push = !is_binary_op(ts[scan].t);
+                                }
                             }
                         }
                     }
                     if (is_push) {
                         int slot = var_find(nm);
                         if (slot < 0) slot = var_add(nm);
-                        tp++; tp++; tp++;
-                        comp_expr(c);
-                        while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
+                        set_var_type(slot, T_ARR_TYPE);
+                        tp++; tp++; tp++;  /* skip arr, +, [ */
+                        do {
+                            comp_expr(c);
+                            emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
+                        } while (ts[tp].t == T_CM && (tp++, 1));
                         if (ts[tp].t != T_RB) die("expected ]"); tp++;
-                        emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
                     } else {
-                        comp_expr(c);
-                        if (idx_count > 0) {
+                        int use_push_all = (idx_count == 0);
+                        if (use_push_all) {
+                            int pn = tp;
+                            while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                            use_push_all = ts[pn].t == T_ID && !strcmp(ts[pn].s, nm);
+                            if (use_push_all) {
+                                pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
+                                use_push_all = ts[pn].t == T_PL;
+                            }
+                        }
+                        if (use_push_all) {
                             int slot = var_find(nm);
                             if (slot < 0) slot = var_add(nm);
+                            /* Only use push_all when slot is known to be an array */
+                            if (comp_types[slot] != T_ARR_TYPE) use_push_all = 0;
+                        }
+                        if (use_push_all) {
+                            int slot = var_find(nm);
+                            set_var_type(slot, T_ARR_TYPE);
+                            tp++; tp++;  /* skip var, + */
+                            comp_expr(c);
+                            emit(c, (Instr){OC_PUSH_ALL, slot, 0, .num = 0});
+                        } else if (idx_count > 0) {
+                            comp_expr(c);
+                            int slot = var_find(nm);
+                            if (slot < 0) slot = var_add(nm);
+                            set_var_type(slot, T_ARR_TYPE);
                             emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
                         } else {
+                            int pn = tp;
+                            ExprType store_type = peek_expr_type(&pn);
+                            comp_expr(c);
                             int slot = var_find(nm);
                             if (slot < 0) slot = var_add(nm);
+                            set_var_type(slot, store_type);
                             emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
                         }
                     }
@@ -973,7 +1115,7 @@ void exec(Code *c) {
     static void *dispatch[] = {
         [OC_NUM] = &&op_num, [OC_NIL] = &&op_nil, [OC_STR] = &&op_str,
         [OC_MAKE_ARR] = &&op_make_arr,
-        [OC_VAR] = &&op_var, [OC_STORE] = &&op_store,
+        [OC_VAR] = &&op_var,
         [OC_VAR_SLOT] = &&op_var_slot, [OC_STORE_SLOT] = &&op_store_slot,
         [OC_OP] = &&op_op, [OC_UNARY] = &&op_unary, [OC_INDEX] = &&op_index,
         [OC_LVALS] = &&op_lvals, [OC_PUSH] = &&op_push, [OC_SLICE] = &&op_slice,
@@ -981,6 +1123,7 @@ void exec(Code *c) {
         [OC_RET] = &&op_ret, [OC_POP] = &&op_pop,
         [OC_DUP] = &&op_dup, [OC_JZ] = &&op_jz, [OC_JNZ] = &&op_jnz, [OC_JMP] = &&op_jmp,
         [OC_PRINT] = &&op_print, [OC_INPUT] = &&op_input,
+        [OC_PUSH_ALL] = &&op_push_all,
         [OC_END] = &&op_end,
     };
     int ip = 0;
@@ -1025,13 +1168,6 @@ op_var: {
     istk[++isp] = v; if (v.type == VAL_ARR) aretain(v.arr);
     ip++; goto *dispatch[c->code[ip].op];
 }
-op_store: {
-    err_line = c->code[ip].line; err_file = c->code[ip].file;
-    Instr *ins = &c->code[ip];
-    Value v = istk[isp--]; sset(cs, ins->name, v); if (v.type == VAL_ARR) arelease(v.arr);
-    ip++; goto *dispatch[c->code[ip].op];
-}
-
 /* Slot-indexed variable access (function bodies) — O(1), no strcmp */
 op_var_slot: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
@@ -1098,19 +1234,10 @@ op_lvals: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     Instr *ins = &c->code[ip];
     int slot = ins->a, depth = ins->b;
-    /* If slot is valid, skip name lookup */
     Value val = istk[isp--];
     Value indices[16];
     for (int j = depth-1; j >= 0; j--) indices[j] = istk[isp--];
-    Value *root;
-    if (slot >= 0 && slot < cs->c) {
-        root = &cs->v[slot];
-    } else {
-        int si = -1;
-        for (int i = 0; i < cs->c; i++) if (cs->n[i] && ins->name && !strcmp(cs->n[i], ins->name)) { si = i; break; }
-        if (si < 0) die("undefined '%s'", ins->name);
-        root = &cs->v[si];
-    }
+    Value *root = &cs->v[slot];
     Value *sp = root;
     for (int j = 0; j < depth; j++) {
         amake_uniq(sp);
@@ -1137,17 +1264,8 @@ op_push: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     Instr *ins = &c->code[ip];
     int slot = ins->a;
-    Value *slot_val;
-    if (slot >= 0 && slot < cs->c) {
-        slot_val = &cs->v[slot];
-    } else {
-        int si = -1;
-        for (int i = 0; i < cs->c; i++) if (cs->n[i] && ins->name && !strcmp(cs->n[i], ins->name)) { si = i; break; }
-        if (si < 0) die("undefined '%s'", ins->name);
-        slot_val = &cs->v[si];
-    }
+    Value *slot_val = &cs->v[slot];
     Value elem = istk[isp--];
-    if (slot_val->type != VAL_ARR) die("cannot append to non-array");
     if (!slot_val->arr) { slot_val->arr = aalloc(4); slot_val->arr->len = 0; }
     else amake_uniq(slot_val);
     int len = slot_val->arr->len;
@@ -1158,6 +1276,41 @@ op_push: {
     vassign(&slot_val->arr->val[len], elem);
     slot_val->arr->len = len + 1;
     if (elem.type == VAL_ARR) arelease(elem.arr);
+    ip++; goto *dispatch[c->code[ip].op];
+}
+
+op_push_all: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    Instr *ins = &c->code[ip];
+    int slot = ins->a;
+    Value rhs = istk[isp--];
+    Value *slot_val = &cs->v[slot];
+    if (rhs.type == VAL_ARR) {
+        /* RHS is an array: push all elements into slot in-place */
+        if (!slot_val->arr) { slot_val->arr = aalloc(4); slot_val->arr->len = 0; }
+        else amake_uniq(slot_val);
+        Arr *ra = rhs.arr;
+        int rn = ra ? ra->len : 0;
+        for (int i = 0; i < rn; i++) {
+            int len = slot_val->arr->len;
+            if (len >= slot_val->arr->cap) {
+                slot_val->arr->cap = slot_val->arr->cap ? slot_val->arr->cap * 2 : 4;
+                slot_val->arr->val = realloc(slot_val->arr->val, slot_val->arr->cap * sizeof(Value));
+            }
+            vassign(&slot_val->arr->val[len], ra->val[i]);
+            slot_val->arr->len = len + 1;
+        }
+        arelease(rhs.arr);
+    } else {
+        /* Fallback: use normal + operator */
+        Value lhs = *slot_val;
+        if (lhs.type == VAL_ARR) aretain(lhs.arr);
+        Value res = apply(T_PL, lhs, rhs);
+        vassign(slot_val, res);
+        if (lhs.type == VAL_ARR) arelease(lhs.arr);
+        if (rhs.type == VAL_ARR) arelease(rhs.arr);
+        if (res.type == VAL_ARR) arelease(res.arr);
+    }
     ip++; goto *dispatch[c->code[ip].op];
 }
 
@@ -1310,7 +1463,7 @@ int main(int a, char **v) {
         if (slash) { memcpy(dir, v[1], slash - v[1]); } include_dir = dir;
         comp_file = strdup(v[1]);
         lex(src); Code *code = new_code();
-        comp_vars = NULL; comp_vc = 0; comp_vm = 0;
+        comp_vars = NULL; comp_types = NULL; comp_vc = 0; comp_vm = 0;
         comp_program(code); free(src); free(comp_file); comp_file = NULL;
         /* Grow scope if needed for top-level variable slots */
         if (comp_vc > cs->c) {
@@ -1322,8 +1475,11 @@ int main(int a, char **v) {
             free(cs->n); free(cs->v); free(cs);
             cs = new_cs;
         }
-        for (int i = 0; i < comp_vc; i++)
+        for (int i = 0; i < comp_vc; i++) {
             if (!cs->n[i]) cs->n[i] = strdup(comp_vars[i]);
+            if (comp_types[i] == T_ARR_TYPE && cs->v[i].type == VAL_NUM)
+                cs->v[i] = (Value){ .type = VAL_ARR };
+        }
         exec(code); code_free(code); free(ts);
     } else {
         char buf[65536];
@@ -1379,8 +1535,11 @@ int main(int a, char **v) {
                 free(cs->n); free(cs->v); free(cs);
                 cs = new_cs;
             }
-            for (int i = 0; i < comp_vc; i++)
+            for (int i = 0; i < comp_vc; i++) {
                 if (!cs->n[i]) cs->n[i] = strdup(comp_vars[i]);
+                if (comp_types[i] == T_ARR_TYPE && cs->v[i].type == VAL_NUM)
+                    cs->v[i] = (Value){ .type = VAL_ARR };
+            }
             { int _sr = repl_catching; repl_catching = 1;
               if (setjmp(repl_jmp)) { isp = -1; rf = 0; call_depth = -1; }
               else { isp = -1; exec(code); printf("\n"); }
@@ -1391,6 +1550,6 @@ int main(int a, char **v) {
         done:;
 #endif
     }
-    if (comp_vars) { for (int i = 0; i < comp_vc; i++) free(comp_vars[i]); free(comp_vars); }
+    if (comp_vars) { for (int i = 0; i < comp_vc; i++) free(comp_vars[i]); free(comp_vars); free(comp_types); }
     sfree(cs); return 0;
 }
