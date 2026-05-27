@@ -2,42 +2,42 @@
 // Builds a linked list of N elements using TCO, then traverses it.
 // Expected: O(N) time, regardless of list depth.
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
-function range(n=0, acc=[]) {
+fun range(n=0, acc=[]) {
     if n == 0 {
-        return acc
+        ret acc
     }
-    return range(n - 1, [n, acc])
+    ret range(n - 1, [n, acc])
 }
 
-function sum_list(lst=[]) {
+fun sum_list(lst=[]) {
     total = 0
-    while lst != [] {
+    for lst != [] {
         total = total + lst[0]
         lst = lst[1]
     }
-    return total
+    ret total
 }
 
-function max_list(lst=[]) {
+fun max_list(lst=[]) {
     m = 0
-    while lst != [] {
+    for lst != [] {
         if lst[0] > m {
             m = lst[0]
         }
         lst = lst[1]
     }
-    return m
+    ret m
 }
 
-function len_list(lst=[]) {
+fun len_list(lst=[]) {
     n = 0
-    while lst != [] {
+    for lst != [] {
         n = n + 1
         lst = lst[1]
     }
-    return n
+    ret n
 }
 
 // Build a list of N elements

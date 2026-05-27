@@ -1,2 +1,2 @@
-// error: undefined function
+// error: undefined fun
 foo()

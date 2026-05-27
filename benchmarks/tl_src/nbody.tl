@@ -3,21 +3,21 @@
 // Arrays must end on same line as last element (parser limitation)
 
 // Newton-Raphson square root
-function sqrt(x=0) {
-    if x <= 0 { return 0 }
+fun sqrt(x=0) {
+    if x <= 0 { ret 0 }
     guess = x / 2
     i = 0
-    while i < 100 {
-        if guess == 0 { return x }
+    for i < 100 {
+        if guess == 0 { ret x }
         new_guess = (guess + x / guess) / 2
-        if new_guess == guess { return guess }
+        if new_guess == guess { ret guess }
         guess = new_guess
         i = i + 1
     }
-    return guess
+    ret guess
 }
 
-function init_bodies() {
+fun init_bodies() {
     // Pre-computed values (no scientific notation - tinylang doesn't support it)
     jup_vx = 0.6064335992583953
     jup_vy = 2.8117979576226787
@@ -38,19 +38,19 @@ function init_bodies() {
     sm = 39.47841760435743
 
     // Arrays on single lines to avoid parser issue with newlines before ]
-    return [[0, 0, 0, 0, 0, 0, sm],
+    ret [[0, 0, 0, 0, 0, 0, sm],
         [4.84143144246472090, -1.16032004402742839, -0.103622044471123109, jup_vx, jup_vy, jup_vz, jup_mass],
         [8.34336671824457987, 4.12479856412430479, -0.403523417114321381, sat_vx, sat_vy, sat_vz, sat_mass],
         [12.8943695621391310, -15.1111514016986312, -0.223307578892655734, ura_vx, ura_vy, ura_vz, ura_mass],
         [15.3796971148509165, -25.9193146099879641, 0.179258772950371181, nep_vx, nep_vy, nep_vz, nep_mass]]
 }
 
-function offset_momentum(bodies=[[]]) {
+fun offset_momentum(bodies=[[]]) {
     px = 0
     py = 0
     pz = 0
     i = 0
-    while i < 5 {
+    for i < 5 {
         px = px + bodies[i][3] * bodies[i][6]
         py = py + bodies[i][4] * bodies[i][6]
         pz = pz + bodies[i][5] * bodies[i][6]
@@ -61,13 +61,13 @@ function offset_momentum(bodies=[[]]) {
     sun[4] = -(py / 39.47841760435743)
     sun[5] = -(pz / 39.47841760435743)
     bodies[0] = sun
-    return bodies
+    ret bodies
 }
 
-function advance(bodies=[[]]) {
+fun advance(bodies=[[]]) {
     vels = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
     i = 0
-    while i < 5 {
+    for i < 5 {
         vels[i * 3] = bodies[i][3]
         vels[i * 3 + 1] = bodies[i][4]
         vels[i * 3 + 2] = bodies[i][5]
@@ -75,9 +75,9 @@ function advance(bodies=[[]]) {
     }
 
     i = 0
-    while i < 5 {
+    for i < 5 {
         j = i + 1
-        while j < 5 {
+        for j < 5 {
             dx = bodies[i][0] - bodies[j][0]
             dy = bodies[i][1] - bodies[j][1]
             dz = bodies[i][2] - bodies[j][2]
@@ -100,7 +100,7 @@ function advance(bodies=[[]]) {
 
     result = []
     i = 0
-    while i < 5 {
+    for i < 5 {
         body = [0,0,0,0,0,0,bodies[i][6]]
         body[0] = bodies[i][0] + 0.01 * vels[i * 3]
         body[1] = bodies[i][1] + 0.01 * vels[i * 3 + 1]
@@ -111,20 +111,20 @@ function advance(bodies=[[]]) {
         result = result + [body]
         i = i + 1
     }
-    return result
+    ret result
 }
 
-function energy(bodies=[[]]) {
+fun energy(bodies=[[]]) {
     e = 0.0
     i = 0
-    while i < 5 {
+    for i < 5 {
         vx = bodies[i][3]
         vy = bodies[i][4]
         vz = bodies[i][5]
         m = bodies[i][6]
         e = e + 0.5 * m * (vx * vx + vy * vy + vz * vz)
         j = i + 1
-        while j < 5 {
+        for j < 5 {
             dx = bodies[i][0] - bodies[j][0]
             dy = bodies[i][1] - bodies[j][1]
             dz = bodies[i][2] - bodies[j][2]
@@ -136,16 +136,16 @@ function energy(bodies=[[]]) {
         }
         i = i + 1
     }
-    return e
+    ret e
 }
 
-function run(n=0) {
+fun run(n=0) {
     bodies = init_bodies()
     bodies = offset_momentum(bodies)
     print(energy(bodies))
 
     iter = 0
-    while iter < n {
+    for iter < n {
         bodies = advance(bodies)
         iter = iter + 1
     }

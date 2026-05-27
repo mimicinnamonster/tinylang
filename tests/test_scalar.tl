@@ -1,7 +1,7 @@
 // Scalar operations — simplified (no compact types, no bitwise)
 // All numbers are doubles, arrays are Value[]
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 println("=== 1. Basic numbers ===")
 println(0)
@@ -47,29 +47,29 @@ println(50 > -100)
 println(70000 > 100)
 
 println("=== 6. Function parameters and returns ===")
-function double(x=0) { return x * 2 }
+fun double(x=0) { ret x * 2 }
 println(double(5))
 println(double(-10))
 println(double(1.5))
 
-function half(x=0) { return x / 2 }
+fun half(x=0) { ret x / 2 }
 println(half(10))
 println(half(9))
 
-function negate(x=0) { return -x }
+fun negate(x=0) { ret -x }
 println(negate(42))
 println(negate(-100))
 
-function add_many(a=0, b=0, c=0) {
+fun add_many(a=0, b=0, c=0) {
     a = a + b
-    return a + c
+    ret a + c
 }
 println(add_many(10, 20, 30))
 println(add_many(-5, 10, -3))
 
-function factorial(n=0) {
-    if n <= 1 { return 1 }
-    return n * factorial(n - 1)
+fun factorial(n=0) {
+    if n <= 1 { ret 1 }
+    ret n * factorial(n - 1)
 }
 println(factorial(5))
 println(factorial(10))
@@ -77,7 +77,7 @@ println(factorial(10))
 println("=== 7. Loop counters ===")
 sum = 0
 i = 0
-while i < 10 {
+for i < 10 {
     sum = sum + i
     i = i + 1
 }
@@ -85,7 +85,7 @@ println(sum)
 
 m = 1
 i = 0
-while i < 10 {
+for i < 10 {
     m = m * 2
     i = i + 1
 }
@@ -94,7 +94,7 @@ println(m)
 // Overflow check — doubles handle large values
 big = 1
 i = 0
-while i < 100 {
+for i < 100 {
     big = big * 2
     i = i + 1
 }
@@ -130,7 +130,7 @@ println(distance)
 arr = [10, 20, 30, 40, 50]
 sum = 0
 i = 0
-while i < #arr {
+for i < #arr {
     sum = sum + arr[i]
     i = i + 1
 }

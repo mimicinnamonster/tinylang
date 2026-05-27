@@ -1,4 +1,4 @@
 // Error: parameter without default value
-function foo(a=5, b) {
-    return a + b
+fun foo(a=5, b) {
+    ret a + b
 }

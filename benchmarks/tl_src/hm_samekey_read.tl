@@ -3,7 +3,7 @@
 map = [[]] * 1000
 map["target"] = 42
 i = 0
-while i < 1000000 {
+for i < 1000000 {
     _ = map["target"]
     i = i + 1
 }

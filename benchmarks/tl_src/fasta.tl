@@ -2,26 +2,26 @@
 // Generates random DNA/RNA sequences
 // All constants inlined since functions can't see globals
 
-function make_rng() {
-    return [42.0]
+fun make_rng() {
+    ret [42.0]
 }
 
-function next_rand(rng=[42.0]) {
+fun next_rand(rng=[42.0]) {
     seed = rng[0]
     seed = (seed * 3877 + 29573) % 139968
     rng[0] = seed
-    return seed
+    ret seed
 }
 
-function repeat_fasta(seq=[], n=0) {
+fun repeat_fasta(seq=[], n=0) {
     len = #seq
     pos = 0
-    while n > 0 {
+    for n > 0 {
         line = n
         if line > 60 { line = 60 }
         buf = []
         i = 0
-        while i < line {
+        for i < line {
             buf = buf + [seq[pos]]
             pos = pos + 1
             if pos >= len { pos = 0 }
@@ -33,28 +33,28 @@ function repeat_fasta(seq=[], n=0) {
     }
 }
 
-function random_fasta(rng=[42.0], symb=[], probs=[], n=0) {
+fun random_fasta(rng=[42.0], symb=[], probs=[], n=0) {
     // Build cumulative probabilities
     cum = []
     sum = 0.0
     ns = #symb
     i = 0
-    while i < ns {
+    for i < ns {
         sum = sum + probs[i]
         cum = cum + [sum]
         i = i + 1
     }
 
-    while n > 0 {
+    for n > 0 {
         line = n
         if line > 60 { line = 60 }
         buf = []
         i = 0
-        while i < line {
+        for i < line {
             r = next_rand(rng)
             j = 0
             found = 0
-            while j < ns {
+            for j < ns {
                 if r < cum[j] * 139968.0 {
                     buf = buf + [symb[j]]
                     found = 1
@@ -73,7 +73,7 @@ function random_fasta(rng=[42.0], symb=[], probs=[], n=0) {
     }
 }
 
-function run(n=0) {
+fun run(n=0) {
     rng = make_rng()
 
     alu = "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA"

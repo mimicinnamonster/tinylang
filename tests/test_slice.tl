@@ -1,6 +1,6 @@
 // Test basic slicing
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 arr = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 

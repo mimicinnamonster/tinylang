@@ -1,6 +1,6 @@
 // Test UTF-8 / emoji handling
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // --- Basic UTF-8 in string literals ---
 println("--- emoji ---")

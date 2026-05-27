@@ -1,11 +1,11 @@
 // tail-call optimized factorial
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
-function fact_tco(n=0, acc=1) {
+fun fact_tco(n=0, acc=1) {
     if n == 0 {
-        return acc
+        ret acc
     }
-    return fact_tco(n - 1, n * acc)
+    ret fact_tco(n - 1, n * acc)
 }
 
 // should handle deep recursion without C stack overflow

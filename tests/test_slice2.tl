@@ -1,6 +1,6 @@
 // Additional slice edge cases
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // Expression indices
 a = 1

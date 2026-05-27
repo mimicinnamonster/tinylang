@@ -4,7 +4,7 @@
 // Short key (3 bytes)
 m = [0] * 1000
 i = 0
-while i < 500000 {
+for i < 500000 {
     _ = m["abc"]
     i = i + 1
 }

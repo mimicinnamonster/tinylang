@@ -1,4 +1,4 @@
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // === Basic destructure ===
 println("--- basic ---")
@@ -28,9 +28,9 @@ p, q = q, p
 println(p)      // 200
 println(q)      // 100
 
-// === Destructure from function return ===
-println("--- function return ---")
-function mkarr() { return [10, 20, 30] }
+// === Destructure from fun ret ===
+println("--- fun ret ---")
+fun mkarr() { ret [10, 20, 30] }
 r, s = mkarr()
 println(r)      // 10
 println(s)      // 20
@@ -97,11 +97,11 @@ println(x)      // 20
 println(y)      // 30
 println(z)      // 40
 
-// === Destructure inside function body ===
-println("--- inside function ---")
-function first_two(arr=[]) {
+// === Destructure inside fun body ===
+println("--- inside fun ---")
+fun first_two(arr=[]) {
     a, b = arr
-    return a + b
+    ret a + b
 }
 println(first_two([3, 7]))       // 10
 println(first_two([100, 200]))   // 300
@@ -139,37 +139,37 @@ println(fb)         // 2
 println(ga)         // 1
 println(gb)         // 2
 
-// === return with comma-separated values (implicit array) ===
-println("--- return comma ---")
-function ret_multi() {
-    return 1, 2, 3
+// === ret with comma-separated values (implicit array) ===
+println("--- ret comma ---")
+fun ret_multi() {
+    ret 1, 2, 3
 }
 result = ret_multi()
 println(result)     // [1, 2, 3]
 println(#result)    // 3
 
-// destructure from comma return
+// destructure from comma ret
 ra, rb, rc = ret_multi()
 println(ra)         // 1
 println(rb)         // 2
 println(rc)         // 3
 
-// mixed types in comma return
-function ret_mixed() {
-    return "hello", 99
+// mixed types in comma ret
+fun ret_mixed() {
+    ret "hello", 99
 }
 a, b = ret_mixed()
 println(a)          // hello
 println(b)          // 99
 
-// single return still works
-function ret_one() {
-    return 42
+// single ret still works
+fun ret_one() {
+    ret 42
 }
 println(ret_one())  // 42
 
-// return empty array
-function ret_empty() {
-    return []
+// ret empty array
+fun ret_empty() {
+    ret []
 }
 println(#ret_empty()) // 0

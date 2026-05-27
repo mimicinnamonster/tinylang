@@ -2,8 +2,8 @@
 
 include "trace_include_sub.tl"
 
-function main_fn() {
-    // Just call the sub function — if trace works, error message shows chain
+fun main_fn() {
+    // Just call the sub fun — if trace works, error message shows chain
     sub_err()
 }
 

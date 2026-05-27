@@ -1,6 +1,6 @@
 // Number literal tests: hex and decimal (binary/octal removed)
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // --- 1. Hex literals ---
 println("--- hex ---")

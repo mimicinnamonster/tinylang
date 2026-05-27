@@ -12,7 +12,7 @@
 - First assignment determines variable type permanently
 - `x = 0; x = "hello"` → compile error: `"type mismatch"`
 - Compiler tracks types in `comp_types[]` — first-assigned type per variable
-- Function return types inferred and checked across all `return` statements
+- Function return types inferred and checked across all `ret` statements
 - `peek_expr_type()` infers expression types at compile time (literals,
   variables, function calls, binary operators)
 - Indexed expressions (`arr[i]`) are `T_UNKNOWN` — element types not tracked
@@ -220,7 +220,7 @@ binary operator.
 
 ```
 if condition { ... } elif condition { ... } else { ... }
-while condition { ... }
+for condition { ... }
 ```
 
 - `{}` on bodies are always required
@@ -231,16 +231,16 @@ while condition { ... }
 ## 8. Functions
 
 ```
-function name(param=value, ...) { statements }
+fun name(param=value, ...) { statements }
 ```
 
-- `function` keyword
-- `return expr` exits and returns `expr`; `return e1, e2, e3` is sugar for
-  `return [e1, e2, e3]` (implicit array); no return → returns `[]`
+- `fun` keyword
+- `ret expr` exits and returns `expr`; `ret e1, e2, e3` is sugar for
+  `ret [e1, e2, e3]` (implicit array); no ret → returns `[]`
 - Defined only at top level (no nested functions)
 - Define-before-use (no forward references)
 - Recursion works; tail calls are optimized (TCO) — no stack growth for
-  `return f(...)` in tail position
+  `ret f(...)` in tail position
 - Not first-class — cannot be stored in variables or passed as arguments
 - **Every parameter must have a default value.** This ensures all parameter
   types are known at compile time. Missing arguments use the default value
@@ -248,15 +248,15 @@ function name(param=value, ...) { statements }
   or array literals with constant elements:
 
   ```tinylang
-  function add(a=0, b=10) { return a + b }
+  fun add(a=0, b=10) { ret a + b }
   add(5)       // 15  (b=10 from default)
   add()        // 0   (a=0, b=10 both from defaults)
 
-  function first(arr=[10, 20, 30]) { return arr[0] }
+  fun first(arr=[10, 20, 30]) { ret arr[0] }
   first()      // 10
 
   // Error: parameter without default
-  // function bad(a=5, b) { }  // compile-time error
+  // fun bad(a=5, b) { }  // compile-time error
   ```
 
 ---
@@ -393,7 +393,7 @@ literal or variable) use the cached hash in O(1):
 
 ```tinylang
 key = "expensive"
-while i < 10000 {
+for i < 10000 {
     print(map[key])   // hash computed once, cached for 9999 iterations
     i = i + 1
 }
@@ -466,7 +466,7 @@ Regex: `[a-zA-Z_][a-zA-Z0-9_]*`
 ### Reserved Keywords
 
 ```
-function   return   if   elif   else   while   nil   include
+fun   ret   if   elif   else   for   nil   include
 ```
 
 Built-in function names (`print`, `input`) are NOT keywords.
@@ -543,9 +543,9 @@ destructure   := identifier "," identifier ("," identifier)* "=" rhs_list
 rhs_list      := expr ("," expr)*
 
 if_stmt       := "if" expr block ("elif" expr block)* ("else" block)?
-while_stmt    := "while" expr block
-func_def      := "function" identifier "(" params ")" block
-ret_stmt      := "return" expr ("," expr)*
+while_stmt    := "for" expr block
+func_def      := "fun" identifier "(" params ")" block
+ret_stmt      := "ret" expr ("," expr)*
 expr_stmt     := expr
 
 block         := "{" stmt_list "}"

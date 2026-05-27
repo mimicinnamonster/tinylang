@@ -1,27 +1,27 @@
 // Collision analysis — measure collision rates
 // Writes N keys into arrays of different sizes and counts overlaps
 
-function count_collisions(buckets=0, num_keys=0) {
+fun count_collisions(buckets=0, num_keys=0) {
     tbl = [[]] * buckets
     i = 0
-    while i < num_keys {
+    for i < num_keys {
         tbl["k" + i] = i
         i = i + 1
     }
     i = 0
     coll = 0
-    while i < num_keys {
+    for i < num_keys {
         if tbl["k" + i] != i {
             coll = coll + 1
         }
         i = i + 1
     }
-    return coll
+    ret coll
 }
 
-function pct(n=0, total=0) {
-    if total == 0 { return "0%" }
-    return "" + (n * 100 / total) + "%"
+fun pct(n=0, total=0) {
+    if total == 0 { ret "0%" }
+    ret "" + (n * 100 / total) + "%"
 }
 
 print("--- Collision Rate Analysis ---")
@@ -32,7 +32,7 @@ print("100 keys into varying bucket sizes:")
 print("")
 buckets_list = [10, 50, 100, 200, 500, 1000, 2000]
 i = 0
-while i < #buckets_list {
+for i < #buckets_list {
     b = buckets_list[i]
     c = count_collisions(b, 100)
     print("  " + b + " buckets: " + c + " collisions (" + pct(c, 100) + ")")
@@ -44,7 +44,7 @@ print("1000 buckets, varying key counts:")
 print("")
 keys_list = [100, 200, 500, 1000, 2000, 5000, 10000]
 i = 0
-while i < #keys_list {
+for i < #keys_list {
     n = keys_list[i]
     c = count_collisions(1000, n)
     print("  " + n + " keys: " + c + " collisions (" + pct(c, n) + ")")
@@ -56,7 +56,7 @@ print("Load factor analysis (keys/bucket ratio vs collision rate):")
 print("")
 sizes = [[10000, 1000], [10000, 5000], [10000, 10000], [10000, 20000], [10000, 50000], [10000, 100000]]
 i = 0
-while i < #sizes {
+for i < #sizes {
     b = sizes[i][0]
     n = sizes[i][1]
     c = count_collisions(b, n)

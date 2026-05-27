@@ -1,3 +1,3 @@
-// error: function already defined
-function f() {}
-function f() {}
+// error: fun already defined
+fun f() {}
+fun f() {}

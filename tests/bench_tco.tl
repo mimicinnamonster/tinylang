@@ -1,30 +1,30 @@
 // Benchmark: tail call optimization
 // Verifies that TCO prevents C stack overflow for deep recursion.
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // Factorial with TCO
-function fact(n=0, acc=1) {
+fun fact(n=0, acc=1) {
     if n == 0 {
-        return acc
+        ret acc
     }
-    return fact(n - 1, n * acc)
+    ret fact(n - 1, n * acc)
 }
 
 // Deep trampoline: count down to 0 via TCO
-function countdown(n=0) {
+fun countdown(n=0) {
     if n == 0 {
-        return 0
+        ret 0
     }
-    return countdown(n - 1)
+    ret countdown(n - 1)
 }
 
 // Fibonacci with TCO (two accumulators)
-function fib(n=0, a=0, b=1) {
+fun fib(n=0, a=0, b=1) {
     if n == 0 {
-        return a
+        ret a
     }
-    return fib(n - 1, b, a + b)
+    ret fib(n - 1, b, a + b)
 }
 
 // Test 1: deep countdown (no result accumulation, just recursion depth)

@@ -1,6 +1,6 @@
 // test.tl — test basic features
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 x = 5
 y = x + 3
@@ -17,20 +17,20 @@ println(arr[0])
 arr[0] = 99
 println(arr)
 
-// function
-function double(n=0) {
-    return n * 2
+// fun
+fun double(n=0) {
+    ret n * 2
 }
 
 result = double(10)
 println(result)
 
 // factorial (recursion)
-function fact(n=0) {
+fun fact(n=0) {
     if n == 0 {
-        return 1
+        ret 1
     }
-    return n * fact(n - 1)
+    ret n * fact(n - 1)
 }
 
 println(fact(5))

@@ -5,7 +5,7 @@
 arr = [0, []]
 path = [1]
 i = 1
-while i < 10000 {
+for i < 10000 {
   arr[path] = [i, []]
   path = path + [1]
   i = i + 1
@@ -14,7 +14,7 @@ while i < 10000 {
 // Verify by counting nodes
 len = 0
 node = arr
-while node {
+for node {
   len = len + 1
   node = node[1]
 }

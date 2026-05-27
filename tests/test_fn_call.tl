@@ -1,4 +1,4 @@
-function hi() {
+fun hi() {
   print("hello!\n")
 }
 hi()

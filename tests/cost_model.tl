@@ -20,36 +20,36 @@
 //      concat in hot paths (benchmarks use OC_PUSH loops).
 //
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
-function realloc_copies(n=0) {
-    if n <= 4 { return 0 }
+fun realloc_copies(n=0) {
+    if n <= 4 { ret 0 }
     copies = 0
     cap = 4
-    while cap < n {
+    for cap < n {
         copies = copies + cap
         cap = cap * 2
     }
-    return copies
+    ret copies
 }
 
-function ceil_div(x=0, y=1) {
+fun ceil_div(x=0, y=1) {
     // Integer ceiling division: ceil(x / y)
     result = 0
-    while result * y < x {
+    for result * y < x {
         result = result + 1
     }
-    return result
+    ret result
 }
 
-function show(label="", c_total=0, r_total=0) {
+fun show(label="", c_total=0, r_total=0) {
     println(label)
     println(c_total)
     println(r_total)
 }
 
 // Scenario B: Append literal [1,2,3] using multi-push fix
-function scenario_append_literal(n=0, m=0, a=0, C=64) {
+fun scenario_append_literal(n=0, m=0, a=0, C=64) {
     // contiguous: m writes (push), no element copies
     c_total = m + a
 
@@ -62,7 +62,7 @@ function scenario_append_literal(n=0, m=0, a=0, C=64) {
 }
 
 // Scenario C: Concat two existing arrays
-function scenario_concat_arrays(n=0, m=0, a=0, C=64) {
+fun scenario_concat_arrays(n=0, m=0, a=0, C=64) {
     // contiguous: copy all n + m elements
     c_total = n + m + a
 
@@ -75,7 +75,7 @@ function scenario_concat_arrays(n=0, m=0, a=0, C=64) {
 }
 
 // Scenario A: Build from scratch via pushes
-function scenario_build(n=0, a=0, C=64) {
+fun scenario_build(n=0, a=0, C=64) {
     // contiguous: n writes + realloc copies
     c_total = n + realloc_copies(n) + a
 
@@ -87,10 +87,10 @@ function scenario_build(n=0, a=0, C=64) {
 }
 
 // Sweeps: show cost at each a to see crossover
-function sweep_append(n=0, m=0, C=64) {
+fun sweep_append(n=0, m=0, C=64) {
     println("sweep B n=" + n)
     a = 0
-    while a <= 200 {
+    for a <= 200 {
         total_len = n + m
         chunks = ceil_div(total_len, C)
         c_total = m + a
@@ -103,10 +103,10 @@ function sweep_append(n=0, m=0, C=64) {
     println("---")
 }
 
-function sweep_concat(n=0, m=0, C=64) {
+fun sweep_concat(n=0, m=0, C=64) {
     println("sweep C n=" + n)
     a = 0
-    while a <= 200 {
+    for a <= 200 {
         total_len = n + m
         chunks = ceil_div(total_len, C)
         c_total = n + m + a
@@ -119,10 +119,10 @@ function sweep_concat(n=0, m=0, C=64) {
     println("---")
 }
 
-function sweep_build(n=0, C=64) {
+fun sweep_build(n=0, C=64) {
     println("sweep A n=" + n)
     a = 0
-    while a <= 200 {
+    for a <= 200 {
         chunks = ceil_div(n, C)
         c_total = n + realloc_copies(n) + a
         r_total = n + chunks * C + a * chunks

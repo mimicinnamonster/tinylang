@@ -1,8 +1,8 @@
 // hashmap benchmark — string-keyed hashmap performance tests
 // Run: time ./tiny benchmarks/tl_src/hashmap.tl
 
-function println(x=0) { print(x) print("\n") }
-function print_csv(name="", n=0, elapsed=0) {
+fun println(x=0) { print(x) print("\n") }
+fun print_csv(name="", n=0, elapsed=0) {
     print(name)
     print(",")
     print(n)
@@ -21,7 +21,7 @@ i = 0
 t0 = clock()
 map = [[]] * 1000
 map["target"] = 42
-while i < 100000 {
+for i < 100000 {
     _ = map["target"]
     i = i + 1
 }
@@ -37,7 +37,7 @@ println("# writes,time_ms")
 map2 = [[]] * 1000
 i = 0
 t0 = clock()
-while i < 50000 {
+for i < 50000 {
     map2["key_" + i] = i
     i = i + 1
 }
@@ -53,7 +53,7 @@ println("# appends,time_ms")
 map3 = [[]] * 100
 i = 0
 t0 = clock()
-while i < 50000 {
+for i < 50000 {
     map3["batch"] += [i]
     i = i + 1
 }
@@ -67,12 +67,12 @@ print_csv("append-same-key", 50000, t1 - t0)
 println("=== Benchmark 4: Collision rate ===")
 println("buckets,keys,collisions,unique-buckets-used")
 
-function measure_collisions(buckets=0, num_keys=0) {
+fun measure_collisions(buckets=0, num_keys=0) {
     tbl = [[]] * buckets
     used = [0] * buckets
     collisions = 0
     i = 0
-    while i < num_keys {
+    for i < num_keys {
         tbl["k" + i] = i
         i = i + 1
     }
@@ -80,7 +80,7 @@ function measure_collisions(buckets=0, num_keys=0) {
     // We can't iterate buckets easily, so count by checking each bucket's content
     // Use a second pass: for each key, hash it and mark
     i = 0
-    while i < num_keys {
+    for i < num_keys {
         tbl["k" + i] = i
         i = i + 1
     }
@@ -89,7 +89,7 @@ function measure_collisions(buckets=0, num_keys=0) {
     // A collision happened if tbl["k"+i] != i (overwritten by another key)
     i = 0
     coll = 0
-    while i < num_keys {
+    for i < num_keys {
         if tbl["k" + i] != i {
             coll = coll + 1
         }
@@ -98,7 +98,7 @@ function measure_collisions(buckets=0, num_keys=0) {
     // Count used buckets
     used_buckets = 0
     i = 0
-    while i < buckets {
+    for i < buckets {
         if #tbl[i] > 0 {
             used_buckets = used_buckets + 1
         }
@@ -125,18 +125,18 @@ measure_collisions(1000, 1000)
 println("=== Benchmark 5: Key length impact ===")
 println("key-length,time_ms")
 
-function bench_key_length(len=0, iters=0) {
+fun bench_key_length(len=0, iters=0) {
     // Build a key of given length
     k = ""
     j = 0
-    while j < len {
+    for j < len {
         k = k + "x"
         j = j + 1
     }
     m = [0] * 1000
     i = 0
     t0 = clock()
-    while i < iters {
+    for i < iters {
         _ = m[k]
         i = i + 1
     }
@@ -165,7 +165,7 @@ flat = [0] * 1000
 
 // Fill both with the same data
 i = 0
-while i < 1000 {
+for i < 1000 {
     flat[i] = i
     hmap["v" + i] = i
     i = i + 1
@@ -174,7 +174,7 @@ while i < 1000 {
 // Hashmap read
 t0 = clock()
 i = 0
-while i < 100000 {
+for i < 100000 {
     _ = hmap["v" + 500]
     i = i + 1
 }
@@ -188,9 +188,9 @@ print(t1 - t0) print("\n")
 t0 = clock()
 i = 0
 found = []
-while i < 10000 {
+for i < 10000 {
     j = 0
-    while j < 1000 {
+    for j < 1000 {
         if flat[j] = 500 { j = 1000 }  // found, break
         j = j + 1
     }
@@ -209,20 +209,20 @@ print(t1 - t0) print("\n")
 println("=== Benchmark 7: Multi-key caching ===")
 println("unique-keys,time_ms")
 
-function bench_multi_key(nkeys=0, iters=0) {
+fun bench_multi_key(nkeys=0, iters=0) {
     m = [[]] * 1000
     // Pre-populate
     i = 0
-    while i < nkeys {
+    for i < nkeys {
         m["key_" + i] = i
         i = i + 1
     }
     // Read all keys in a loop
     i = 0
     t0 = clock()
-    while i < iters {
+    for i < iters {
         j = 0
-        while j < nkeys {
+        for j < nkeys {
             _ = m["key_" + j]
             j = j + 1
         }

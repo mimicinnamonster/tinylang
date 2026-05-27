@@ -505,9 +505,9 @@ void lex(const char *s) {
             else if (!strcmp(b,"if")){tk.t=T_IF;free(tk.s);}
             else if (!strcmp(b,"elif")){tk.t=T_ELIF;free(tk.s);}
             else if (!strcmp(b,"else")){tk.t=T_ELSE;free(tk.s);}
-            else if (!strcmp(b,"while")){tk.t=T_WH;free(tk.s);}
-            else if (!strcmp(b,"function")){tk.t=T_FN;free(tk.s);}
-            else if (!strcmp(b,"return")){tk.t=T_RT;free(tk.s);}
+            else if (!strcmp(b,"for")){tk.t=T_WH;free(tk.s);}
+            else if (!strcmp(b,"fun")){tk.t=T_FN;free(tk.s);}
+            else if (!strcmp(b,"ret")){tk.t=T_RT;free(tk.s);}
             else if (!strcmp(b,"include")){tk.t=T_INCLUDE;free(tk.s);}
             goto em;
         }

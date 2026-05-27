@@ -32,16 +32,16 @@ time, eliminating the need for runtime type guards on array operations.
 // Everything here compiles to flat bytecode in one pass.
 // No AST, no runtime type checks, no GC pauses.
 
-function sum(list=[], acc=0) {
-    if list == nil { return acc }
-    return sum(list[1], acc + list[0])  // TCO, unlimited recursion
+fun sum(list=[], acc=0) {
+    if list == nil { ret acc }
+    ret sum(list[1], acc + list[0])  // TCO, unlimited recursion
 }
 
 // Lisp-like linked list
 print(sum([1, [2, [3, [4, nil]]]]))  // 10
 
 nums = []; i = 0
-while i < 100000 {
+for i < 100000 {
     nums = nums + [i] // array push with O(1)
     i = i + 1
 }
@@ -328,7 +328,7 @@ Regex: `[a-zA-Z_][a-zA-Z0-9_]*`
 **Reserved keywords:**
 
 ```
-function   return   if   elif   else   while   nil   include
+fun   ret   if   elif   else   for   nil   include
 ```
 
 Built-in function names (`print`, `input`, `thispath`) are **not** keywords.
@@ -536,8 +536,8 @@ Variables are always local to the **current function or top-level scope**.
 
 ```tinylang
 x = 10               // top-level variable
-function foo() {
-    x = 20           // creates NEW local variable 'x' in function scope
+fun foo() {
+    x = 20           // creates NEW local variable 'x' in fun scope
     print(x)         // 20
 }
 foo()
@@ -616,7 +616,7 @@ a, b = foo(), bar()     // [foo(), bar()]
 ```
 
 This pairs naturally with comma-separated returns — a function can
-`return 1, 2, 3` (sugar for `return [1, 2, 3]`) and the caller can
+`ret 1, 2, 3` (sugar for `ret [1, 2, 3]`) and the caller can
 `a, b, c = foo()` to unpack them.
 
 Destructured variables are assigned left-to-right, and the RHS is fully
@@ -889,47 +889,47 @@ arr[k] = val
 ### Functions
 
 ```tinylang
-// Simple function
-function double(x=0) {
-    return x * 2
+// Simple fun
+fun double(x=0) {
+    ret x * 2
 }
 print(double(5))         // 10
 
 // Multiple parameters
-function add(a=0, b=0) {
-    return a + b
+fun add(a=0, b=0) {
+    ret a + b
 }
 print(add(3, 4))         // 7
 
-// No return → returns [] (nil)
-function noop() { }
+// No ret → returns [] (nil)
+fun noop() { }
 print(#noop())           // 0
 
 // Recursion
-function fact(n=0) {
-    if n = 0 { return 1 }
-    return n * fact(n - 1)
+fun fact(n=0) {
+    if n = 0 { ret 1 }
+    ret n * fact(n - 1)
 }
 print(fact(5))           // 120
 
 // Tail recursion (TCO — no stack growth)
-function fact_tco(n=0, acc=1) {
-    if n = 0 { return acc }
-    return fact_tco(n - 1, n * acc)
+fun fact_tco(n=0, acc=1) {
+    if n = 0 { ret acc }
+    ret fact_tco(n - 1, n * acc)
 }
 print(fact_tco(1000, 1)) // inf (no stack overflow)
 ```
 
 Key rules:
-- `function` keyword — defined only at top level
+- `fun` keyword — defined only at top level
 - Define-before-use (no forward references)
-- Return type is inferred and checked: all `return` statements in a function
+- Return type is inferred and checked: all `ret` statements in a function
   must return the same type (number or array). A mismatch halts at compile
   time with `"inconsistent return type"`.
-- Comma-separated return values like `return 1, 2, 3` are sugar for
-  `return [1, 2, 3]` — the values are wrapped in an implicit array.
+- Comma-separated return values like `ret 1, 2, 3` are sugar for
+  `ret [1, 2, 3]` — the values are wrapped in an implicit array.
   This pairs naturally with destructure: `a, b, c = foo()`.
-- Functions with no `return` statement return `[]` (nil).
+- Functions with no `ret` statement return `[]` (nil).
 - Recursion works; tail calls are optimized (TCO)
 - Not first-class — cannot be stored in variables or passed as arguments
 - Extra arguments are silently ignored; missing arguments use default values
@@ -938,19 +938,19 @@ Key rules:
   numbers, strings, `nil`, and array literals with constant elements.
 
   ```tinylang
-  function add(a=0, b=10) { return a + b }
+  fun add(a=0, b=10) { ret a + b }
   add(5)       // 5 + 10 = 15
   add(5, 3)    // 5 + 3 = 8
 
-  function first(arr=[10, 20, 30]) { return arr[0] }
+  fun first(arr=[10, 20, 30]) { ret arr[0] }
   first()      // 10
   first([99])  // 99
 
-  function greet(name="world") { return "hello " + name }
+  fun greet(name="world") { ret "hello " + name }
   greet()      // hello world
 
   // Error: parameter without default
-  // function bad(a=5, b) { }  // compile-time error
+  // fun bad(a=5, b) { }  // compile-time error
   ```
 
   Array defaults are evaluated once at compile time and shared across all
@@ -963,13 +963,13 @@ Key rules:
 #### if/elif/else
 
 ```tinylang
-function classify(n=0) {
+fun classify(n=0) {
     if n < 0 {
-        return -1
+        ret -1
     } elif n = 0 {
-        return 0
+        ret 0
     } else {
-        return 1
+        ret 1
     }
 }
 print(classify(-5))      // -1
@@ -985,17 +985,17 @@ print(classify(42))      // 1
 
 ```tinylang
 i = 0
-while i < 5 {
+for i < 5 {
     i = i + 1
 }
 print(i)                 // 5
 
-// Nested while
+// Nested for
 i = 0
 result = []
-while i < 3 {
+for i < 3 {
     j = 0
-    while j <= i {
+    for j <= i {
         result = result + [i]
         j = j + 1
     }
@@ -1015,8 +1015,8 @@ include "lib/utils.tl"
 print(greet("world"))
 
 // lib/utils.tl
-function greet(name="") {
-    return "hello " + name
+fun greet(name="") {
+    ret "hello " + name
 }
 ```
 
@@ -1113,7 +1113,7 @@ scope, the compiler can:
 ### 1. Computed Goto Dispatch (Threaded Code)
 
 The VM's main execution loop uses **computed goto** (GNU C extension `&&`
-address-of-label and indirect `goto *ptr`) instead of a `while` + `switch` loop.
+address-of-label and indirect `goto *ptr`) instead of a `for` + `switch` loop.
 
 ```c
 // Instead of:
@@ -1241,7 +1241,7 @@ print(arr)               // [1, 2, 3, 4, 5]
 // Building an array in a loop — O(n) total, 0 temps per iteration
 arr = []
 i = 0
-while i < 1000 {
+for i < 1000 {
     arr = arr + [i]      // O(1) each — no array copy
     i = i + 1
 }
@@ -1300,7 +1300,7 @@ eliminated.
 ```tinylang
 // Function call — fn returns an array, elements pushed into x
 arr = []
-arr = arr + make_array()   // fn's return array is consumed, no final copy
+arr = arr + make_array()   // fn's ret array is consumed, no final copy
 
 // Chained + — RHS produces one temp, then all elements pushed
 arr = [10, 20]
@@ -1416,15 +1416,15 @@ stack frame.
 
 ```tinylang
 // Tail-recursive: never overflows the C stack
-function countdown(n=0) {
-    if n = 0 { return 0 }
-    return countdown(n - 1)   // TCO
+fun countdown(n=0) {
+    if n = 0 { ret 0 }
+    ret countdown(n - 1)   // TCO
 }
 
 // NOT tail-recursive: still uses C stack
-function broken(n=0) {
-    if n = 0 { return 0 }
-    return 1 + broken(n - 1)  // needs to multiply after return
+fun broken(n=0) {
+    if n = 0 { ret 0 }
+    ret 1 + broken(n - 1)  // needs to multiply after ret
 }
 ```
 
@@ -1545,14 +1545,14 @@ The sentinel works because FNV-1a can never produce `0` (the base value
 ```tinylang
 key = "hello"
 i = 0
-while i < 10000 {
+for i < 10000 {
     print(map[key])     // hash computed once, cached for 9999 iterations
     i = i + 1
 }
 
 // Multiple strings each cache their own hash
 j = 0
-while j < 10000 {
+for j < 10000 {
     print(map["foo"])   // hash("foo") computed once
     print(map["bar"])   // hash("bar") computed once
     j = j + 1
@@ -1597,7 +1597,7 @@ op_lvals_push: {
 
 ```tinylang
 map = [[]] * 100
-while i < 50000 {
+for i < 50000 {
     map["batch"] += [i]   // OC_LVALS_PUSH: O(1) amortized
     i = i + 1
 }
@@ -1813,11 +1813,11 @@ lvalue        := identifier ("[" slice_or_index "]")*
 destructure   := identifier "," identifier ("," identifier)* "=" rhs_list
 rhs_list      := expr ("," expr)*
 if_stmt       := "if" expr block ("elif" expr block)* ("else" block)?
-while_stmt    := "while" expr block
-func_def      := "function" identifier "(" params ")" block
+while_stmt    := "for" expr block
+func_def      := "fun" identifier "(" params ")" block
 params        := param ("," param)*
 param         := identifier "=" expr
-ret_stmt      := "return" expr ("," expr)*
+ret_stmt      := "ret" expr ("," expr)*
 
 block         := "{" stmt_list "}"
 expr          := logical_or

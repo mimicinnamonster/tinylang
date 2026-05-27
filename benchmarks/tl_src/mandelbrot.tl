@@ -2,15 +2,15 @@
 // Computes Mandelbrot set and reports pixel count
 // (Binary image output not feasible with print's newline behavior)
 
-function mandelbrot(size=200) {
+fun mandelbrot(size=200) {
     w = size
     h = size
     total = 0
 
     y = 0
-    while y < h {
+    for y < h {
         x = 0
-        while x < w {
+        for x < w {
             cr = (2 * x) / w - 1.5
             ci = (2 * y) / h - 1.0
             zr = 0.0
@@ -18,7 +18,7 @@ function mandelbrot(size=200) {
 
             i = 0
             escaped = 0
-            while i < 50 {
+            for i < 50 {
                 zr2 = zr * zr
                 zi2 = zi * zi
                 if (zr2 + zi2) > 4 {

@@ -51,14 +51,14 @@ y = 20
 y /= 2 + 3
 print(y)     // 4
 
-// Inside a function
-function test_fn(n=0) {
+// Inside a fun
+fun test_fn(n=0) {
     r = n
     r += 10
     r *= 2
     r -= 5
     r /= 3
-    return r
+    ret r
 }
 print(test_fn(5))  // ((5+10)*2-5)/3 = (30-5)/3 = 25/3 ≈ 8.33333
 print(test_fn(0))  // ((0+10)*2-5)/3 = (20-5)/3 = 15/3 = 5
@@ -66,7 +66,7 @@ print(test_fn(0))  // ((0+10)*2-5)/3 = (20-5)/3 = 15/3 = 5
 // In a loop
 z = 1
 i = 0
-while i < 5 {
+for i < 5 {
     z *= 2
     i += 1
 }

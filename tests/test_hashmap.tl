@@ -3,7 +3,7 @@
 // String keys use FNV-1a hash (Git's strhash algorithm) modulo array length
 // to determine the index. Hash is cached on the Arr after first computation.
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // ========================================================
 // Test 1: basic read with string key
@@ -114,13 +114,13 @@ println(ca["z"])             // 15
 coll = [0, 0, 0, 0]
 keys = ["a", "b", "c", "d", "e", "f", "g", "h"]
 j = 0
-while j < #keys {
+for j < #keys {
     coll[keys[j]] = j + 1
     j = j + 1
 }
 // verify each key reads back what was written
 j = 0
-while j < #keys {
+for j < #keys {
     v = coll[keys[j]]
     if v != j + 1 {
         println(0)

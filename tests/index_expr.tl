@@ -1,6 +1,6 @@
 // Test: all expressions that evaluate to an array can be indexed with []
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // --- 1. Array literal indexing ---
 println("--- array literal indexing ---")
@@ -19,15 +19,15 @@ println([[1, 2], [3, 4]][0, 1])   // 2
 println([[1, 2], [3, 4]][1, 0])   // 3
 
 // --- 4. Function call returning array, then index ---
-println("--- function call indexing ---")
-function get_arr() { return [10, 20, 30] }
+println("--- fun call indexing ---")
+fun get_arr() { ret [10, 20, 30] }
 println(get_arr()[0])       // 10
 println(get_arr()[1])       // 20
 println(get_arr()[2])       // 30
 
 // --- 5. Function call with multi-index ---
 println("--- fn call multi-index ---")
-function get_mat() { return [[1, 2], [3, 4]] }
+fun get_mat() { ret [[1, 2], [3, 4]] }
 println(get_mat()[0, 1])    // 2
 println(get_mat()[1, 0])    // 3
 
@@ -77,9 +77,9 @@ println([1, 2, 3, 4, 5][:2])     // [1, 2]
 println(([0] * 10)[2:5])         // [0, 0, 0]
 println(([0] * 10)[:3])          // [0, 0, 0]
 
-// --- 13. Slice on function call result ---
+// --- 13. Slice on fun call result ---
 println("--- slice on fn call ---")
-function get_vals() { return [10, 20, 30, 40, 50] }
+fun get_vals() { ret [10, 20, 30, 40, 50] }
 println(get_vals()[1:4])         // [20, 30, 40]
 
 // --- 14. Chained: literal index then slice ---
@@ -95,10 +95,10 @@ println((arr2)[1:3])             // [2, 3]
 // --- 16. nil expression indexing (should error - tested separately) ---
 // println(nil[0])  -- runtime error: cannot index into non-array
 
-// --- 17. Nested function call with indexing ---
+// --- 17. Nested fun call with indexing ---
 println("--- nested fn indexing ---")
-function wrap(x=0) { return [x] }
-function get_val() { return 42 }
+fun wrap(x=0) { ret [x] }
+fun get_val() { ret 42 }
 println(wrap(get_val())[0])       // 42
 
 // --- 18. Slice with step on expression ---
@@ -116,8 +116,8 @@ i = 1
 j = 3
 println(x[i:j])                  // [20, 30]
 
-// --- 21. Double indexing on function call ---
+// --- 21. Double indexing on fun call ---
 println("--- double indexing on fn ---")
-function make_grid() { return [[1, 2], [3, 4], [5, 6]] }
+fun make_grid() { ret [[1, 2], [3, 4], [5, 6]] }
 println(make_grid()[2][0])       // 5
 println(make_grid()[1, 1])       // 4

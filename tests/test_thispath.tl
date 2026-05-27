@@ -1,6 +1,6 @@
 // test_thispath.tl — test thispath() with includes
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 include "thispath_sub.tl"
 
@@ -8,11 +8,11 @@ include "thispath_sub.tl"
 main_path = thispath()
 println(#main_path)
 
-// thispath() in the included file should return that file's path
+// thispath() in the included file should ret that file's path
 sub_result = get_sub_path()
 println(#sub_result)
 
-// thispath() inside a function body in this file should still be this file
+// thispath() inside a fun body in this file should still be this file
 p = thispath()
 println(#p)
 

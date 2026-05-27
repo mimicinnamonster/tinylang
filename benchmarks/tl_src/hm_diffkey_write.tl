@@ -3,7 +3,7 @@
 // Tests raw hash computation + modulo cost
 map = [[]] * 100000
 i = 0
-while i < 50000 {
+for i < 50000 {
     map["key_" + i] = i
     i = i + 1
 }

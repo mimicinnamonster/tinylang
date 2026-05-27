@@ -1,16 +1,16 @@
 // Test OC_PUSH: x = x + [elem] optimization
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // 1. Basic append
 arr = []
 i = 0
-while i < 10 {
+for i < 10 {
   arr = arr + [i]
   i = i + 1
 }
 i = 0
-while i < 10 {
+for i < 10 {
   if arr[i] != i {
     println("FAIL 1")
   }
@@ -35,12 +35,12 @@ println(#x)
 // 4. Complex inner expression (parens for nested ops)
 path = []
 i = 0
-while i < 5 {
+for i < 5 {
   path = path + [(i * 2)]
   i = i + 1
 }
 i = 0
-while i < 5 {
+for i < 5 {
   if path[i] != (i * 2) {
     println("FAIL 4")
   }
@@ -51,12 +51,12 @@ println(#path)
 // 5. Push with arrays as elements
 list = []
 i = 0
-while i < 3 {
+for i < 3 {
   list = list + [[i]]
   i = i + 1
 }
 i = 0
-while i < 3 {
+for i < 3 {
   if list[i][0] != i {
     println("FAIL 5")
   }
@@ -76,7 +76,7 @@ println(#multi)
 // 7. Large chain (1000 elements)
 big = []
 i = 0
-while i < 1000 {
+for i < 1000 {
   big = big + [i]
   i = i + 1
 }

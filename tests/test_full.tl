@@ -1,6 +1,6 @@
 // Comprehensive test of all TinyLang features
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // --- 1. Numbers ---
 println("--- numbers ---")
@@ -99,28 +99,28 @@ println(#s2)
 
 // --- 9. Functions ---
 println("--- functions ---")
-function double(x=0) {
-    return x * 2
+fun double(x=0) {
+    ret x * 2
 }
 println(double(5))
 println(double(double(5)))
 
-function add(a=0, b=0) {
-    return a + b
+fun add(a=0, b=0) {
+    ret a + b
 }
 println(add(3, 4))
 
-function noop() {
+fun noop() {
 }
 println(#noop())    // 0 (returns [])
 
 // --- 10. Recursion ---
 println("--- recursion ---")
-function fact(n=0) {
+fun fact(n=0) {
     if n == 0 {
-        return 1
+        ret 1
     }
-    return n * fact(n - 1)
+    ret n * fact(n - 1)
 }
 println(fact(0))   // 1
 println(fact(5))   // 120
@@ -128,35 +128,35 @@ println(fact(10))  // 3628800
 
 // --- 11. if/elif/else ---
 println("--- if/elif/else ---")
-function classify(n=0) {
+fun classify(n=0) {
     if n < 0 {
-        return -1
+        ret -1
     } elif n == 0 {
-        return 0
+        ret 0
     } else {
-        return 1
+        ret 1
     }
 }
 println(classify(-5))
 println(classify(0))
 println(classify(42))
 
-// --- 12. while ---
-println("--- while ---")
+// --- 12. for ---
+println("--- for ---")
 i = 0
-while i < 5 {
+for i < 5 {
     i = i + 1
 }
 println(i)          // 5
 
-function fact_while(n=0) {
+fun fact_while(n=0) {
     result = 1
     i = 1
-    while i <= n {
+    for i <= n {
         result = result * i
         i = i + 1
     }
-    return result
+    ret result
 }
 println(fact_while(5))   // 120
 
@@ -165,11 +165,11 @@ println("--- linked list ---")
 list = [1, [2, [3, []]]]
 println(list)
 
-function sum_list(lst=[]) {
+fun sum_list(lst=[]) {
     if lst == [] {
-        return 0
+        ret 0
     }
-    return lst[0] + sum_list(lst[1])
+    ret lst[0] + sum_list(lst[1])
 }
 println(sum_list(list))   // 6
 
@@ -186,9 +186,9 @@ nodes[2][1] = 1
 println(nodes[2][0])    // 30
 println(nodes[2][1])    // 1
 
-// traverse with while
+// traverse with for
 ptr = 2
-while ptr != -1 {
+for ptr != -1 {
     println(nodes[ptr][0])
     ptr = nodes[ptr][1]
 }
@@ -301,48 +301,48 @@ println(dyn[0][1])      // 99
 println(dyn[1][0])      // 30
 
 // --- 28. Function arity flexibility ---
-println("--- function arity ---")
-function add2(a=0, b=0) {
-    return a + b
+println("--- fun arity ---")
+fun add2(a=0, b=0) {
+    ret a + b
 }
 println(add2(3, 4))             // 7
 println(add2(3, 4, 5, 6))       // 7 (extra args ignored)
 
-function second(a=0, b=0) {
-    return b
+fun second(a=0, b=0) {
+    ret b
 }
 println(second(5))              // [] (b defaults to [])
 println(second(5, 99))          // 99
 
-function first(a=0, b=0) {
-    return a
+fun first(a=0, b=0) {
+    ret a
 }
 println(first(42))              // 42
 println(first(42, 99))          // 42
 
-// --- 29. No return (natural fall-through) ---
-println("--- no return ---")
-function gimme() {
-    // no return statement — falls through to return []
+// --- 29. No ret (natural fall-through) ---
+println("--- no ret ---")
+fun gimme() {
+    // no ret statement — falls through to ret []
 }
 println(gimme())         // []
 
-function gimme2(n=0) {
+fun gimme2(n=0) {
     if n == 0 {
-        return 99
+        ret 99
     }
-    // no else return — falls through on n != 0
+    // no else ret — falls through on n != 0
 }
 println(gimme2(0))       // 99
 println(gimme2(5))       // []
 
-// --- 30. Nested while ---
-println("--- nested while ---")
+// --- 30. Nested for ---
+println("--- nested for ---")
 i = 0
 result = []
-while i < 3 {
+for i < 3 {
     j = 0
-    while j <= i {
+    for j <= i {
         result = result + [i]
         j = j + 1
     }
@@ -370,17 +370,17 @@ println(#nil)          // 0 (nil = [])
 println(#"abc")        // 3
 println(#[[1,2],[3,4]]) // 2
 
-// --- 33. Function calling another function ---
+// --- 33. Function calling another fun ---
 println("--- mutual calls ---")
-function inc(x=0) {
-    return x + 1
+fun inc(x=0) {
+    ret x + 1
 }
-function dec(x=0) {
-    return x - 1
+fun dec(x=0) {
+    ret x - 1
 }
-function apply_twice(fn=0, x=0) {
+fun apply_twice(fn=0, x=0) {
     // not first-class, so call explicitly
-    return x
+    ret x
 }
 println(inc(dec(5)))  // 5
 println(dec(inc(5)))  // 5
@@ -388,13 +388,13 @@ println(inc(inc(inc(0)))) // 3
 
 // --- 34. Nested if/elif without else ---
 println("--- nested if/elif ---")
-function sign(n=0) {
+fun sign(n=0) {
     if n > 0 {
-        return 1
+        ret 1
     } elif n < 0 {
-        return -1
+        ret -1
     }
-    return 0
+    ret 0
 }
 println(sign(5))    // 1
 println(sign(0))    // 0
@@ -411,8 +411,8 @@ println("big: " + 1000000)     // big: 1000000
 println(99 + " bottles")       // 99 bottles
 println("a" + 1 + "b")         // a1b
 
-function greet(name="") {
-    return "hello " + name
+fun greet(name="") {
+    ret "hello " + name
 }
 println(greet("world"))        // hello world
 println(greet(42))             // hello 42

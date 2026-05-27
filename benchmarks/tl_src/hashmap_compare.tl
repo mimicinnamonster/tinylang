@@ -1,7 +1,7 @@
 // hashmap_compare.tl — TinyLang hashmap benchmark for cross-language comparison
 // Mirrors the C/JS/Python benchmarks exactly
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // ============================================================
 // Benchmark 1: Same-key read (1M)
@@ -12,7 +12,7 @@ function println(x=0) { print(x) print("\n") }
 map = [0] * 1000
 map["target"] = 42
 i = 0
-while i < 1000000 {
+for i < 1000000 {
     _ = map["target"]
     i = i + 1
 }
@@ -22,7 +22,7 @@ while i < 1000000 {
 // ============================================================
 map2 = [0] * 100000
 i = 0
-while i < 50000 {
+for i < 50000 {
     map2["key_" + i] = i
     i = i + 1
 }
@@ -33,15 +33,15 @@ while i < 50000 {
 map3 = [0] * 100000
 nkeys = 1000
 i = 0
-while i < nkeys {
+for i < nkeys {
     map3["k" + i] = i
     i = i + 1
 }
 // Read all keys 100 times
 r = 0
-while r < 100 {
+for r < 100 {
     j = 0
-    while j < nkeys {
+    for j < nkeys {
         _ = map3["k" + j]
         j = j + 1
     }
@@ -53,7 +53,7 @@ while r < 100 {
 // ============================================================
 map4 = [[]] * 100
 i = 0
-while i < 50000 {
+for i < 50000 {
     map4["batch"] += [i]
     i = i + 1
 }

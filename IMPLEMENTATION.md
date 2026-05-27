@@ -59,7 +59,7 @@ Produces a flat `Tok[]` array from source.
 - Skip whitespace, handle `//` comments
 - Every newline becomes `T_NL` (parser skips at entry points)
 - Numbers: `5`, `5.0`, `.5`, `5.`, `0xFF` (hex)
-- Identifiers + keywords (`if`, `elif`, `else`, `while`, `function`, `return`, `nil`, `include`)
+- Identifiers + keywords (`if`, `elif`, `else`, `for`, `fun`, `ret`, `nil`, `include`)
 - Strings: `"..."` with escape sequences (`\n`, `\t`, `\\`, `\"`, `\xHH`)
 - Single-char tokens: `( ) [ ] { } , ; + - * / % ! = < > # :`
 - Multi-char: `&&`, `||`, `!=`, `<=`, `>=`, `<<`, `>>`
@@ -131,8 +131,8 @@ literals, variables, function calls, `+` (num+num=num, else=array), `*
 chained binary operators.
 
 **Function return types** — Tracked per function in `Fn.ret_type`. Each
-`return expr` infers its type; mismatches between returns halt at compile
-time. Functions with no return get `ret_type = T_ARR_TYPE` (they return `[]`).
+`ret expr` infers its type; mismatches between returns halt at compile
+time. Functions with no ret get `ret_type = T_ARR_TYPE` (they return `[]`).
 
 **Slot initialization** — Array-typed slots are pre-initialized to `[]` at
 scope creation. Function scopes use `Fn.init_types[]` (saved from
@@ -203,12 +203,12 @@ is free (no allocation), while mutation triggers a one-time copy.
 | Function | Compiles |
 |----------|----------|
 | `comp_program(c)` | Top-level statement loop |
-| `comp_stmt(c)` | One statement (if, while, fn, return, assign, destructure, expr) |
+| `comp_stmt(c)` | One statement (if, for, fn, ret, assign, destructure, expr) |
 | `comp_block(c)` | `{ stmt_list }` |
 | `comp_expr(c)` | Expression (leaves one value on stack) |
 | `comp_prim(c)` | Primary expression (literal, ident, call, array, unary) |
 | `comp_if(c)` | `if`/`elif`/`else` with backpatching |
-| `comp_while(c)` | `while` with loop/exit jumps |
+| `comp_while(c)` | `for` with loop/exit jumps |
 | `comp_fn(c)` | Function definition + body + TCO detection |
 | `comp_include(c)` | `include` directive (string literal or expression) |
 | `eval_include_path()` | Compile-time evaluation of include path expressions |
@@ -313,16 +313,16 @@ making swaps safe.
 
 ### Comma-separated return values
 
-The same implicit-array pattern applies to `return` statements. When the
-compiler sees `return 1, 2, 3`, it compiles each expression and wraps
-them in `OC_MAKE_ARR`, exactly as if the user wrote `return [1, 2, 3]`.
-Type inference tracks this: a comma-separated return infers array return
-type, so `return 1, 2` followed by `return 42` produces a compile-time
+The same implicit-array pattern applies to `ret` statements. When the
+compiler sees `ret 1, 2, 3`, it compiles each expression and wraps
+them in `OC_MAKE_ARR`, exactly as if the user wrote `ret [1, 2, 3]`.
+Type inference tracks this: a comma-separated ret infers array return
+type, so `ret 1, 2` followed by `ret 42` produces a compile-time
 `"inconsistent return type"` error.
 
 ```tinylang
-function foo() {
-    return 1, 2, 3        // sugar for return [1, 2, 3]
+fun foo() {
+    ret 1, 2, 3        // sugar for ret [1, 2, 3]
 }
 a, b, c = foo()            // destructure works naturally
 print(a)                   // 1
@@ -397,7 +397,7 @@ relative to the current file's directory.
 ### Dispatch mechanism
 
 The VM uses **computed goto** (GNU C extension `&&` address-of-label) instead
-of a `while`+`switch` loop:
+of a `for`+`switch` loop:
 
 ```c
 void exec(Code *c) {

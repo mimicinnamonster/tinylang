@@ -1,9 +1,9 @@
-// Test: return type consistency check
-// Function has two return statements with different types
+// Test: ret type consistency check
+// Function has two ret statements with different types
 
-function foo(x=0) {
+fun foo(x=0) {
     if x {
-        return 42
+        ret 42
     }
-    return "hello"
+    ret "hello"
 }

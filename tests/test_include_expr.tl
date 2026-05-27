@@ -1,18 +1,18 @@
 // test_include_expr.tl — test include with thispath() expressions
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // Include using thispath() + relative filename
 // thispath() inside include returns the directory of the current file
 include thispath() + "include_sub.tl"
 
-// Use function defined in included file (should work same as normal include)
+// Use fun defined in included file (should work same as normal include)
 greet("world")
 
 // Use variable defined in included file
 println(message)
 
-// Use function that returns a value
+// Use fun that returns a value
 println(double(21))
 
 // Verify plain string literal includes still work

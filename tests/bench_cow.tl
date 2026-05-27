@@ -2,14 +2,14 @@
 // Tests that sharing an array is O(1) and mutation of shared data
 // only triggers one copy, not repeated copies.
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // --- Test 1: Write to unique array (no COW needed) ---
 // Create a large array and write to every element.
 // Each write should be O(1) — no copy needed.
 arr1 = [0] * 50000
 i = 0
-while i < 50000 {
+for i < 50000 {
     arr1[i] = i
     i = i + 1
 }
@@ -24,7 +24,7 @@ println(arr1[49999])
 arr2 = [0] * 50000
 copy = arr2       // share: refcount = 2
 i = 0
-while i < 50000 {
+for i < 50000 {
     // first write (i=0) triggers deep copy of 50K elements
     // rest of writes are in-place on the private copy
     copy[i] = i

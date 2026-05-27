@@ -3,17 +3,17 @@
 // in-place mutations (step==1, exclusively owned, numbers-only).
 // Only strided slices (step!=1) copy.
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // Build a large array
-function build(n=0) {
+fun build(n=0) {
     r = []
     i = 0
-    while i < n {
+    for i < n {
         r = r + [i]
         i = i + 1
     }
-    return r
+    ret r
 }
 
 // === 1. Slice of a large array — should be instant ===
@@ -96,7 +96,7 @@ println(#leak_test)             // 2500
 // This should be fast regardless of array size.
 loop_arr = build(10000)
 i = 0
-while i < 9000 {
+for i < 9000 {
     loop_arr = loop_arr[1:]
     i = i + 1
 }

@@ -4,7 +4,7 @@
 
 list = []
 i = 9999
-while i > -1 {
+for i > -1 {
   list = [i, list]
   i = i - 1
 }
@@ -12,7 +12,7 @@ while i > -1 {
 // Verify by counting nodes
 len = 0
 node = list
-while node {
+for node {
   len = len + 1
   node = node[1]
 }

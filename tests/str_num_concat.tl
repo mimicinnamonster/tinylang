@@ -1,6 +1,6 @@
 // Test string + number concatenation
 
-function println(x=0) { print(x) print("\n") }
+fun println(x=0) { print(x) print("\n") }
 
 // --- Basic string + number ---
 println("--- string + number ---")
@@ -35,10 +35,10 @@ println(s + n)                 // value: 123
 println(99 + " bottles")       // 99 bottles
 println("a" + 1 + "b")         // a1b
 
-// With function return values
+// With fun ret values
 println("--- with functions ---")
-function greet(name="") {
-    return "hello " + name
+fun greet(name="") {
+    ret "hello " + name
 }
 println(greet("world"))        // hello world
 println(greet(42))             // hello 42

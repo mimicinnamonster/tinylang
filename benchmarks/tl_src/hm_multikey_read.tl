@@ -7,16 +7,16 @@ map = [[]] * 100000
 
 // Populate
 i = 0
-while i < nkeys {
+for i < nkeys {
     map["k" + i] = i
     i = i + 1
 }
 
 // Read all keys multiple times
 i = 0
-while i < reps {
+for i < reps {
     j = 0
-    while j < nkeys {
+    for j < nkeys {
         _ = map["k" + j]
         j = j + 1
     }

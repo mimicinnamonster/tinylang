@@ -1,8 +1,8 @@
 // thispath_sub.tl — included file for thispath test
-function get_sub_path() {
-    return thispath()
+fun get_sub_path() {
+    ret thispath()
 }
 
-function check_sub_path() {
+fun check_sub_path() {
     p = thispath()
 }
