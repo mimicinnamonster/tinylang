@@ -57,19 +57,20 @@ reads.
 
 ## 3. Truthiness & Negation
 
-- **Only `[]` is falsey** — `0`, `""`, `[0]`, `[[]]` are all truthy
+- **`[]`, `0`, and `""` are falsey** — `[0]`, `[[]]` are truthy
 - The **canonical truth value** is the number `1`
-- `!` is unary negation — turns truthy to `[]`, `[]` to `1`:
+- `!` is unary negation — turns truthy to `[]`, falsey to `1`:
 
 | `x` | `!x` |
 |-----|------|
 | `[]` | `1` |
-| `0` | `[]` |
+| `0` | `1` |
+| `""` | `1` |
 | `[1,2]` | `[]` |
 | `1` | `[]` |
 
 - Check for nil: `x == nil` or `x == []` (same thing)
-- `if !x {}` enters block only when `x` is `[]`
+- `if !x {}` enters block only when `x` is `[]` (or `0` or `""`)
 
 ---
 

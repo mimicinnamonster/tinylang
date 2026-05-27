@@ -27,7 +27,7 @@ println(5 > 3)     // 1
 // --- 3. Truthiness ---
 println("--- truthiness ---")
 println(![])      // 1
-println(!0)       // []
+println(!0)       // 1
 println(!1)       // []
 println(!5)       // []
 println(!!5)      // 1
@@ -255,9 +255,9 @@ println((-5) % (-2)) // -1
 
 // --- 24. Double negation ---
 println("--- double bang ---")
-println(!!0)       // 1  (!0=[], ![]=1)
-println(!!1)       // 1  (!1=[], ![]=1)
-println(!![])      // [] (![]=1, !1=[])
+println(!!0)       // []  (!0=1, !1=[])
+println(!!1)       // 1   (!1=[], ![]=1)
+println(!![])      // []  (![]=1, !1=[])
 
 // --- 25. String escape sequences ---
 println("--- string escapes ---")

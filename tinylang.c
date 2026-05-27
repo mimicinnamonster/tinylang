@@ -165,7 +165,36 @@ void vassign(Value *d, Value s) {
     *d = s;
     if (s.type == VAL_ARR) aretain(s.arr);
 }
-Value arr_item(Arr *a, int i) { return a->val[i]; }
+
+static Arr *cstr_to_arr(const char *s, int len) {
+    Arr *a = aalloc(len); a->len = len; a->is_string = 1;
+    for (int i = 0; i < len; i++) a->val[i] = vnum((double)(unsigned char)s[i]);
+    return a;
+}
+
+static void slice_bounds(int len, int step, Value start_v, Value stop_v,
+                         int *start_out, int *stop_out, int *count_out)
+{
+    int start, stop;
+    if (start_v.type == VAL_ARR && !start_v.arr) start = (step > 0) ? 0 : len - 1;
+    else {
+        start = (int)val_num(start_v);
+        if (start < 0) start += len;
+        if (step > 0) { if (start < 0) start = 0; if (start > len) start = len; }
+        else { if (start < 0) start = 0; if (start >= len) start = len - 1; }
+    }
+    if (stop_v.type == VAL_ARR && !stop_v.arr) stop = (step > 0) ? len : -1;
+    else {
+        stop = (int)val_num(stop_v);
+        if (stop < 0) stop += len;
+        if (step > 0) { if (stop < 0) stop = 0; if (stop > len) stop = len; }
+        else { if (stop < -1) stop = -1; if (stop > len) stop = len; }
+    }
+    int count;
+    if (step > 0) { if (start >= stop) count = 0; else count = (stop - start + step - 1) / step; }
+    else { if (start <= stop) count = 0; else count = (start - stop + (-step) - 1) / (-step); }
+    *start_out = start; *stop_out = stop; *count_out = count;
+}
 
 /* Returns 1 if the array was created as a string literal or by string
  * operations (input, string+string, string+number, etc.)  Arrays built
@@ -201,7 +230,7 @@ static int num_to_buf(char *buf, double d) {
 }
 
 /* Optimized string + number concat: writes number digits directly into result,
- * avoiding the intermediate Arr allocation that num_to_string_arr creates. */
+ * avoiding an intermediate Arr allocation. */
 Arr *strcat_num(Arr *la, double d) {
     char buf[64];
     int rn = num_to_buf(buf, d);
@@ -252,7 +281,11 @@ void print_val(Value v) {
         putchar(']');
     }
 }
-int truthy(Value v) { return v.type != VAL_ARR || (v.arr && v.arr->len > 0); }
+int truthy(Value v) {
+    if (v.type == VAL_NUM) return v.num != 0.0;
+    if (v.type == VAL_ARR) return v.arr && v.arr->len > 0;
+    return 0;
+}
 int veq(Value a, Value b) {
     if (a.type != b.type) return 0;
     if (a.type == VAL_NUM) return a.num == b.num;
@@ -596,8 +629,7 @@ void comp_prim(Code *c) {
                 else if (!strcmp(t.s, "thisfile")) {
                     if (ac != 0) die("thisfile expects 0 arguments");
                     int n = comp_file ? strlen(comp_file) : 0;
-                    Arr *a = aalloc(n); a->len = n; a->is_string = 1;
-                    for (int j = 0; j < n; j++) a->val[j] = vnum((double)(unsigned char)comp_file[j]);
+                    Arr *a = cstr_to_arr(comp_file, n);
                     emit(c, (Instr){OC_STR, 0, 0, .arr = a});
                 } else {
                     int fi = ffind(t.s); if (fi < 0) die("undefined function '%s'", t.s);
@@ -1707,24 +1739,8 @@ op_slice: {
     Arr *src = arr_v.arr; int len = src ? src->len : 0;
     int step = (int)val_num(step_v);
     if (step == 0) die("slice step cannot be 0");
-    int start, stop;
-    if (start_v.type == VAL_ARR && !start_v.arr) start = (step > 0) ? 0 : len - 1;
-    else {
-        start = (int)val_num(start_v);
-        if (start < 0) start += len;
-        if (step > 0) { if (start < 0) start = 0; if (start > len) start = len; }
-        else { if (start < 0) start = 0; if (start >= len) start = len - 1; }
-    }
-    if (stop_v.type == VAL_ARR && !stop_v.arr) stop = (step > 0) ? len : -1;
-    else {
-        stop = (int)val_num(stop_v);
-        if (stop < 0) stop += len;
-        if (step > 0) { if (stop < 0) stop = 0; if (stop > len) stop = len; }
-        else { if (stop < -1) stop = -1; if (stop > len) stop = len; }
-    }
-    int count;
-    if (step > 0) { if (start >= stop) count = 0; else count = (stop - start + step - 1) / step; }
-    else { if (start <= stop) count = 0; else count = (start - stop + (-step) - 1) / (-step); }
+    int start, stop, count;
+    slice_bounds(len, step, start_v, stop_v, &start, &stop, &count);
     if (count == 0) { arelease(arr_v.arr); istk[++isp] = nilv(); ip++; goto dispatch; }
     if (step == 1) {
         /* Zero-copy view: share parent's backing store */
@@ -1746,7 +1762,7 @@ op_slice: {
         result->is_string = src->is_string;
         int idx = 0;
         for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
-            result->val[idx] = arr_item(src, i);
+            result->val[idx] = src->val[i];
             if (result->val[idx].type == VAL_ARR) aretain(result->val[idx].arr);
             idx++;
         }
@@ -1767,24 +1783,8 @@ op_slice_inplace: {
     int len = src->len;
     int step = (int)val_num(step_v);
     if (step == 0) die("slice step cannot be 0");
-    int start, stop;
-    if (start_v.type == VAL_ARR && !start_v.arr) start = (step > 0) ? 0 : len - 1;
-    else {
-        start = (int)val_num(start_v);
-        if (start < 0) start += len;
-        if (step > 0) { if (start < 0) start = 0; if (start > len) start = len; }
-        else { if (start < 0) start = 0; if (start >= len) start = len - 1; }
-    }
-    if (stop_v.type == VAL_ARR && !stop_v.arr) stop = (step > 0) ? len : -1;
-    else {
-        stop = (int)val_num(stop_v);
-        if (stop < 0) stop += len;
-        if (step > 0) { if (stop < 0) stop = 0; if (stop > len) stop = len; }
-        else { if (stop < -1) stop = -1; if (stop > len) stop = len; }
-    }
-    int count;
-    if (step > 0) { if (start >= stop) count = 0; else count = (stop - start + step - 1) / step; }
-    else { if (start <= stop) count = 0; else count = (start - stop + (-step) - 1) / (-step); }
+    int start, stop, count;
+    slice_bounds(len, step, start_v, stop_v, &start, &stop, &count);
     if (count == 0) {
         arelease(slot_val->arr);
         *slot_val = nilv();
@@ -1826,7 +1826,7 @@ op_slice_inplace: {
         result->is_string = src->is_string;
         int idx = 0;
         for (int i = start; step > 0 ? i < stop : i > stop; i += step) {
-            result->val[idx] = arr_item(src, i);
+            result->val[idx] = src->val[i];
             if (result->val[idx].type == VAL_ARR) aretain(result->val[idx].arr);
             idx++;
         }
@@ -2156,9 +2156,7 @@ static Value native_env(int ac, Value *args) {
     arelease(name_v.arr);
     Arr *a;
     if (val) {
-        int vlen = strlen(val);
-        a = aalloc(vlen); a->len = vlen; a->is_string = 1;
-        for (int i = 0; i < vlen; i++) a->val[i] = vnum((double)(unsigned char)val[i]);
+        a = cstr_to_arr(val, strlen(val));
     } else {
         a = aalloc(0); a->len = 0; a->is_string = 1;
     }
@@ -2172,8 +2170,7 @@ static Value native_args(int ac, Value *args) {
     result->is_string = 0;
     for (int i = 1; i < saved_argc; i++) {
         int vlen = strlen(saved_argv[i]);
-        Arr *a = aalloc(vlen); a->len = vlen; a->is_string = 1;
-        for (int j = 0; j < vlen; j++) a->val[j] = vnum((double)(unsigned char)saved_argv[i][j]);
+        Arr *a = cstr_to_arr(saved_argv[i], vlen);
         result->val[i-1] = (Value){ .type = VAL_ARR, .arr = a };
     }
     return (Value){ .type = VAL_ARR, .arr = result };
@@ -2238,14 +2235,11 @@ static Value native_read(int ac, Value *args) {
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     rewind(f);
-    Arr *a = aalloc(sz > 0 ? (int)sz : 0);
-    a->len = sz > 0 ? (int)sz : 0;
-    a->is_string = 1;
-    for (long i = 0; i < sz; i++) {
-        int c = getc(f);
-        a->val[i] = vnum((double)(unsigned char)c);
-    }
+    char *buf = malloc(sz > 0 ? (int)sz : 1);
+    fread(buf, 1, sz, f);
     fclose(f);
+    Arr *a = cstr_to_arr(buf, (int)sz);
+    free(buf);
     arelease(path_v.arr);
     arelease(mode_v.arr);
     return (Value){ .type = VAL_ARR, .arr = a };
@@ -2298,8 +2292,7 @@ static Value native_exec(int ac, Value *args) {
     }
     int status = pclose(p);
     (void)status;
-    Arr *a = aalloc(len); a->len = len; a->is_string = 1;
-    for (int i = 0; i < len; i++) a->val[i] = vnum((double)(unsigned char)buf[i]);
+    Arr *a = cstr_to_arr(buf, len);
     free(buf);
     arelease(cmd_v.arr);
     return (Value){ .type = VAL_ARR, .arr = a };
@@ -2551,8 +2544,7 @@ static Value native_key(int ac, Value *args) {
     tcsetattr(fd, TCSAFLUSH, &old);
 
 done:;
-    Arr *a = aalloc(n); a->len = n; a->is_string = 1;
-    for (int i = 0; i < n; i++) a->val[i] = vnum((double)(unsigned char)buf[i]);
+    Arr *a = cstr_to_arr(buf, n);
     return (Value){ .type = VAL_ARR, .arr = a };
 }
 
@@ -2588,8 +2580,7 @@ static Value native_glob(int ac, Value *args) {
     result->is_string = 0;
     for (size_t i = 0; i < g.gl_pathc; i++) {
         int vlen = strlen(g.gl_pathv[i]);
-        Arr *s = aalloc(vlen); s->len = vlen; s->is_string = 1;
-        for (int j = 0; j < vlen; j++) s->val[j] = vnum((double)(unsigned char)g.gl_pathv[i][j]);
+        Arr *s = cstr_to_arr(g.gl_pathv[i], vlen);
         result->val[i] = (Value){ .type = VAL_ARR, .arr = s };
     }
     globfree(&g);

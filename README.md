@@ -356,25 +356,27 @@ f = d + e
 
 ### Truthiness & Negation
 
-- **Only `[]` (empty array) is falsey.** Zero, empty string, `[[]]`, `[0]` are
-  all truthy.
+- **`[]` (empty array), `0` (zero), `""` (empty string), and `nil` are falsey.**
+  `[[]]`, `[0]` are truthy.
 - The canonical truth value is the number `1`.
-- `!` is prefix negation: turns truthy to `[]`, `[]` to `1`.
+- `!` is prefix negation: turns truthy to `[]`, falsey to `1`.
 
 | `x` | `!x` |
 |-----|------|
 | `[]` | `1` |
-| `0` | `[]` |
+| `0` | `1` |
+| `""` | `1` |
 | `[1,2]` | `[]` |
 | `1` | `[]` |
-| `""` | `[]` |
+| `5` | `[]` |
 
 ```tinylang
 print(![])      // 1
-print(!0)       // []
+print(!0)       // 1   (0 is now falsey)
 print(!1)       // []
 print(!5)       // []
 print(!!5)      // 1
+print(!!0)      // []  (!!0: !0=1, !1=[])
 print(!![])     // []
 ```
 
