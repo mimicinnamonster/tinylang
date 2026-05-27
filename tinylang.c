@@ -886,11 +886,9 @@ void comp_stmt(Code *c) {
             int is_compound = (at == T_PL_ASSIGN || at == T_MI_ASSIGN ||
                                at == T_ST_ASSIGN || at == T_SL_ASSIGN);
             if (is_assign || is_compound) {
-                char *nm = strdup(ts[tp].s); tp++; int idx_count = 0;
-                int idx_saved_tp[16];
+                char *nm = strdup(ts[tp].s); int name_tp = tp; tp++; int idx_count = 0;
                 while (ts[tp].t == T_LB) {
                     tp++;
-                    idx_saved_tp[idx_count] = tp;
                     do { comp_expr(c); idx_count++; } while (ts[tp].t == T_CM && (tp++, 1));
                     if (ts[tp].t != T_RB) die("expected ]"); tp++;
                 }
@@ -899,35 +897,22 @@ void comp_stmt(Code *c) {
                 else if (ts[tp].t == T_MI_ASSIGN) compound_op = T_MI;
                 else if (ts[tp].t == T_ST_ASSIGN) compound_op = T_ST;
                 else if (ts[tp].t == T_SL_ASSIGN) compound_op = T_SL;
-                /* Rewrite simple compound into plain assignment: x += RHS → x = x op RHS */
-                if (compound_op && idx_count == 0) {
-                    memmove(&ts[tp + 3], &ts[tp + 1], (tc - tp - 1) * sizeof(Tok));
+                /* Rewrite compound into plain: x op= RHS → x = x op RHS (incl indices) */
+                if (compound_op) {
+                    int lhs = tp - name_tp;
+                    memmove(&ts[tp + lhs + 2], &ts[tp + 1], (tc - tp - 1) * sizeof(Tok));
                     ts[tp].t = T_ASSIGN;
-                    ts[tp + 1] = (Tok){ .t = T_ID, .s = strdup(nm), .l = comp_line };
-                    ts[tp + 2] = (Tok){ .t = (TK)compound_op, .s = NULL, .l = comp_line };
-                    tc += 2;
+                    for (int i = 0; i < lhs; i++) {
+                        ts[tp + 1 + i] = ts[name_tp + i];
+                        if (ts[tp + 1 + i].t == T_ID && ts[tp + 1 + i].s)
+                            ts[tp + 1 + i].s = strdup(ts[tp + 1 + i].s);
+                    }
+                    ts[tp + 1 + lhs] = (Tok){ .t = (TK)compound_op, .s = NULL, .l = comp_line };
+                    tc += lhs + 1;
                     compound_op = 0;
                 }
-                /* Indexed compound: replay indices for read, apply op, store */
-                if (compound_op) {
-                    tp++;
-                    int slot = var_find(nm);
-                    if (slot < 0) slot = var_add(nm);
-                    emit(c, (Instr){OC_VAR_SLOT, slot, 0, .num = 0});
-                    for (int i = 0; i < idx_count; i++) {
-                        int cur_tp = tp;
-                        tp = idx_saved_tp[i];
-                        comp_expr(c);
-                        tp = cur_tp;
-                        emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
-                    }
-                    comp_expr(c);
-                    emit(c, (Instr){OC_OP, compound_op, 0, .num = 0});
-                    if (idx_count > 0)
-                        emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
-                    else
-                        emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
-                } else {
+                /* Plain assignment (including rewritten compound) */
+                {
                     /* Plain assignment (including rewritten compound) */
                     if (ts[tp].t != T_ASSIGN) die("expected ="); tp++;
                     int is_push = (idx_count == 0);
