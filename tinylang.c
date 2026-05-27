@@ -124,6 +124,30 @@ void vassign(Value *d, Value s) {
 }
 Value arr_item(Arr *a, int i) { return a->val[i]; }
 
+int is_string_arr(Arr *a) {
+    if (!a) return 0;
+    for (int i = 0; i < a->len; i++) {
+        if (a->val[i].type != VAL_NUM) return 0;
+        int c = (int)val_num(a->val[i]);
+        if (c != 10 && c != 13 && c != 9 && (c < 32 || c > 126)) return 0;
+    }
+    return 1;
+}
+
+Arr *num_to_string_arr(double d) {
+    char buf[64];
+    if (d == (double)(int64_t)d)
+        snprintf(buf, sizeof(buf), "%lld", (int64_t)d);
+    else
+        snprintf(buf, sizeof(buf), "%g", d);
+    int len = strlen(buf);
+    Arr *a = aalloc(len);
+    a->len = len;
+    for (int i = 0; i < len; i++)
+        a->val[i] = vnum((double)(unsigned char)buf[i]);
+    return a;
+}
+
 void print_val(Value v) {
     if (v.type == VAL_NUM) {
         double d = v.num;
@@ -180,7 +204,34 @@ Value apply(int op, Value l, Value r) {
                 for (int i = 0; i < rn; i++) { a->val[ln + i] = ra->val[i];
                     if (a->val[ln + i].type == VAL_ARR) aretain(a->val[ln + i].arr); }
                 return (Value){ .type = VAL_ARR, .arr = a };
-            } die("'+' type mismatch");
+            }
+            if (l.type == VAL_ARR && rf && is_string_arr(l.arr)) {
+                /* string + number: convert number to string, then concat */
+                Arr *rstr = num_to_string_arr(rd);
+                Arr *la = l.arr;
+                int ln = la ? la->len : 0, rn = rstr->len;
+                Arr *a = aalloc(ln + rn); a->len = ln + rn;
+                for (int i = 0; i < ln; i++) { a->val[i] = la->val[i];
+                    if (a->val[i].type == VAL_ARR) aretain(a->val[i].arr); }
+                for (int i = 0; i < rn; i++) { a->val[ln + i] = rstr->val[i];
+                    if (a->val[ln + i].type == VAL_ARR) aretain(a->val[ln + i].arr); }
+                arelease(rstr);
+                return (Value){ .type = VAL_ARR, .arr = a };
+            }
+            if (lf && r.type == VAL_ARR && is_string_arr(r.arr)) {
+                /* number + string: convert number to string, then concat */
+                Arr *lstr = num_to_string_arr(ld);
+                Arr *ra = r.arr;
+                int ln = lstr->len, rn = ra ? ra->len : 0;
+                Arr *a = aalloc(ln + rn); a->len = ln + rn;
+                for (int i = 0; i < ln; i++) { a->val[i] = lstr->val[i];
+                    if (a->val[i].type == VAL_ARR) aretain(a->val[i].arr); }
+                for (int i = 0; i < rn; i++) { a->val[ln + i] = ra->val[i];
+                    if (a->val[ln + i].type == VAL_ARR) aretain(a->val[ln + i].arr); }
+                arelease(lstr);
+                return (Value){ .type = VAL_ARR, .arr = a };
+            }
+            die("'+' type mismatch");
         case T_MI:
             if (!lf || !rf) die("'-' requires numbers");
             return vnum(ld - rd);

@@ -102,6 +102,11 @@ lvalue     := identifier ("[" expr "]")*
 `+` `-` `*` `/` `%` `<<` `>>`
 
 - `+` on two arrays = **concatenation** (returns new array)
+- `+` on a string and a number = **string concatenation** — converts the number to its
+  decimal string representation, then concatenates as string + string. Only works when
+  the array side contains printable ASCII bytes (the same heuristic `print()` uses to
+  display arrays as text). Generic arrays with non-printable bytes produce a type error.
+  Examples: `"hello" + 42` → `"hello42"`, `99 + " bottles"` → `"99 bottles"`
 - `+` on two numbers = numeric addition
 - `*` on array × number = **repetition**
 - `<<` left shift: `1 << 8` → `256` (integer bit shift on doubles)

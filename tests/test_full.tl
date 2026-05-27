@@ -397,3 +397,20 @@ function sign(n) {
 print(sign(5))    // 1
 print(sign(0))    // 0
 print(sign(-3))   // -1
+
+// --- 35. String + number concatenation ---
+print("--- string + number concat ---")
+print("hello" + 42)          // hello42
+print(42 + "hello")          // 42hello
+print("zero: " + 0)          // zero: 0
+print("neg: " + (-5))        // neg: -5
+print("pi: " + 3.14)         // pi: 3.14
+print("big: " + 1000000)     // big: 1000000
+print(99 + " bottles")       // 99 bottles
+print("a" + 1 + "b")         // a1b
+
+function greet(name) {
+    return "hello " + name
+}
+print(greet("world"))        // hello world
+print(greet(42))             // hello 42

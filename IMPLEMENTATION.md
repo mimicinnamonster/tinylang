@@ -1,6 +1,6 @@
 # TinyLang — Implementation Guide
 
-**1,163 lines of C.** Single-pass compiler to bytecode with stack-based VM,
+**~1,190 lines of C.** Single-pass compiler to bytecode with stack-based VM,
 computed goto dispatch, slot-indexed variable access, refcount+COW, and tail
 call optimization.
 
@@ -250,7 +250,28 @@ case OC_TCO:
 
 ---
 
-## 5. Array Operations
+### String + Number Concatenation
+
+The `apply()` function for `T_PL` handles three mixed-type cases beyond the core
+number+number (addition) and array+array (concatenation):
+
+- **string + number**: when the left operand is a `VAL_ARR` whose contents look
+  like a printable ASCII string (same heuristic as `print_val()`), the number
+  is converted to its decimal string representation via `num_to_string_arr()`
+  and the two are concatenated as arrays.
+- **number + string**: symmetric case — right operand must look like a string.
+- **anything else**: dies with `"'+' type mismatch"`.
+
+The `is_string_arr()` helper checks that all array elements are `VAL_NUM` and
+fall in the printable ASCII range (32–126), plus tab (9), newline (10), and
+carriage return (13). This matches the heuristic `print_val()` uses to decide
+whether to display an array as text. Generic arrays like `[1, 2, 3]` contain
+non-printable bytes and correctly produce a type error.
+
+The `num_to_string_arr()` helper formats numbers identically to `print_val()`:
+integers print as decimal without a decimal point, floats use `%g`.
+
+## 6. Array Operations
 
 ### COW on mutation
 
@@ -286,15 +307,15 @@ copies elements into a new `Value[]` array, and pushes the result.
 
 ---
 
-## 6. Line Count
+## 7. Line Count
 
-**Total:** 1,163 lines.
+**Total:** ~1,190 lines.
 
 | Component | Lines |
 |-----------|-------|
 | Includes, types, enums, globals | ~60 |
-| Value + Array helpers (vnum, val_num, aalloc, aretain, arelease, etc.) | ~60 |
-| `apply()` (operators) | ~65 |
+| Value + Array helpers (vnum, val_num, aalloc, aretain, arelease, etc.) | ~70 |
+| `apply()` (operators) | ~85 |
 | `die()` (error handling) | ~50 |
 | `print_val()`, `truthy()`, `veq()` | ~40 |
 | Scope (snew, sfree, sget, sset, snew_sized) | ~30 |
@@ -307,7 +328,7 @@ copies elements into a new `Value[]` array, and pushes the result.
 
 ---
 
-## 7. Performance Model
+## 8. Performance Model
 
 - **Computed goto dispatch:** ~15% faster than switch (1 jump/bytecode vs 3)
 - **Slot-indexed variables:** ~50% reduction in variable access cost (O(1) vs

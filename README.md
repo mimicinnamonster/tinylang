@@ -5,7 +5,7 @@ language can be while still being practical. Every design choice prioritises
 **simple implementation** and **easy optimisation** — no runtime type dispatch,
 no garbage collector, no closures, no pointers, no AST, no intermediate
 representations. Just a single-pass compiler emitting flat bytecode for a
-stack-based VM, all in ~1,200 lines of C.
+stack-based VM, all in ~1,190 lines of C.
 
 The central thesis: **static typing and simple semantics are not constraints —
 they are enablers.**  Every optimisation in the VM flows directly from a
@@ -55,7 +55,7 @@ A full language in <1,500 lines of C. No required dependencies. Compiles in <1s.
 
 | Language | Lines | Compilation | Dispatch | Variables | GC | AST |
 |----------|-------|-------------|----------|-----------|----|------|
-| TinyLang | ~1,200 | Single-pass | Computed goto | Slot-indexed O(1) | None | None |
+| TinyLang | ~1,190 | Single-pass | Computed goto | Slot-indexed O(1) | None | None |
 | Python | ~700K+ | Multi-pass | Switch + eval loop | Dict O(log n) | Generational | Full |
 | Lua | ~25K | Multi-pass | Switch | Table O(log n) | Incremental | Full |
 | JavaScript (V8) | Millions | Multi-tier JIT | Native code | Inline cache | Generational | Full |
@@ -225,7 +225,7 @@ print(!![])     // []
 
 | Operator | Operation | Notes |
 |----------|-----------|-------|
-| `+` | Addition / array concat | Numbers add; arrays concatenate |
+| `+` | Addition / array concat | Numbers add; arrays concatenate; string + number converts number to string then concats |
 | `-` | Subtraction | Requires two numbers |
 | `*` | Multiplication / array repeat | Number × number, or array × number |
 | `/` | Division | Halts on division by zero |
@@ -247,6 +247,22 @@ print(256 >> 4)        // 16
 
 ```tinylang
 c = [1, 2] + [3, 4]   // [1, 2, 3, 4]
+```
+
+**String + number concatenation** converts the number to its decimal string
+representation and concatenates as two strings. Only works when the array side
+contains printable ASCII bytes — generic arrays like `[1, 2, 3]` produce a type
+error:
+
+```tinylang
+print("hello" + 42)       // hello42
+print(99 + " bottles")    // 99 bottles
+print("pi: " + 3.14)      // pi: 3.14
+print("neg: " + (-5))     // neg: -5
+
+// Type error — non-printable array:
+x = [1, 2, 3]
+// print(x + 42)  // '+' type mismatch
 ```
 
 **Array repetition** with `*`:
@@ -785,7 +801,7 @@ concatenation are supported.
 ## Optimizations & VM Internals
 
 TinyLang is a bytecode interpreter with a deliberately minimal implementation
-(~1,200 lines of C). Despite its simplicity, it incorporates several
+(~1,190 lines of C). Despite its simplicity, it incorporates several
 optimizations that dramatically improve performance over a naive interpreter.
 
 Because every variable has exactly one type and every function has exactly one
@@ -1116,14 +1132,14 @@ and memory indirection.
 |----------|----------|---------|--------|---|
 | **Memory efficiency** | 1.2–5.7 MB | 14–17 MB | 25–40 MB | 1–2 MB |
 | **Startup time** | ~2ms | ~40ms | ~30ms | ~0ms |
-| **Implementation size** | ~1,200 lines | Millions | Millions | ~100–150/bench |
+| **Implementation size** | ~1,190 lines | Millions | Millions | ~100–150/bench |
 | **Deterministic cleanup** | ✓ Refcount | ✗ GC pauses | ✗ GC pauses | ✓ Manual |
 | **No dependencies** | ✓ Single .c | ✗ Node runtime | ✗ Python runtime | ✓ |
 
 TinyLang uses **3–12× less memory** than Node.js for the same computation,
 because its compact `Value` structs and refcount-based cleanup don't need
 generational GC overhead. Startup time is ~2ms vs Node.js's ~40ms V8
-initialization. And the entire implementation fits in a single ~1,200 line C
+initialization. And the entire implementation fits in a single ~1,190 line C
 file that compiles in under a second.
 
 ---
@@ -1149,7 +1165,7 @@ Benchmark source files:
 
 ## Implementation
 
-- ~1,200 lines of C, single file
+- ~1,190 lines of C, single file
 - Optional GNU Readline/libedit integration for line editing and history
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
 - Stack-based VM: computed goto dispatch, `Value istk[4096]` stack
