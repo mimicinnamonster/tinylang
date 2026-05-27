@@ -283,7 +283,6 @@ All comparisons return `1` (truthy) or `[]` (falsey).
 | Operator | Meaning |
 |----------|---------|
 | `=` | Equal (assignment in statement context) |
-| `+=` `-=` `*=` `/=` | Compound assignment (statement only) |
 | `!=` | Not equal |
 | `<` | Less than |
 | `>` | Greater than |

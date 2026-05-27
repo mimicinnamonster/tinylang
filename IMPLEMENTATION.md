@@ -130,47 +130,57 @@ each function's variable namespace.
 ### Compound assignment desugaring
 
 Compound assignment operators (`+=`, `-=`, `*=`, `/=`) are desugared entirely
-at the parser level — no new bytecodes are required. The lexer recognizes
+at the token level — no new bytecodes are required. The lexer recognizes
 `+=`, `-=`, `*=`, `/=` as single tokens (`T_PL_ASSIGN` etc.) by peeking ahead
 one character after `+`, `-`, `*`, `/`.
 
 In `comp_stmt`, when the `T_ID` case detects a compound assignment token, it
-desugars to the exact same bytecode the equivalent simple assignment would
-produce. The desugaring is identical to `x = x op (expr)` — including the push
-optimization for `arr += [elem]`.
+rewrites the token stream in-place so that the plain `=` assignment handler
+parses it identically to the user having written `x = x op expr`.
 
-**Push optimization:** `arr += [elem]` uses the same lookahead detection as
-`arr = arr + [elem]` and emits `OC_PUSH` — O(1) amortized append. Multi-element
-`arr += [a, b]` falls through to the generic desugar and performs array
-concatenation.
+**Token rewrite:** For `x += RHS`, the compiler:
+1. Records the position of the variable name token (`name_tp`)
+2. Parses any index brackets (compiling them as LHS store indices)
+3. Calculates the LHS token count: `lhs = tp - name_tp` (name + brackets)
+4. Shifts the RHS tokens right by `lhs + 1` slots using `memmove`
+5. Sets `ts[tp].t = T_ASSIGN` (replaces compound token with `=`)
+6. Copies the LHS tokens (name + brackets) from `name_tp` into the gap
+7. Inserts the arithmetic operator token (`T_PL`, `T_MI`, etc.) after the
+   copied LHS
+8. Falls through to the plain `=` assignment handler
 
-**Simple variables (`x += expr`):**
+This means the exact same code handles both `arr += [elem]` and
+`arr = arr + [elem]` — including the push optimization, operator precedence
+in the RHS expression, and indexed lvalue chains. Everything is coupled.
 
-1. Compile variable read (`OC_VAR_SLOT`)
-2. Compile RHS expression
-3. Emit `OC_OP` with the corresponding arithmetic opcode
-4. Emit `OC_STORE_SLOT`
+**Trace for `a[i] += 10`:**
+```
+Original tokens:  a  [  i  ]  +=  10
+                                ↑tp
+LHS tokens copied from name_tp:  a  [  i  ]
+Rewritten:        a  [  i  ]  =  a  [  i  ]  +  10
+                                ↑tp
+                                T_ASSIGN (plain path)
+```
+The plain path then:
+1. Uses the first `a[i]` as the LHS store target (compiles `i` for `OC_LVALS`)
+2. `comp_expr(c)` compiles the RHS `a[i] + 10` (reads `a`, indexes with `i`,
+   adds 10)
+3. Emits `OC_LVALS` to store the result
 
-**Indexed targets (`a[i] += expr`):**
+The `i` in the LHS and the `i` in the RHS are separate — each is compiled
+from its own set of tokens, so the index expression is evaluated twice at
+runtime. This is identical to writing `a[i] = a[i] + 10` explicitly.
 
-Indices must be available twice — once for reading via `OC_INDEX`, once for
-storing via `OC_LVALS`. The compiler saves the token position before each index
-expression during the first parse pass (store indices), then replays them by
-temporarily rewinding `tp`:
+**Push optimization:** Because `arr += [elem]` rewrites to `arr = arr + [elem]`
+before the plain handler sees it, the same lookahead (`id + [single]`) fires
+and emits `OC_PUSH`.
 
-1. Compile all index expressions normally (these stay on the stack for
-   `OC_LVALS` later)
-2. Emit `OC_VAR_SLOT` for the variable
-3. For each saved index position: rewind `tp`, re-compile the expression,
-   restore `tp`, emit `OC_INDEX`
-4. Compile RHS expression
-5. Emit `OC_OP` for the arithmetic operator
-6. Emit `OC_LVALS` (or `OC_STORE_SLOT` for simple variables) using the
-   store indices from step 1
-
-Index expressions with side effects are evaluated twice at runtime. This is a
-documented design choice — the language has no mutable global state accessible
-from index expressions.
+**`is_single_elem_bracket` helper:** A shared helper checks whether tokens
+starting at a given position form a `[single_expression]` (no comma at
+depth 1). Used by the push optimization lookahead in both `=` and
+rewritten-compound paths, though the rewrite means only the `=` path's
+lookahead actually runs.
 
 ### Push optimization detection
 

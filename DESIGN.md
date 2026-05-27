@@ -105,26 +105,34 @@ lvalue     := identifier ("[" expr "]")*
 the equivalent simple assignment. No new bytecodes or VM changes are needed —
 the compiler emits the same instruction sequence as `x = x op y`.
 
-**Simple variables:** `x += expr` compiles to read `x`, evaluate `expr`, apply
-op, store to `x`.
+**How it works:** All compound assignments (`+=`, `-=`, `*=`, `/=`) desugar by
+rewriting the token stream at compile time. The compound operator token is
+replaced with `=`, and the variable name (plus any index brackets) is copied
+after it, followed by the arithmetic operator. The result is identical to the
+user having written `x = x op expr` — the exact same parser, push optimization,
+and bytecode are used.
 
-**Indexed targets:** `a[i] += expr` compiles to:
-- Evaluate index `i` once (for the store via `OC_LVALS`)
-- Read variable `a`, re-evaluate index `i`, apply `OC_INDEX`
-- Evaluate RHS `expr`, apply op
-- Store through `OC_LVALS` using the first index copy
-
-This means the index expression is evaluated twice at runtime. For simple
-constant indices like `0` or `i` this is invisible; for complex index
-expressions with side effects (e.g. function calls), the side effect occurs
-twice.
+For example, `a[i] += 10` rewrites the token stream from:
+```
+T_ID("a") T_LB T_EXPR T_RB T_PL_ASSIGN T_NUM(10)
+```
+to:
+```
+T_ID("a") T_LB T_EXPR T_RB T_ASSIGN T_ID("a") T_LB T_EXPR T_RB T_PL T_NUM(10)
+```
+which is parsed identically to `a[i] = a[i] + 10`.
 
 **Push optimization works with compound assignment too.** `arr += [elem]`
-triggers the same O(1) push optimization as `arr = arr + [elem]` — both
-produce identical bytecode.
+rewrites to `arr = arr + [elem]`, triggering the same O(1) push as the
+explicit form. Multi-element `arr += [a, b]` also rewrites identically, so
+it performs array concatenation (not push).
 
-Multi-element bracket syntax (`arr += [a, b]`) still performs array
-concatenation, not push.
+**Index expressions are evaluated twice** — once for the store index (LHS)
+and once for the read (RHS via `a[i] + expr`). This is the same double
+evaluation that occurs when writing `a[i] = a[i] + expr` explicitly. For
+simple constant indices like `0` or `i` this is invisible; for complex
+index expressions with side effects (e.g. function calls), the side effect
+occurs twice.
 
 ### Arithmetic
 
