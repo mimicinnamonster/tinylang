@@ -153,4 +153,4 @@ function run(n) {
     print(energy(bodies))
 }
 
-run(5000)
+run(5000000)

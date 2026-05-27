@@ -1,5 +1,7 @@
-- array push with multiple elements
 - array slices cow
+- array[string] hashmaps?
+- default function params
 - utf8
-- builtins: split, env, args, time, date
+- builtins: split, env, args, time, date, thisfile
 - switch instead of compute goto (compiler should optimise, check output ASSEMBLY)
+- fun/ret/for

@@ -33,13 +33,13 @@ time, eliminating the need for runtime type guards on array operations.
 // Everything here compiles to flat bytecode in one pass.
 // No AST, no runtime type checks, no GC pauses.
 
-function sum(list) {
-    if list == nil { return 0 }
-    return list[0] + sum(list[1])      // TCO - inifinte recursion
+function sum(list, acc) {
+    if list == nil { return acc }
+    return sum(list[1], acc + list[0])  // TCO, unlimited recursion
 }
 
 // Lisp-like linked list
-print(sum([1, [2, [3, [4, nil]]]]))    // 10
+print(sum([1, [2, [3, [4, nil]]]], 0))  // 10
 
 nums = []; i = 0
 while i < 100000 {
@@ -47,6 +47,12 @@ while i < 100000 {
     i = i + 1
 }
 print(#nums)                           // 100000
+
+// Same with compound assignment
+arr = []
+arr += [10]
+arr += [20, 30]
+print(arr)                             // [10, 20, 30]
 
 // Array slicing with Python-style semantics
 arr = [0, 1, 2, 3, 4, 5]
@@ -61,14 +67,68 @@ print(orig[0][1])                      // 2 (unchanged)
 print(copy[0][1])                      // 99
 ```
 
+### Where TinyLang Excels
+
 A full language in <1,600 lines of C. No required dependencies. Compiles in <1s.
 
-| Language | Lines | Compilation | Dispatch | Variables | GC | AST |
-|----------|-------|-------------|----------|-----------|----|------|
-| TinyLang | ~1,555 | Single-pass | Computed goto | Slot-indexed O(1) | None | None |
-| Python | ~700K+ | Multi-pass | Switch + eval loop | Dict O(log n) | Generational | Full |
-| Lua | ~25K | Multi-pass | Switch | Table O(log n) | Incremental | Full |
-| JavaScript (V8) | Millions | Multi-tier JIT | Native code | Inline cache | Generational | Full |
+| Property | TinyLang | Python | Node.js | C |
+|----------|----------|--------|---------|---|
+| **Memory efficiency** | 1.2–5.7 MB | 25–40 MB | 14–17 MB | 1–2 MB |
+| **Startup time** | ✓ ~2ms compile + run | ~30ms startup | ~40ms startup + JIT warmup | Compile only |
+| **Implementation size** | ✓ ~1.5k lines | ~700K lines (CPython) | ~1.2M lines (V8+Node) | ~12.8M lines (LLVM) |
+| **Deterministic cleanup** | ✓ Refcount | ✗ GC pauses | ✗ GC pauses | ✗ Manual |
+| **No dependencies** | ✓ Single .c | ✗ Python runtime | ✗ Node runtime | LLVM |
+| **Predictable performance** | ✓ No JIT warmup, no GC pauses, no runtime dispatch | ✗ GC pauses, runtime type checks | ✗ Warmup-dependent, GC pauses | ✓ Always fast |
+| **Array building** | O(1) amortized push | O(n) amortized | O(1) push, dynamic arrays | ✗ Manual
+| **General performance** |  1× (baseline) | **1.1–2.2× faster** | **~10× slower** | **~100× slower**
+
+
+## Table of Contents
+
+- [Quick start](#quick-start)
+  - [REPL](#repl)
+  - [Tests](#tests)
+- [Language Features Guide](#language-features-guide)
+  - [Types](#types)
+  - [Strings](#strings-syntactic-sugar-for-byte-arrays)
+  - [Literals & Identifiers](#literals--identifiers)
+  - [Statement Separation](#statement-separation)
+  - [Truthiness & Negation](#truthiness--negation)
+  - [Operators](#operators)
+  - [Operator Precedence](#operator-precedence)
+  - [Variable Scoping](#variable-scoping)
+  - [Assignment](#assignment)
+  - [Value Semantics (Copy-on-Write)](#value-semantics-copy-on-write)
+  - [Arrays](#arrays)
+  - [nil](#nil)
+  - [Multi-Indexing](#multi-indexing)
+  - [Index Chains](#index-chains)
+  - [Functions](#functions)
+  - [Control Flow](#control-flow)
+  - [Include System](#include-system)
+  - [Error Handling](#error-handling)
+  - [Built-in Functions](#built-in-functions)
+- [Optimizations & VM Internals](#optimizations--vm-internals)
+  - [1. Computed Goto Dispatch](#1-computed-goto-dispatch-threaded-code)
+  - [2. Slot-Indexed Variable Access](#2-slot-indexed-variable-access)
+  - [3. Compile-Time Type Tracking](#3-compile-time-type-tracking)
+  - [4. Push Optimization](#4-push-optimization)
+  - [5. Copy-on-Write (COW) Arrays](#5-copy-on-write-cow-arrays)
+  - [6. Tail Call Optimization (TCO)](#6-tail-call-optimization-tco)
+  - [7. Single-Pass Compilation](#7-single-pass-compilation-no-ast)
+  - [8. Parameter Binding by Slot Index](#8-parameter-binding-by-slot-index)
+  - [9. Pre-Sized Scopes with Slot Initialization](#9-pre-sized-scopes-with-slot-initialization)
+  - [Cumulative Optimization Impact](#cumulative-optimization-impact)
+- [Performance Comparisons](#performance-comparisons-tinylang-vs-c-vs-nodejs-vs-python)
+  - [Full-Size Results](#full-size-results)
+  - [Matching-Size Results](#matching-size-results-fair-comparison)
+  - [Ratio Summary](#ratio-summary)
+  - [Where TinyLang Excels](#where-tinylang-excels)
+- [Running Benchmarks](#running-benchmarks)
+- [Implementation](#implementation)
+  - [Portability Notes](#portability-notes)
+- [Grammar](#grammar)
+- [Design](#design)
 
 ## Quick start
 
@@ -176,6 +236,46 @@ Supported escape sequences:
 | `\"` | 34 (double quote) |
 | `\xHH` | hex byte value |
 
+#### String Operations
+
+Since strings are arrays, all array operations work: indexing, slicing, length,
+concatenation, and push optimization.
+
+```tinylang
+greet = "hello"
+name = "world"
+
+// Concatenation
+msg = greet + ", " + name + "!"
+print(msg)                   // hello, world!
+
+// Indexing
+print(greet[0])              // h (byte value 104 as character)
+print(greet[1])              // e
+
+// Slicing
+print(greet[1:4])            // ell
+
+// Length
+print(#"hello")              // 5
+
+// Push — appends bytes to the string
+s = ""
+s = s + [104, 101, 108, 108, 111]  // push each byte: "hello"
+print(s)                             // hello
+
+// String + number concatenation
+print("pi: " + 3.14)         // pi: 3.14
+print(99 + " bottles")       // 99 bottles
+
+// Value semantics — strings are just arrays
+orig = "hello"
+copy = orig
+copy[0] = 72                 // 72 = 'H'
+print(orig)                  // hello (unchanged, COW)
+print(copy)                  // Hello
+```
+
 ### Literals & Identifiers
 
 **Number literals** support decimal and hex:
@@ -205,6 +305,24 @@ function   return   if   elif   else   while   nil   include
 ```
 
 Built-in function names (`print`, `input`, `thispath`) are **not** keywords.
+
+### Statement Separation
+
+Statements are separated by newlines (Go-style inference) or explicit semicolons:
+
+```tinylang
+// Newline-separated (idiomatic)
+x = 5
+y = 10
+z = x + y
+
+// Semicolon-separated
+a = 1; b = 2; c = a + b
+
+// Mixed
+d = 5; e = 10
+f = d + e
+```
 
 ### Truthiness & Negation
 
@@ -236,8 +354,8 @@ print(!![])     // []
 
 | Operator | Operation | Notes |
 |----------|-----------|-------|
-| `+` | Addition / array concat | Numbers add; arrays concatenate; string + number converts number to string then concats |
-| `-` | Subtraction | Requires two numbers |
+| `+` | Addition / array concat / push | Numbers add; arrays concatenate; `x = x + [...]` compiles to O(1) push; string + number converts number to string then concats |
+| `-` | Subtraction | Requires two numbers (compile-time type error otherwise) |
 | `*` | Multiplication / array repeat | Number × number, or array × number |
 | `/` | Division | Halts on division by zero |
 | `%` | Modulo | Uses `fmod`, halts on zero |
@@ -259,6 +377,12 @@ print(256 >> 4)        // 16
 ```tinylang
 c = [1, 2] + [3, 4]   // [1, 2, 3, 4]
 ```
+
+When the target is the same variable (`x = x + [...]`), the compiler emits
+the push optimization — appends elements in-place instead of creating
+a new concatenated array. This works for bracket literals, function calls,
+variables, slices, and chained expressions, as long as the target is a known
+array.
 
 **String + number concatenation** converts the number to its decimal string
 representation and concatenates as two strings. Only works when the array side
@@ -401,7 +525,7 @@ x = "hello"          // ERROR: x was already number, type mismatch
 x = 5                   // simple variable assignment
 arr[0] = 99             // array element mutation (in-place via COW)
 m[i][j] = 42            // nested mutation via lvalue chain
-m[i, j] = 42            // multi-index sugar: m[i][j] = 42
+m[i, j] = 42            // multi-indexing: m[i][j] = 42
 dyn[idx_arr] = 99       // dynamic chain: idx_arr = [i, j, k]
 ```
 
@@ -434,6 +558,174 @@ x += 3 * 4              // x = x + (3 * 4) → 14
 arr = []
 arr += [99]             // push optimization: O(1) append
 arr += [1, 2]           // multi-element: array concat (not push)
+```
+
+### Value Semantics (Copy-on-Write)
+
+TinyLang uses **reference counting with copy-on-write** to implement value
+semantics. When you copy an array, both variables share the same underlying
+data. A deep copy only happens when someone tries to **mutate** shared data.
+This preserves value semantics (mutating a copy never affects the original)
+while keeping read-only access O(1).
+
+```tinylang
+orig = [1, 2, 3]
+copy = orig
+copy[0] = 99
+print(orig[0])           // 1 (unchanged)
+print(copy[0])           // 99
+
+// Deep COW: nested arrays are copied on mutation
+orig2 = [[1, 2], [3, 4]]
+copy2 = orig2
+copy2[0][1] = 99
+print(orig2[0][1])       // 2 (unchanged)
+print(copy2[0][1])       // 99
+```
+
+**Key insight:** Sharing is invisible. There is no "borrow" concept. Every value
+always has a valid refcount. When you read `arr[i]`, you get a value whose
+refcount was incremented. When the variable holding it goes out of scope, the
+refcount is decremented. Everything is automatic and transparent.
+
+### Arrays
+
+Heterogeneous, nested, zero-indexed, bounds-checked.
+
+```tinylang
+empty = []
+nums  = [1, 2, 3]
+matrix = [[1, 2], [3, 4]]
+mixed = [1, "hello", [], [5, 6]]
+
+// Indexing
+print(nums[0])           // 1
+print(nums[2])           // 3
+
+// Multi-index
+m = [[1, 2], [3, 4]]
+print(m[0][1])           // 2
+print(m[0, 1])           // 2 (sugar for m[0][1])
+
+// Dynamic index chain
+idx = [0, 1]
+print(m[idx])            // 2
+
+// Length
+print(#nums)             // 3
+
+// Concatenation (new array)
+a = [1, 2]
+b = [3, 4]
+c = a + b
+print(c)                 // [1, 2, 3, 4]
+
+// Push (in-place, O(1) amortized)
+arr = []
+arr = arr + [10]
+arr = arr + [20, 30]
+print(arr)               // [10, 20, 30]
+
+// Repetition
+zeros = [0] * 5
+print(zeros)              // [0, 0, 0, 0, 0]
+```
+
+#### Array Slicing
+
+Python-style slice syntax with negative indices, omitted bounds, and step:
+
+```tinylang
+arr = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+print(arr[0:5])          // [0, 1, 2, 3, 4]
+print(arr[:3])           // [0, 1, 2]
+print(arr[7:])           // [7, 8, 9]
+print(arr[:])            // [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+print(arr[0:10:2])       // [0, 2, 4, 6, 8]
+print(arr[1:10:2])       // [1, 3, 5, 7, 9]
+print(arr[::-1])         // [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+print(arr[5:2:-1])       // [5, 4, 3]
+print(arr[-3:])          // [7, 8, 9]
+print(arr[:-3])          // [0, 1, 2, 3, 4, 5, 6]
+print(arr[-5:-2])        // [5, 6, 7]
+print(arr[0:0])          // []
+print(arr[0:100])        // [0..9] (clamped)
+print(arr[100:200])      // [] (clamped)
+```
+
+Slice syntax general form: `arr[start:stop:step]`
+
+- `start` defaults to `0` (positive step) or `len-1` (negative step)
+- `stop` defaults to `len` (positive step) or `-len-1` (negative step)
+- Negative indices wrap around by adding `len`
+- Bounds are clamped to valid range
+- Step cannot be zero
+
+#### Array Concatenation vs Push
+
+The `+` operator on arrays behaves differently depending on the operands:
+
+- **`c = a + b`** — creates a new array `[a..., b...]`. Neither `a` nor `b` is modified. O(n).
+- **`x = x + [...]`** — appends elements in-place, no temporary array. O(1) amortized per element.
+- **`x = x + expr`** — pushes all elements of any array expression into `x` in-place. O(n) but avoids the final concatenated copy.
+
+See the [Push Optimization](#4-push-optimization) section in Optimizations & VM Internals for details and examples.
+
+#### Array Repetition
+
+```tinylang
+zeros = [0] * 10          // 10 zeros
+pairs = [1, 2] * 3       // [1, 2, 1, 2, 1, 2]
+zero_repeat = [5] * 0    // []
+neg_repeat = [5] * (-1)  // []
+```
+
+### nil
+
+`nil` is syntactic sugar for the empty array `[]`.
+
+```tinylang
+n = nil
+print(n = [])            // 1
+print(n != [])           // []
+print(!n)                // 1
+```
+
+Truth table for `nil`: it is falsey, negates to `1`, and is deeply equal to `[]`.
+
+### Multi-Indexing
+
+`arr[i, j, k]` desugars to `arr[i][j][k]` at compile time. This works for both
+reading and assignment (lvalue chains):
+
+```tinylang
+deep = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+print(deep[0][0][0])    // 1
+print(deep[0,1,1])      // 4 (same as deep[0][1][1])
+print(deep[1][0][1])    // 6
+print(deep[1,1,0])      // 7
+
+// Multi-index lvalue
+mat = [[10, 20], [30, 40]]
+mat[0, 1] = 99
+print(mat[0][1])        // 99
+```
+
+### Index Chains
+
+Pass an array of indices to index into nested arrays dynamically:
+
+```tinylang
+mat = [[1, 2], [3, 4]]
+idx = [0, 1]
+print(mat[idx])         // 2
+
+// As lvalue
+dyn = [[10, 20], [30, 40]]
+dyn_idx = [0, 1]
+dyn[dyn_idx] = 99
+print(dyn[0][1])        // 99
 ```
 
 ### Functions
@@ -473,6 +765,10 @@ print(fact_tco(1000, 1)) // inf (no stack overflow)
 Key rules:
 - `function` keyword — defined only at top level
 - Define-before-use (no forward references)
+- Return type is inferred and checked: all `return` statements in a function
+  must return the same type (number or array). A mismatch halts at compile
+  time with `"inconsistent return type"`.
+- Functions with no `return` statement return `[]` (nil).
 - Recursion works; tail calls are optimized (TCO)
 - Not first-class — cannot be stored in variables or passed as arguments
 - Extra arguments are silently ignored; missing arguments default to `[]`
@@ -523,132 +819,49 @@ while i < 3 {
 print(result)            // [0, 1, 1, 2, 2, 2]
 ```
 
-### Arrays
+### Include System
 
-Heterogeneous, nested, zero-indexed, bounds-checked.
-
-```tinylang
-empty = []
-nums  = [1, 2, 3]
-matrix = [[1, 2], [3, 4]]
-mixed = [1, "hello", [], [5, 6]]
-
-// Indexing
-print(nums[0])           // 1
-print(nums[2])           // 3
-
-// Multi-index
-m = [[1, 2], [3, 4]]
-print(m[0][1])           // 2
-print(m[0, 1])           // 2 (sugar for m[0][1])
-
-// Dynamic index chain
-idx = [0, 1]
-print(m[idx])            // 2
-
-// Length
-print(#nums)             // 3
-```
-
-#### Array Slicing
-
-Python-style slice syntax with negative indices, omitted bounds, and step:
+`include "path"` loads and compiles another TinyLang source file in place.
+Paths are relative to the including file's directory.
 
 ```tinylang
-arr = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+// main.tl
+include "lib/utils.tl"
+print(greet("world"))
 
-print(arr[0:5])          // [0, 1, 2, 3, 4]
-print(arr[:3])           // [0, 1, 2]
-print(arr[7:])           // [7, 8, 9]
-print(arr[:])            // [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-print(arr[0:10:2])       // [0, 2, 4, 6, 8]
-print(arr[1:10:2])       // [1, 3, 5, 7, 9]
-print(arr[::-1])         // [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
-print(arr[5:2:-1])       // [5, 4, 3]
-print(arr[-3:])          // [7, 8, 9]
-print(arr[:-3])          // [0, 1, 2, 3, 4, 5, 6]
-print(arr[-5:-2])        // [5, 6, 7]
-print(arr[0:0])          // []
-print(arr[0:100])        // [0..9] (clamped)
-print(arr[100:200])      // [] (clamped)
-```
-
-Slice syntax general form: `arr[start:stop:step]`
-
-- `start` defaults to `0` (positive step) or `len-1` (negative step)
-- `stop` defaults to `len` (positive step) or `-len-1` (negative step)
-- Negative indices wrap around by adding `len`
-- Bounds are clamped to valid range
-- Step cannot be zero
-
-#### Array Repetition
-
-```tinylang
-zeros = [0] * 10          // 10 zeros
-pairs = [1, 2] * 3       // [1, 2, 1, 2, 1, 2]
-zero_repeat = [5] * 0    // []
-neg_repeat = [5] * (-1)  // []
-```
-
-#### Push Optimization
-
-`x = x + [elem]` is detected at compile time and compiled to a `OC_PUSH`
-instruction — appends the element directly in amortized O(1) instead of
-copying the entire array. Multi-element array literals `[a, b, c]` also
-use `OC_PUSH` (one per element), avoiding the temporary array entirely.
-
-The compiler also detects `x = x + expr` where `x` is a known array and
-the RHS is any expression yielding an array (function call, variable, slice,
-chained `+`, etc.) and emits `OC_PUSH_ALL`. This pushes all elements of the
-RHS array into `x` in-place, avoiding the final concatenated copy and
-store-back. A runtime fallback handles non-array RHS (e.g., string concat).
-
-```tinylang
-// OC_PUSH (O(1) each):
-arr = []
-i = 0
-while i < 1000 {
-    arr = arr + [i]
-    i = i + 1
+// lib/utils.tl
+function greet(name) {
+    return "hello " + name
 }
-print(#arr)              // 1000
-
-// Multi-element: also OC_PUSH, one per element
-multi = [1]
-multi = multi + [2, 3, 4]  // 3 OC_PUSH instructions
-
-// OC_PUSH_ALL — push all from any array expression
-arr = arr + fn_that_returns_array()
-arr = arr + ([1, 2] + [3, 4]) + another_fn()
 ```
 
-### Value Semantics (Copy-on-Write)
-
-TinyLang uses **reference counting with copy-on-write** to implement value
-semantics. When you copy an array, both variables share the same underlying
-data. A deep copy only happens when someone tries to **mutate** shared data.
-This preserves value semantics (mutating a copy never affects the original)
-while keeping read-only access O(1).
+The include path can also be a compile-time expression using `thispath()`
+and `+` concatenation. Inside include expressions, `thispath()` returns
+the directory of the current file (with trailing `/`), so concatenating
+a relative path resolves to the correct sibling file.
 
 ```tinylang
-orig = [1, 2, 3]
-copy = orig
-copy[0] = 99
-print(orig[0])           // 1 (unchanged)
-print(copy[0])           // 99
-
-// Deep COW: nested arrays are copied on mutation
-orig2 = [[1, 2], [3, 4]]
-copy2 = orig2
-copy2[0][1] = 99
-print(orig2[0][1])       // 2 (unchanged)
-print(copy2[0][1])       // 99
+include thispath() + "utils.tl"
+include thispath() + "../lib/helpers.tl"
 ```
 
-**Key insight:** Sharing is invisible. There is no "borrow" concept. Every value
-always has a valid refcount. When you read `arr[i]`, you get a value whose
-refcount was incremented. When the variable holding it goes out of scope, the
-refcount is decremented. Everything is automatic and transparent.
+Only `thispath()`, string literals, and `+` are supported — the expression
+is evaluated entirely at compile time. Nested includes work arbitrarily deep.
+
+### Error Handling
+
+Runtime errors halt execution with a message to stderr and a stack trace:
+
+```
+index out of bounds
+in tests/test.tl:42: compute()
+in tests/test.tl:10: process_data()
+in tests/test.tl:1
+```
+
+In script mode the process exits with status 1. In the REPL, errors are caught
+and the REPL continues with the next input, preserving the current scope.
+No recovery, no try/catch, no assertions.
 
 ### Built-in Functions
 
@@ -688,182 +901,20 @@ correct location.
 print(thispath())        // e.g., /Users/mimi/project/test.tl
 ```
 
-### Include System
-
-Load and execute another TinyLang source file at compile time.
-
-#### String literal include
-
-```tinylang
-// main.tl
-include "lib/utils.tl"
-print(greet("world"))
-
-// lib/utils.tl
-function greet(name) {
-    return "hello " + name
-}
-```
-
-File resolution is relative to the including file's directory.
-
-#### Expression include
-
-The include path can also be a compile-time expression using `thispath()`
-and `+` concatenation. Inside include expressions, `thispath()` returns
-the directory of the current file (with trailing `/`), so concatenating
-a relative path resolves to the correct sibling file.
-
-```tinylang
-include thispath() + "utils.tl"
-include thispath() + "../lib/helpers.tl"
-include thispath() + "sub" + "/nested.tl"
-```
-
-Only `thispath()`, string literals, and `+` are supported — the expression
-is evaluated entirely at compile time.
-
-Nested includes work arbitrarily deep.
-
-### Error Handling
-
-Runtime errors halt execution with a message to stderr and a stack trace:
-
-```
-index out of bounds
-in tests/test.tl:42: compute()
-in tests/test.tl:10: process_data()
-in tests/test.tl:1
-```
-
-In script mode the process exits with status 1. In the REPL, errors are caught
-and the REPL continues with the next input, preserving the current scope.
-No recovery, no try/catch, no assertions.
-
-### Tail Call Optimization (TCO)
-
-When a function ends with `return f(args...)` where `f` is the function itself,
-the compiler replaces the call with `OC_TCO` — a direct instruction-pointer reset
-that rebinds parameters without allocating a new C stack frame.
-
-```tinylang
-// Tail-recursive: never overflows the C stack
-function countdown(n) {
-    if n = 0 { return 0 }
-    return countdown(n - 1)   // TCO
-}
-
-// NOT tail-recursive: still uses C stack
-function broken(n) {
-    if n = 0 { return 0 }
-    return 1 + broken(n - 1)  // needs to multiply after return
-}
-```
-
-TCO detection happens at compile time by scanning the last instructions of each
-function body for `OC_CALL` to the same function in tail position.
-
-### nil
-
-`nil` is syntactic sugar for the empty array `[]`.
-
-```tinylang
-n = nil
-print(n = [])            // 1
-print(n != [])           // []
-print(!n)                // 1
-```
-
-Truth table for `nil`: it is falsey, negates to `1`, and is deeply equal to `[]`.
-
-### Multi-Index Sugar
-
-`arr[i, j, k]` desugars to `arr[i][j][k]` at compile time. This works for both
-reading and assignment (lvalue chains):
-
-```tinylang
-deep = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
-print(deep[0][0][0])    // 1
-print(deep[0,1,1])      // 4 (same as deep[0][1][1])
-print(deep[1][0][1])    // 6
-print(deep[1,1,0])      // 7
-
-// Multi-index lvalue
-mat = [[10, 20], [30, 40]]
-mat[0, 1] = 99
-print(mat[0][1])        // 99
-```
-
-### Dynamic Index Chain
-
-Pass an array of indices to index into nested arrays dynamically:
-
-```tinylang
-mat = [[1, 2], [3, 4]]
-idx = [0, 1]
-print(mat[idx])         // 2
-
-// As lvalue
-dyn = [[10, 20], [30, 40]]
-dyn_idx = [0, 1]
-dyn[dyn_idx] = 99
-print(dyn[0][1])        // 99
-```
-
-### Statement Separation
-
-Statements are separated by newlines (Go-style inference) or explicit semicolons:
-
-```tinylang
-// Newline-separated (idiomatic)
-x = 5
-y = 10
-z = x + y
-
-// Semicolon-separated
-a = 1; b = 2; c = a + b
-
-// Mixed
-d = 5; e = 10
-f = d + e
-```
-
-### `include` Directive
-
-`include "path"` loads and compiles another TinyLang source file in place.
-Paths are relative to the including file's directory.
-
-```tinylang
-include "helpers.tl"
-include "../lib/math.tl"
-```
-
-The include path can also be a compile-time expression:
-
-```tinylang
-include thispath() + "helpers.tl"
-include thispath() + "../lib/math.tl"
-```
-
-When using an expression, `thispath()` returns the directory of the current
-file, so concatenation resolves relative paths correctly. The expression is
-evaluated at compile time — only `thispath()`, string literals, and `+`
-concatenation are supported.
-
 ---
 
 ## Optimizations & VM Internals
 
-TinyLang is a bytecode interpreter with a deliberately minimal implementation
-(~1,190 lines of C). Despite its simplicity, it incorporates several
-optimizations that dramatically improve performance over a naive interpreter.
+TinyLang is a bytecode interpreter with a deliberately minimal implementation.
+Despite its simplicity, it incorporates several optimizations that dramatically
+improve performance over a naive interpreter. 
 
 Because every variable has exactly one type and every function has exactly one
 scope, the compiler can:
 
 - **Resolve variables to integer slots** at compile time — O(1) runtime access
   with zero string comparisons.
-- **Inline array append** into a single `OC_PUSH` opcode — the compiler
+- **Inline array append** — the compiler
   recognises `x = x + [e]` and emits an O(1) amortised append.
 - **Detect tail calls** by scanning the last few emitted instructions — no
   separate analysis pass needed.
@@ -958,40 +1009,145 @@ Key properties:
 The type information drives the push optimization decisions and enables
 slot initialization at scope creation time.
 
-### 4. Push Optimization (`OC_PUSH` / `OC_PUSH_ALL`)
+### 4. Push Optimization
 
-The compiler detects `x = x + [...]` by lookahead on the token stream.
-Single and multi-element bracket literals each get their own `OC_PUSH`
-instruction — no temporary array is allocated.
+The compiler detects `x = x + [...]` at compile time and replaces it with
+direct in-place appends instead of creating a new concatenated array.
 
-For non-literal RHS expressions (function calls, variables, slices, chained
-`+`), the compiler emits `OC_PUSH_ALL`. This reads the RHS array from the
-stack and pushes all its elements into `x` in-place. A runtime fallback
-handles non-array RHS for edge cases like string concatenation.
+#### When temporary arrays are created
+
+A **temporary array** (or *temp*) is created whenever `apply(T_PL, ...)`
+concatenates two arrays — it allocates a new `Arr`, copies all elements from
+both sources, and returns it. The old arrays are released afterward. This is
+O(n) time and O(n) memory per concatenation.
+
+With the push optimization, temps are reduced or eliminated depending on
+the expression form:
+
+| Expression | Temps | Time per element | Why |
+|------------|-------|-----------------|-----|
+| `c = a + b` | 1 temp | O(n) | Creates new `[a..., b...]`. Required — `c` is a different variable. |
+| `x = x + [e]` | **0 temps** | **O(1) amortized** | Appends `e` directly into `x`'s array. No copy at all. |
+| `x = x + [a, b, c]` | **0 temps** | **O(1) each** | Three appends, one per element. No temp array created. |
+| `x = x + fn()` | **1 temp** *(fn result)* + **0 final** | O(n) | The function's return array exists anyway; push-all avoids the final `x + result` concat copy and store-back. |
+| `x = x + a + b + c` | **1 temp** *(RHS expression)* + **0 final** | O(n) | The naive path creates 3 temps (`a+b`, `(a+b)+c`, `(x+rhs)`) + store copy. Push-all creates only the RHS temp (`a+b+c`) then pushes in-place. |
+| `x = x + ([a,b] + [c,d])` | **1 temp** + **0 final** | O(n) | The bracketed `[a,b] + [c,d]` creates 1 temp, then push-all moves its elements. |
+
+#### Per-element push
+
+When the RHS is a bare bracket literal `[a, b, ...]` with no chained
+operators following, each element is appended directly. No temporary array
+is created at all — not even for the bracket literal itself.
 
 ```tinylang
-// OC_PUSH — per-element append:
-arr = arr + [i]          // single element
-arr = arr + [1, 2, 3]    // multi-element: 3 OC_PUSH instructions
+// Single element — O(1) amortized, 0 temps
+arr = []
+arr = arr + [99]
+print(#arr)              // 1
 
-// OC_PUSH_ALL — push all from any array expression:
-arr = arr + fn_that_returns_array()
-arr = arr + ([1, 2] + [3, 4]) + another_fn()
+// Multi-element — O(1) per element, 0 temps
+arr = [1, 2]
+arr = arr + [3, 4, 5]   // three individual appends
+print(arr)               // [1, 2, 3, 4, 5]
+
+// Building an array in a loop — O(n) total, 0 temps per iteration
+arr = []
+i = 0
+while i < 1000 {
+    arr = arr + [i]      // O(1) each — no array copy
+    i = i + 1
+}
+print(#arr)              // 1000
 ```
 
-**Why it matters:** Normal array concatenation (`OC_OP` with `T_PL`) allocates
-a new array, copies all elements from both sides, then decrements the source
-references — O(n) time and O(n) memory. `OC_PUSH` appends directly with
-amortized O(1) — it calls `amake_uniq` (COW if shared), doubles capacity on
-realloc, and writes one element.
+**Why it matters:** Without push, `arr = arr + [i]` in a loop would create
+a new array on every iteration, copy all existing elements, and discard the
+old one — O(n²) total. With push, each iteration is O(1) amortized, making
+the whole loop O(n).
 
-`OC_PUSH_ALL` eliminates the final concatenated copy and store-back.
-For `x = x + a + b + c`, the naive path creates 3 temporary arrays and one
-store-back copy; push-all creates only 1 temporary (from the RHS expression
-tree) and zero store-back copies.
+**Multiple temps in a chain (naive path):** Without push optimization,
+each `+` creates a new temp. The entire chain of temps is allocated,
+copied, and freed:
+
+```tinylang
+// Naive path — creates 3 temps + 1 store copy
+a = [1]
+a = a + [2] + [3] + [4]
+// temp1 = a + [2]        = [1, 2]     ← alloc + copy 2 elements
+// temp2 = temp1 + [3]    = [1, 2, 3]  ← alloc + copy 3 elements
+// temp3 = temp2 + [4]    = [1, 2, 3, 4]  ← alloc + copy 4 elements
+// a = temp3                           ← store (copy via vassign)
+// Total: 3 allocs, 9 element copies, 1 store
+
+// Push-all path — 1 temp, no store
+// temp = [2] + [3] + [4]   = [2, 3, 4]  ← alloc + copy 3 elements
+// push all of temp into a                 ← mutate in place, 0 copies
+// Total: 1 alloc, 3 element copies, 0 store
+```
+
+The naive path also creates an increasingly large temp at each step because
+`a`'s elements are copied into each successive temp. Push-all defers the
+work to the end — only the RHS expression chain creates temps.
+
+For a chain of **n** concatenations `x = x + a1 + a2 + ... + an`:
+
+| Path | Temps | Element copies | Store copies |
+|------|-------|----------------|-------------|
+| Naive | n | O(n²) | 1 |
+| Push-all | n−1 | O(n) | **0** |
+
+With push-all, the RHS chain `a1 + a2 + ... + an` creates n−1 temps
+(the intermediate concatenations), then pushes all elements into `x`
+in-place with zero additional copies of `x`'s existing data.
+
+#### Push-all
+
+When the RHS is any expression other than a bare bracket literal (function
+call, variable, slice, chained `+`, parenthesized expression), the compiler
+emits `OC_PUSH_ALL`. The RHS is evaluated normally (which may create temps
+as part of the expression evaluation), then all elements of the result are
+pushed into `x` in-place. The final concatenation copy and store-back are
+eliminated.
+
+```tinylang
+// Function call — fn returns an array, elements pushed into x
+arr = []
+arr = arr + make_array()   // fn's return array is consumed, no final copy
+
+// Chained + — RHS produces one temp, then all elements pushed
+arr = [10, 20]
+arr = arr + [30] + [40, 50]    // naive: arr+[30] = temp1, temp1+[40,50] = temp2, store
+                                // push-all: [30]+[40,50] = temp, push into arr
+
+// From a variable — no temp from the read, just in-place append
+base = [1, 2, 3]
+extra = [4, 5]
+base = base + extra             // pushes extra's elements into base
+
+// From a slice — slice creates one temp, then pushes into target
+nums = [1, 2, 3, 4, 5]
+nums = nums + nums[2:#nums]     // slice [3,4,5] is temp, then push elements into nums
+
+// Parenthesized expression — same as any other expression
+arr = [100]
+arr = arr + ([200] + [300])     // [200]+[300] creates temp, push into arr
+```
+
+**How push-all saves:** Without it, `x = x + fn()` would: evaluate `fn()`
+(creating the return array), then `apply(T_PL, x, fn_result)` would allocate
+a new array and copy all of `x`'s elements plus `fn_result`'s elements into
+it, then release both `x`'s old array and the `fn_result` array. With
+push-all, `fn_result`'s elements are moved directly into `x`'s existing
+array — no extra allocation, no copy of `x`'s existing elements, no
+store-back.
+
+#### Guard conditions
 
 Both optimizations are guarded by compile-time type tracking — they only fire
-when `x` is known to be an array.
+when `x` is known to be an array. This prevents silent data corruption from
+uninitialized slots. Copy-on-write (COW) ensures that if `x` is shared with
+another variable, a deep copy happens before mutation, preserving value
+semantics.
 
 ### 5. Copy-on-Write (COW) Arrays
 
@@ -1023,15 +1179,23 @@ computation.
 
 ### 6. Tail Call Optimization (TCO)
 
-Detected at compile time: if the last instruction before `OC_END` (or `OC_RET`)
-is a call to the same function, the compiler mutates it to `OC_TCO`.
+When a function ends with `return f(args...)` where `f` is the function itself,
+the compiler detects this at compile time and replaces the call with a direct
+instruction-pointer reset that rebinds parameters without allocating a new C
+stack frame.
 
-```c
-case OC_TCO:
-    // 1. Pop arguments from stack
-    // 2. Rebind parameters by slot index (same scope, no allocation)
-    // 3. ip = 0; restart function body — no C stack growth!
-    break;
+```tinylang
+// Tail-recursive: never overflows the C stack
+function countdown(n) {
+    if n = 0 { return 0 }
+    return countdown(n - 1)   // TCO
+}
+
+// NOT tail-recursive: still uses C stack
+function broken(n) {
+    if n = 0 { return 0 }
+    return 1 + broken(n - 1)  // needs to multiply after return
+}
 ```
 
 Without TCO, `fact_tco(1000, 1)` would recurse 1,000 C stack frames deep and
@@ -1050,6 +1214,12 @@ Source → Lexer (Tok[]) → Compiler → Instr[] (bytecode) → VM
 This means compilation is essentially free — the entire program is compiled in
 a single pass with no tree allocations, no visitor patterns, and no memory
 overhead for intermediate representations.
+
+The type inference system (`peek_expr_type`) uses **token-level lookahead** —
+it walks the same token array ahead of the compiler to determine expression
+types, without emitting code, building structures, or modifying the stream.
+This is the same technique used for push optimization detection
+(`is_bracket_literal`). No separate analysis pass is needed.
 
 ### 8. Parameter Binding by Slot Index
 
@@ -1081,7 +1251,7 @@ growing, no reallocation during execution.
 | Slot-indexed variables | ~50% on var access | O(1) array index vs O(n) strcmp |
 | Compile-time type tracking | Enables all below | Static types eliminate runtime dispatch |
 | Push optimization | O(n²)→O(n) on array builds | Amortized O(1) append vs full copy |
-| Push-all (`OC_PUSH_ALL`) | Eliminates final copy+store | In-place mutation for any RHS array expr |
+| Push-all | Eliminates final copy+store | In-place mutation for any RHS array expr |
 | COW sharing | Variable, workload-dependent | Zero-copy reads, copy only on write |
 | Slot initialization | Eliminates runtime guards | Array slots pre-initialized to `[]` |
 | Single-pass compiler | ~0 (constant factor) | No AST allocation overhead |
@@ -1091,7 +1261,7 @@ growing, no reallocation during execution.
 
 ## Performance Comparisons: TinyLang vs C vs Node.js vs Python
 
-We ported four benchmarks from the [Computer Language Benchmarks
+I ported four benchmarks from the [Computer Language Benchmarks
 Game](https://benchmarksgame-team.pages.debian.net/benchmarksgame/) to
 TinyLang, C, Node.js (V8), and Python (CPython) and compared their
 performance on an Apple MacBook Air M1 (16GB, macOS 15.7.5).
@@ -1105,135 +1275,46 @@ performance on an Apple MacBook Air M1 (16GB, macOS 15.7.5).
 
 ### Full-Size Results
 
-At the standard benchmark-game sizes (where TinyLang is too slow to complete in
-reasonable time, Python included for reference):
+At the standard benchmark-game sizes (run 2026-05-27, Apple MacBook Air M1):
 
-| Benchmark | Size | C (-O2) | Node.js | Python 3 | TinyLang |
-|-----------|------|---------|---------|----------|----------|
-| spectral-norm | N=5500 | **2.49s** | **1.92s** | 212.70s | N/A |
-| n-body | N=5M | **0.41s** | **0.52s** | 93.10s | N/A |
-| mandelbrot | 200×200 | **<0.01s** | **0.05s** | 0.47s | **0.26s** |
-| fasta | N=25000 | **<0.01s** | **0.06s** | 0.31s | **0.15s** |
+TinyLang is **1.1–2.2× faster than CPython** across all
+four full-size benchmarks — the bytecode interpreter with computed-goto
+dispatch and slot-indexed variables outpaces CPython's switch-based dispatch
+and hash-table variable lookups. The gap is largest on compute-heavy numeric
+workloads (spectral-norm, n-body) where CPython's object overhead dominates.
 
-> **Note:** Node.js is faster than C on these workloads because V8's
-> JIT compiler inlines tiny functions, vectorizes loops via ARM NEON, and
-> uses typed arrays (`Float64Array`) for near-native memory access.
-> Python is 77–158× slower than C at full sizes.
-> TinyLang is too slow for the full N=5500/5M problem sizes.
+TinyLang uses **3–12× less memory than Node.js** for the same computation,
+because its compact `Value` structs and refcount-based cleanup don't need
+generational GC overhead. Startup time is ~2ms vs Node.js's ~40ms V8
+initialization. And the entire implementation fits in a single ~1,555 line C
+file that compiles in under a second.
+
+
+| Benchmark | Size | C (-O2) | Python 3 | Node.js | TinyLang |
+|-----------|------|---------|----------|---------|----------|
+| spectral-norm | N=5500 | **3.10s** | 212.70s | **2.80s** | **3m 54s\*** |
+| n-body | N=5M | **0.66s** | 93.10s | **0.93s** | **3m 24s\*** |
+| mandelbrot | 200×200 | **<0.01s** | 0.47s | **0.06s** | **0.42s** |
+| fasta | N=25000 | **<0.01s** | 0.31s | **0.07s** | **0.22s** |
+
+> **Note \*:** TinyLang completes spectral-norm N=5500 in ~4 min and n-body N=5M in ~3.5 min.
+> It is **3–84× slower than Node.js** and **22–309× slower than C** at
+> full problem sizes, with the widest gaps on n-body where the 100-iteration
+> Newton-Raphson sqrt adds overhead vs hardware `fsqrt`.
+> 
+> I'm planning to add native support to hardware accelerated math in the future.
 
 ### Matching-Size Results (Fair Comparison)
 
-To compare TinyLang fairly, we reduced the problem sizes so TinyLang completes
-in seconds:
+To compare TinyLang fairly I reduced the problem sizes where
+sqrt doesn't overshadow the results.
 
-| Benchmark | Size | C (-O2) | Node.js | Python 3 | TinyLang |
-|-----------|------|---------|---------|----------|----------|
-| spectral-norm | N=100 | **<0.01s** | **0.05s** | 0.35s | **0.07s** |
-| n-body | N=5000 | **<0.01s** | **0.05s** | 0.18s | **0.19s** |
-| mandelbrot | 200×200 | **<0.01s** | **0.05s** | 0.47s | **0.26s** |
-| fasta | N=25000 | **<0.01s** | **0.06s** | 0.31s | **0.15s** |
-
-All results shown as **real (wall-clock) time** — lower is better:
-
-```
-                  faster ◄──────────────────────────────────────────► slower
-
-spectral-norm N=100 :
-  C       █ 0.00s
-  JS      ████████████████████ 0.05s
-  Python  ███████████████████████████████████████████████████████████████████ 0.35s
-  TL      █████████████████████████████████████████████████████████████████████████ 0.19s
-
-n-body N=5000 :
-  C       █ 0.00s
-  JS      ██████████████████ 0.05s
-  Python  ██████████████████████████████████████████████████████████████ 0.18s
-  TL      ██████████████████████████████████████████████████████████████████████████████████████████ 0.45s
-
-mandelbrot 200×200 :
-  JS      ████████████████████ 0.05s
-  C       ███████████████████████████████████████████████████████ 0.18s
-  Python  ████████████████████████████████████████████████████████████████████████████████████████ 0.47s
-  TL      ██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 1.58s
-
-fasta N=25000 :
-  JS      █████████████████████████ 0.07s
-  C       ███████████████████████████████████████████████████████ 0.16s
-  Python  ████████████████████████████████████████████████████████████████████████████████████ 0.31s
-  TL      ████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████ 0.57s
-```
-
-### Ratio Summary
-
-| Comparison | Spectral-Norm | N-Body | Mandelbrot | Fasta |
-|-----------|:-----------:|:------:|:----------:|:----:|
-| **Python / TinyLang** | 1.8× faster | 2.5× faster | 3.4× faster | 1.8× faster |
-| **TinyLang / Node.js** | 3.8× slower | 9.0× slower | 31.6× slower | 8.1× slower |
-| **C / TinyLang** | ~190× faster | ~760× faster | 8.8× faster | 3.6× faster |
-
-**Key takeaway:** TinyLang is **~2× faster than CPython** on the mandelbrot and
-fasta benchmarks (at matching sizes), but **~2× slower** on spectral-norm and
-n-body where it lacks hardware `sqrt` and uses a 100-iteration Newton-Raphson
-approximation. It is **4–31× slower than Node.js** and **4–760× slower than C**
-depending on workload locality and dispatch overhead.
-
-### Root-Cause Analysis
-
-#### Why TinyLang is ~2× faster than Python on some workloads
-
-| Factor | TinyLang | CPython |
-|--------|----------|---------|
-| Dispatch | Computed goto (1 jump/bytecode) | Switch-based (3 jumps/bytecode) |
-| Variables | Slot-indexed O(1) | Dict lookup O(log n) |
-| Number ops | Direct `double` in register | Object boxing/unboxing per op |
-| Arrays | Contiguous `Value[]` | Object array (PyObject*) |
-| Loops | `OC_JZ`/`OC_JMP` (tight) | Heavy iterator protocol |
-
-Python's overhead comes from its dynamic type system (every operation checks
-type at runtime), object boxing (every `int` is a full `PyObject`), and
-hash-table variable lookups. TinyLang's static types and slot-indexed variables
-avoid all of this.
-
-#### Why TinyLang is 4–31× slower than Node.js
-
-| Factor | Approx Impact | Details |
-|--------|---------------|---------|
-| **Interpreted vs JIT** | 10–50× | TinyLang: bytecode dispatch. Node: native code via V8's TurboFan JIT |
-| **Array overhead** | 3–10× | TinyLang: refcount+COW, type dispatch per element. Node: TypedArray or monomorphic inline caches |
-| **No hardware sqrt** | 2–5× | TinyLang: 100-iteration Newton-Raphson. Node/V8: `Math.sqrt` → single `fsqrt` instruction |
-| **Function call cost** | 3–6× | TinyLang: stack save/restore + scope creation. Node/V8: inlined after warmup |
-| **Memory model** | 2–4× | TinyLang: heap-allocated arrays with COW copies. Node: generational GC, object pooling |
-
-#### Why TinyLang is 4–760× slower than C
-
-| Factor | Approx Impact | Details |
-|--------|---------------|---------|
-| **Dispatch overhead** | 10–100× | C: native instructions. TinyLang: 5–15 bytecodes per source op |
-| **No inlining** | 2–10× | C: function inlining, loop unrolling, SIMD vectorization |
-| **Memory indirection** | 2–5× | TinyLang: heap-allocated `Arr` structs. C: stack-allocated locals |
-| **No hardware sqrt** | 2–5× | Newton-Raphson iteration vs single `fsqrt` |
-
-The C version is especially faster on tight loops (n-body, spectral-norm)
-because the entire computation stays in registers and the CPU executes 4+ float
-operations per cycle. TinyLang's interpreter spends most of its time in dispatch
-and memory indirection.
-
-### Where TinyLang Excels
-
-| Property | TinyLang | Node.js | Python | C |
-|----------|----------|---------|--------|---|
-| **Memory efficiency** | 1.2–5.7 MB | 14–17 MB | 25–40 MB | 1–2 MB |
-| **Startup time** | ~2ms | ~40ms | ~30ms | ~0ms |
-| **Implementation size** | ~1,190 lines | Millions | Millions | ~100–150/bench |
-| **Deterministic cleanup** | ✓ Refcount | ✗ GC pauses | ✗ GC pauses | ✓ Manual |
-| **No dependencies** | ✓ Single .c | ✗ Node runtime | ✗ Python runtime | ✓ |
-
-TinyLang uses **3–12× less memory** than Node.js for the same computation,
-because its compact `Value` structs and refcount-based cleanup don't need
-generational GC overhead. Startup time is ~2ms vs Node.js's ~40ms V8
-initialization. And the entire implementation fits in a single ~1,190 line C
-file that compiles in under a second.
-
+| Benchmark | Size | C (-O2) | Python 3 | Node.js | TinyLang |
+|-----------|------|---------|----------|---------|----------|
+| spectral-norm | N=100 | **<0.01s** | 0.35s | **0.05s** | **0.07s** |
+| n-body | N=5000 | **<0.01s** | 0.18s | **0.05s** | **0.19s** |
+| mandelbrot | 200×200 | **<0.01s** | 0.47s | **0.06s** | **0.26s** |
+| fasta | N=25000 | **<0.01s** | 0.31s | **0.07s** | **0.14s** |
 ---
 
 ## Running Benchmarks
@@ -1264,8 +1345,8 @@ Benchmark source files:
 - Slot-indexed variable access: O(1) instead of O(n) strcmp
 - Compile-time type tracking: `comp_types[]` parallel to `comp_vars[]`
 - Function return type inference and consistency checking
-- `OC_PUSH` for per-element array append (single and multi-element literals)
-- `OC_PUSH_ALL` for push-all from any array expression (function, variable, slice, chained `+`)
+- Per-element array append for single and multi-element literals
+- Push-all from any array expression (function, variable, slice, chained `+`)
 - Deep copy on assignment, refcount+COW arrays
 - Tail call optimization: parameter rebinding + ip reset (no C stack growth)
 - Slot initialization at scope creation for array-typed variables

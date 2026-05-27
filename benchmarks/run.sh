@@ -48,14 +48,14 @@ run_one() {
 }
 
 echo "1. Spectral-Norm (matrix eigenvalue)"
-echo "   C/JS: N=5500 (standard), TL: N=100"
+echo "   N=5500 (standard benchmark-game size)"
 run_one "spectral-norm" "" \
     "$C_BIN/spectral-norm 5500" \
     "$JS_SRC/spectral-norm.js 5500" \
     "$TL_SRC/spectral_norm.tl"
 
 echo "2. N-Body (solar system, 5 bodies)"
-echo "   C/JS: N=5M steps, TL: N=5000 steps"
+echo "   N=5M steps (standard benchmark-game size)"
 run_one "nbody" "" \
     "$C_BIN/nbody 5000000" \
     "$JS_SRC/nbody.js 5000000" \

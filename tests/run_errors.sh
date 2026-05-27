@@ -46,6 +46,7 @@ run_test() {
         e_invalid_hex)   expected_msg="invalid hex literal";;
         e_bad_octal)     expected_msg="invalid digit in octal literal";;
         e_percent_nonnum) expected_msg="'%' requires numbers";;
+        e_ret_type_mismatch) expected_msg="inconsistent return type";;
         *)                expected_msg="error:";;
     esac
 
