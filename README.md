@@ -1,6 +1,6 @@
 # TinyLang
 
-A tiny, statically-typed programming language implemented in 1,161 lines of C.
+A tiny, statically-typed programming language implemented in 1,163 lines of C.
 Single-pass compiler to bytecode with a stack-based VM, refcount+COW, and tail
 call optimization. No AST, no GC, no closures, no pointers.
 
@@ -20,7 +20,7 @@ call optimization. No AST, no GC, no closures, no pointers.
 - **Strings:** Syntactic sugar for byte arrays, escape sequences supported
 - **Number literals:** decimal and `0x` hex
 - **REPL:** Expression values auto-printed, brace balancing for multi-line blocks
-- **Operators:** `+ - * / %`, `= != < > <= >=`, `!`, `#` (array length prefix), `&&` `||`
+- **Operators:** `+ - * / %`, `= != < > <= >=`, `!`, `#` (array length prefix), `&&` `||`, `<<` `>>`
 - **Built-ins:** `print()`, `input()`, `thispath()`
 
 ## Quick start
@@ -94,7 +94,7 @@ print(nodes[0][0])                  // 42
 
 ## Implementation
 
-- 1,161 lines of C, single file
+- 1,163 lines of C, single file
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
 - Stack-based VM: computed goto dispatch, `Value istk[4096]` stack
 - Slot-indexed variable access: O(1) instead of O(n) strcmp
@@ -159,7 +159,8 @@ block         := "{" stmt_list "}"
 expr          := logical_or
 logical_or    := logical_and ("||" logical_and)*
 logical_and   := comparison ("&&" comparison)*
-comparison    := addition (("=" | "!=" | "<" | ">" | "<=" | ">=") addition)?
+comparison    := shift (("=" | "!=" | "<" | ">" | "<=" | ">=") shift)?
+shift         := addition (("<<" | ">>") addition)*
 addition      := multiplication (("+" | "-") multiplication)*
 multiplication := primary (("*" | "/" | "%") primary)*
 

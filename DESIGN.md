@@ -99,11 +99,13 @@ lvalue     := identifier ("[" expr "]")*
 
 ### Arithmetic
 
-`+` `-` `*` `/` `%`
+`+` `-` `*` `/` `%` `<<` `>>`
 
 - `+` on two arrays = **concatenation** (returns new array)
 - `+` on two numbers = numeric addition
 - `*` on array × number = **repetition**
+- `<<` left shift: `1 << 8` → `256` (integer bit shift on doubles)
+- `>>` right shift: `256 >> 4` → `16`
 - Push optimization: `x = x + [expr]` compiles to `OC_PUSH` — appends directly
   in O(1) instead of copying the entire array
 
@@ -154,6 +156,7 @@ left-associative):
 |-------|-----------|----------|
 | 9 | `*` `/` `%` | Multiplicative |
 | 8 | `+` `-` | Additive |
+| 7 | `<<` `>>` | Shift |
 | 6 | `<` `>` `<=` `>=` | Relational |
 | 5 | `=` `!=` | Equality |
 | 1 | `&&` | Logical AND |
@@ -303,7 +306,8 @@ expr          := logical_or
 
 logical_or    := logical_and ("||" logical_and)*
 logical_and   := comparison ("&&" comparison)*
-comparison    := addition (("=" | "!=" | "<" | ">" | "<=" | ">=") addition)?
+comparison    := shift (("=" | "!=" | "<" | ">" | "<=" | ">=") shift)?
+shift         := addition (("<<" | ">>") addition)*
 addition      := multiplication (("+" | "-") multiplication)*
 multiplication := primary (("*" | "/" | "%") primary)*
 

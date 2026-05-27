@@ -25,7 +25,7 @@ typedef enum {
     T_EOF, T_NUM, T_ID, T_STR, T_NIL,
     T_LP, T_RP, T_LB, T_RB, T_LC, T_RC, T_CM, T_SEMI,
     T_PL, T_MI, T_ST, T_SL, T_PC,
-    T_AM, T_PI, T_CA, T_AT, T_BN,
+    T_AM, T_PI, T_CA, T_SHL, T_SHR, T_BN,
     T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
     T_HASH, T_COLON,
     T_NL, T_IF, T_ELIF, T_ELSE, T_WH, T_FN, T_RT, T_INCLUDE,
@@ -215,6 +215,12 @@ Value apply(int op, Value l, Value r) {
         case T_GE:
             if (!lf || !rf) die("'>=' requires numbers");
             return ld >= rd ? vnum(1) : nilv();
+        case T_SHL:
+            if (!lf || !rf) die("'<<' requires numbers");
+            return vnum((double)((int64_t)ld << (int32_t)rd));
+        case T_SHR:
+            if (!lf || !rf) die("'>>' requires numbers");
+            return vnum((double)((int64_t)ld >> (int32_t)rd));
         default: die("unknown op");
     } return nilv();
 }
@@ -341,7 +347,7 @@ static int op_prec(TK t) {
     switch (t) {
         case T_ST: case T_SL: case T_PC: return 9;
         case T_PL: case T_MI: return 8;
-        case T_AT: return 7;
+        case T_SHL: case T_SHR: return 7;
         case T_LT: case T_GT: case T_LE: case T_GE: return 6;
         case T_EQ: case T_NE: return 5;
         case T_AM: return 4;
@@ -355,7 +361,7 @@ static int op_prec(TK t) {
 static int is_binary_op(TK t) {
     switch (t) {
         case T_PL: case T_MI: case T_ST: case T_SL: case T_PC:
-        case T_AM: case T_PI: case T_CA: case T_AT:
+        case T_AM: case T_PI: case T_CA: case T_SHL: case T_SHR:
         case T_EQ: case T_NE:
         case T_LT: case T_GT: case T_LE: case T_GE:
         case T_AND: case T_OR:
@@ -436,12 +442,12 @@ void lex(const char *s) {
             case '%': tk.t=T_PC; break;
             case '&': if (pc()=='&'){ac();tk.t=T_AND;}else tk.t=T_AM; break;
             case '|': if (pc()=='|'){ac();tk.t=T_OR;}else tk.t=T_PI; break;
-            case '^': tk.t=T_CA; break; case '@': tk.t=T_AT; break;
+            case '^': tk.t=T_CA; break;
             case '#': tk.t=T_HASH; break; case ':': tk.t=T_COLON; break;
             case '!': if (pc()=='='){ac();tk.t=T_NE;}else tk.t=T_BN; break;
             case '=': tk.t=T_EQ; break;
-            case '<': if (pc()=='='){ac();tk.t=T_LE;}else tk.t=T_LT; break;
-            case '>': if (pc()=='='){ac();tk.t=T_GE;}else tk.t=T_GT; break;
+            case '<': if(pc()=='<'){ac();tk.t=T_SHL;}else if(pc()=='='){ac();tk.t=T_LE;}else tk.t=T_LT; break;
+            case '>': if(pc()=='>'){ac();tk.t=T_SHR;}else if(pc()=='='){ac();tk.t=T_GE;}else tk.t=T_GT; break;
             default: { char m[2]={c,0}; die("unexpected '%s'",m); }
         }
         em: if (tc>=m){m*=2;ts=realloc(ts,m*sizeof(Tok));} ts[tc++]=tk; if (tk.t==T_EOF) break;

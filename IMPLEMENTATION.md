@@ -1,6 +1,6 @@
 # TinyLang — Implementation Guide
 
-**1,161 lines of C.** Single-pass compiler to bytecode with stack-based VM,
+**1,163 lines of C.** Single-pass compiler to bytecode with stack-based VM,
 computed goto dispatch, slot-indexed variable access, refcount+COW, and tail
 call optimization.
 
@@ -58,8 +58,8 @@ Produces a flat `Tok[]` array from source.
 - Numbers: `5`, `5.0`, `.5`, `5.`, `0xFF` (hex)
 - Identifiers + keywords (`if`, `elif`, `else`, `while`, `function`, `return`, `nil`, `include`)
 - Strings: `"..."` with escape sequences (`\n`, `\t`, `\\`, `\"`, `\xHH`)
-- Single-char tokens: `( ) [ ] { } , ; + - * / % ! = < > # : @`
-- Multi-char: `&&`, `||`, `!=`, `<=`, `>=`
+- Single-char tokens: `( ) [ ] { } , ; + - * / % ! = < > # :`
+- Multi-char: `&&`, `||`, `!=`, `<=`, `>=`, `<<`, `>>`
 
 Not supported: binary literals (`0b101`), octal literals (`0123`), scientific
 notation (`1e-3`).
@@ -270,7 +270,7 @@ copies elements into a new `Value[]` array, and pushes the result.
 
 ## 6. Line Count
 
-**Total:** 1,161 lines.
+**Total:** 1,163 lines.
 
 | Component | Lines |
 |-----------|-------|

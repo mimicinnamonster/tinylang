@@ -1,5 +1,5 @@
 // Operator precedence tests
-// Note: bitwise operators (& | ^) and shift (@) removed from VM.
+// Note: bitwise operators (& | ^) removed from VM.
 // Arithmetic, comparison, and logical operators only.
 
 function eq(a, b) {
