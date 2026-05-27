@@ -331,7 +331,7 @@ Regex: `[a-zA-Z_][a-zA-Z0-9_]*`
 fun   ret   if   elif   else   for   nil   include
 ```
 
-Built-in function names (`print`, `input`, `thispath`) are **not** keywords.
+Built-in function names (`print`, `input`) are **not** keywords.
 
 ### Statement Separation
 
@@ -1020,18 +1020,8 @@ fun greet(name="") {
 }
 ```
 
-The include path can also be a compile-time expression using `thispath()`
-and `+` concatenation. Inside include expressions, `thispath()` returns
-the directory of the current file (with trailing `/`), so concatenating
-a relative path resolves to the correct sibling file.
-
-```tinylang
-include thispath() + "utils.tl"
-include thispath() + "../lib/helpers.tl"
-```
-
-Only `thispath()`, string literals, and `+` are supported — the expression
-is evaluated entirely at compile time. Nested includes work arbitrarily deep.
+String literals are the primary way to specify include paths.
+Nested includes work arbitrarily deep.
 
 ### Error Handling
 
@@ -1050,23 +1040,25 @@ No recovery, no try/catch, no assertions.
 
 ### Built-in Functions
 
-#### `print(x)`
+All builtins are registered as proper native functions and called through the
+normal `OC_CALL` dispatch — no special opcodes, no VM changes for new additions.
+
+#### I/O
+
+##### `print(x)`
 
 Writes `x` to stdout with **no trailing newline**. Numbers print in decimal.
 Arrays whose elements are all printable ASCII are printed as text strings rather
 than `[104, 101, ...]`. Use `print("\n")` or embed `\n` in your strings to
-produce newlines — the user is in full control of line breaks.
+produce newlines.
 
 ```tinylang
-print(42)                // 42 (no newline)
-print(3.14)              // 3.14 (no newline)
-print("hello")           // hello (no newline)
-print("hello\n")         // hello (with trailing newline)
-print("line1\nline2\n")  // multi-line output
+print(42)                // 42
+print("hello\n")         // hello
 print([1, 2, 3])         // [1, 2, 3]
 ```
 
-#### `input()`
+##### `input()`
 
 Reads a line from stdin, returns as a byte array (string).
 
@@ -1075,15 +1067,246 @@ name = input()
 print(name)
 ```
 
-#### `thispath()`
+##### `read(filepath, mode)`
 
-Returns the source file path where the call appears, as a byte array. Inside
-`include` expressions, `thispath()` returns the directory of the current file
-(with trailing `/`), so concatenation with a relative path resolves to the
-correct location.
+Reads a file and returns its entire content as a string. `mode` is a standard
+fopen mode string like `"r"`.
 
 ```tinylang
-print(thispath())        // e.g., /Users/mimi/project/test.tl
+content = read("/tmp/data.txt", "r")
+print(content)
+```
+
+##### `write(filepath, data, mode)`
+
+Writes a string to a file. `mode` is `"w"` (overwrite) or `"a"` (append).
+Binary data (NUL bytes, non-ASCII) is handled correctly.
+
+```tinylang
+write("/tmp/out.txt", "hello world\n", "w")
+write("/tmp/out.txt", "more data\n", "a")
+```
+
+##### `exec(command)`
+
+Runs a command via `/bin/sh -c` and returns stdout as a string. Uses `popen()`
+internally — pipes, redirects, and all shell constructs work.
+
+```tinylang
+out = exec("echo hello world")
+print(out)               // hello world\n
+files = exec("ls -1 | wc -l")
+```
+
+##### `glob(pattern)`
+
+Returns an array of file paths matching a shell glob pattern, using POSIX
+`glob()`. Returns an empty array on no match.
+
+```tinylang
+files = glob("*.tl")
+print(#files)            // number of .tl files
+print(files[0])          // first match
+```
+
+#### System
+
+##### `args()`
+
+Returns an array of strings with the command-line arguments used to invoke
+tinylang for this script. Excludes the program name (element 0), similar to
+`process.argv.slice(1)` in Node.
+
+```tinylang
+for i < #args() {
+    print(args()[i])
+}
+```
+
+##### `env(name)`
+
+Returns the value of an environment variable as a string, or an empty string
+if the variable doesn't exist.
+
+```tinylang
+path = env("PATH")
+home = env("HOME")
+print(env("TINYLANG_NONEXISTENT") == "")  // 1
+```
+
+##### `die(code)`
+
+Terminates the process with an exit status code. `code` defaults to `1` when
+called without arguments.
+
+```tinylang
+die()        // exit with code 1
+die(0)       // exit with code 0 (success)
+die(2)       // exit with code 2
+```
+
+#### Time
+
+##### `time()`
+
+Returns the current wall-clock time as a double with nanosecond precision, using
+`clock_gettime(CLOCK_REALTIME, ...)`. The integer part is Unix epoch seconds;
+the fractional part is sub-second nanoseconds.
+
+```tinylang
+ts = time()
+print(ts > 1700000000)   // after Jan 2024
+print(ts)                // e.g. 1779840000.123456789
+```
+
+##### `date()`
+
+Returns an array `[year, month, day, hour, minute, second]` using the current
+system timezone.
+
+```tinylang
+d = date()
+print(d[0])              // year (e.g. 2026)
+print(d[1])              // month (1–12)
+print(d[2])              // day   (1–31)
+print(d[3])              // hour  (0–23)
+```
+
+##### `sleep(seconds)`
+
+Suspends execution for the given duration. Uses `nanosleep()` which yields the
+CPU to the OS scheduler (no busy-waiting). Accepts fractional seconds for
+sub-second precision.
+
+```tinylang
+sleep(1)         // sleep for 1 second
+sleep(0.1)       // sleep for 100 milliseconds
+sleep(0.001)     // sleep for 1 millisecond
+```
+
+#### Math
+
+##### `sin(x)` / `cos(x)` / `sqrt(x)` / `exp(x)` / `log(x)`
+
+Standard math functions, wrappers around `<math.h>`.
+
+```tinylang
+print(sin(0) < 0.001)     // 1
+print(sqrt(4) == 2)       // 1
+print(exp(1) > 2.718)     // 1
+print(log(1) == 0)        // 1
+```
+
+`slog` errors on arguments ≤ 0; `sqrt` errors on negative arguments.
+
+##### `floor(x)` / `ceil(x)` / `round(x)`
+
+Rounding functions: `floor` rounds toward -∞, `ceil` rounds toward +∞, `round`
+rounds to nearest integer (half away from zero).
+
+```tinylang
+print(floor(3.14) == 3)   // 1
+print(ceil(3.14) == 4)    // 1
+print(round(3.5) == 4)    // 1
+print(floor(-3.14) == -4) // 1
+```
+
+##### `rand(min, max)`
+
+Returns a uniformly distributed random double in the range `[min, max]`.
+Seeded once per process via `srand(time ^ pid)`.
+
+```tinylang
+r = rand(0, 100)
+print(r >= 0 && r <= 100)  // 1
+
+// Roll a die
+roll = floor(rand(1, 7))
+```
+
+#### Strings & Data
+
+##### `split(string, separator)`
+
+Splits a string by a separator, returning an array of substring slices. The
+substrings use zero-copy slice views into the original string — no element
+copying for contiguous segments. Follows JavaScript semantics:
+
+```tinylang
+parts = split("a,b,c", ",")
+print(#parts)              // 3
+print(parts[0])            // a
+print(parts[1])            // b
+
+// Empty separator = individual chars
+chars = split("abc", "")
+print(#chars)              // 3
+
+// Trailing/leading separators produce empty strings
+print(#split("a,b,", ",")[2] == 0)  // 1
+print(#split(",a,b", ",")[0] == 0)  // 1
+```
+
+##### `hash(string)`
+
+Returns the FNV-1a hash of a string — the same hash function used internally
+for array key hashing. Deterministic: same string always produces the same hash
+value (unsigned 32-bit range).
+
+```tinylang
+print(hash("hello") == hash("hello"))  // 1 (idempotent)
+print(hash("abc") != hash("ABC"))      // 1 (case-sensitive)
+```
+
+##### `sort(arr)`
+
+Returns a sorted copy of an array. Numbers sort numerically, strings sort
+lexicographically byte by byte, arrays sort by length then elements.
+Uses `qsort` internally.
+
+```tinylang
+arr = sort([3, 1, 4, 1, 5])
+print(arr)                 // [1, 1, 3, 4, 5]
+
+words = sort(["banana", "apple", "cherry"])
+print(words[0])            // apple
+```
+
+##### `set(arr)`
+
+Returns an array of unique elements, preserving the order of first occurrence.
+Uses deep equality (`==`) for comparison.
+
+```tinylang
+uniq = set([1, 2, 2, 3, 1, 4])
+print(#uniq)               // 4
+print(uniq)                // [1, 2, 3, 4]
+```
+
+##### `flat(arr)`
+
+Recursively flattens nested arrays into a single flat array. Strings are not
+flattened (they are kept as-is).
+
+```tinylang
+f = flat([1, [2, [3, 4], 5], 6])
+print(f)                   // [1, 2, 3, 4, 5, 6]
+
+// Strings are not flattened
+fs = flat(["a", ["b"], "c"])
+print(#fs)                 // 3
+```
+
+#### Path
+
+##### `thisfile()`
+
+Returns the full file path of the current script where the call appears,
+as a byte array. Always returns the literal file path regardless of whether
+it's called inside an included file.
+
+```tinylang
+print(thisfile())        // e.g., /Users/mimi/project/test.tl
 ```
 
 ---
@@ -1804,8 +2027,7 @@ program       := top-level statements
 
 statement     := assignment | if_stmt | while_stmt | func_def | ret_stmt | include_stmt | expr_stmt
 include_stmt  := "include" include_path
-include_path  := string | include_expr
-include_expr  := thispath "(" ")" ("+" string)*
+include_path  := string
 
 assignment    := lvalue ("=" | "+=" | "-=" | "*=" | "/=" ) expr
                | destructure

@@ -1,7 +1,7 @@
 /* tinylang.c — VM with computed goto dispatch + slot-indexed variables
  * Removed: compact types, FFI, assert, type(), 0b/0123 / OC_SLICE_ASSIGN
  * Kept: TCO, COW+refcounting, push optimization, short-circuit && ||,
- *        0x hex, slices, thispath, input, REPL
+ *        0x hex, slices, input, REPL
  */
 
 #include <stdio.h>
@@ -11,7 +11,11 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <math.h>
+#include <time.h>
 #include <setjmp.h>
+#include <unistd.h>
+#include <glob.h>
+#include <termios.h>
 #ifdef READLINE
 #  include <readline/readline.h>
 #  include <readline/history.h>
@@ -67,6 +71,9 @@ int rf; Value rv;
 Value istk[4096]; int isp;
 int cur_fi;
 
+static int saved_argc;
+static char **saved_argv;
+
 static char *include_dir;
 char *comp_file; int comp_line;
 char *err_file; int err_line;
@@ -74,7 +81,8 @@ typedef struct { int fi; int line; char *file; } CallFrame;
 CallFrame call_stack[128]; int call_depth = -1;
 
 typedef enum { T_UNKNOWN = 0, T_NUM_TYPE = 1, T_ARR_TYPE = 2, T_STR_TYPE = 3 } ExprType;
-typedef struct { char *n; int a; int nvars, *p_slots; ExprType ret_type; Code *code; Value *def_vals; } Fn;
+typedef Value (*NativeFn)(int ac, Value *args);
+typedef struct { char *n; int a; int nvars, *p_slots; ExprType ret_type; Code *code; Value *def_vals; int is_builtin; NativeFn native_fn; } Fn;
 Fn *fs; int fc, fm;
 
 jmp_buf repl_jmp; int repl_catching;
@@ -571,7 +579,8 @@ void comp_prim(Code *c) {
                 tp++;
                 if (!strcmp(t.s, "print")) { if (ac < 1) die("print needs 1 arg"); emit(c, (Instr){OC_PRINT, 0, 0, .num = 0}); }
                 else if (!strcmp(t.s, "input")) emit(c, (Instr){OC_INPUT, 0, 0, .num = 0});
-                else if (!strcmp(t.s, "thispath")) {
+                else if (!strcmp(t.s, "thisfile")) {
+                    if (ac != 0) die("thisfile expects 0 arguments");
                     int n = comp_file ? strlen(comp_file) : 0;
                     Arr *a = aalloc(n); a->len = n; a->is_string = 1;
                     for (int j = 0; j < n; j++) a->val[j] = vnum((double)(unsigned char)comp_file[j]);
@@ -853,9 +862,7 @@ void comp_fn(Code *c) {
 }
 
 /* Evaluate an include path expression at compile time.
- * Supports: string literals, thispath(), and + concatenation.
- * thispath() inside include returns the directory of the current file
- * (with trailing /) so concatenation with a relative path "just works".
+ * Supports string literals and + concatenation.
  * Returns a malloc'd string the caller must free. */
 char *eval_include_path(void) {
     while (ts[tp].t == T_NL) tp++;
@@ -869,28 +876,8 @@ char *eval_include_path(void) {
         result = malloc(plen + 1);
         for (int i = 0; i < plen; i++) result[i] = (char)val_num(a->val[i]);
         result[plen] = '\0';
-    } else if (ts[tp].t == T_ID && !strcmp(ts[tp].s, "thispath")) {
-        tp++;
-        if (ts[tp].t != T_LP) die("expected ( after thispath");
-        tp++;
-        if (ts[tp].t != T_RP) die("expected ) after thispath");
-        tp++;
-        /* Return the directory of the current file (with trailing /) */
-        if (comp_file) {
-            const char *sl = strrchr(comp_file, '/');
-            if (sl) {
-                int dlen = sl - comp_file + 1;  /* include the slash */
-                result = malloc(dlen + 1);
-                memcpy(result, comp_file, dlen);
-                result[dlen] = '\0';
-            } else {
-                result = strdup("");
-            }
-        } else {
-            result = strdup("");
-        }
     } else {
-        die("include requires a string literal or thispath() expression");
+        die("include requires a string literal");
     }
 
     /* Handle + concatenation */
@@ -903,27 +890,8 @@ char *eval_include_path(void) {
             right = malloc(plen + 1);
             for (int i = 0; i < plen; i++) right[i] = (char)val_num(a->val[i]);
             right[plen] = '\0';
-        } else if (ts[tp].t == T_ID && !strcmp(ts[tp].s, "thispath")) {
-            tp++;
-            if (ts[tp].t != T_LP) die("expected ( after thispath");
-            tp++;
-            if (ts[tp].t != T_RP) die("expected ) after thispath");
-            tp++;
-            if (comp_file) {
-                const char *sl = strrchr(comp_file, '/');
-                if (sl) {
-                    int dlen = sl - comp_file + 1;
-                    right = malloc(dlen + 1);
-                    memcpy(right, comp_file, dlen);
-                    right[dlen] = '\0';
-                } else {
-                    right = strdup("");
-                }
-            } else {
-                right = strdup("");
-            }
         } else {
-            die("include concatenation requires string literal or thispath()");
+            die("include concatenation requires string literal");
         }
         char *tmp = malloc(strlen(result) + strlen(right) + 1);
         strcpy(tmp, result);
@@ -1039,8 +1007,8 @@ static ExprType peek_expr_type(int *pn) {
                     if (ts[*pn].t == T_RP || ts[*pn].t == T_RB) d--;
                     (*pn)++;
                 }
-                int fi = ffind(nm);
-                t = (fi >= 0) ? fs[fi].ret_type : T_UNKNOWN;
+                if (!strcmp(nm, "thisfile")) t = T_STR_TYPE;
+                else { int fi = ffind(nm); t = (fi >= 0) ? fs[fi].ret_type : T_UNKNOWN; }
             } else {
                 int slot = var_find(nm);
                 t = (slot >= 0) ? comp_types[slot] : T_UNKNOWN;
@@ -1795,6 +1763,12 @@ op_call: {
     int fi = ins->a, ac = ins->b; Fn *f = &fs[fi];
     Value args[64];
     for (int j = ac-1; j >= 0; j--) args[j] = istk[isp--];
+    /* Builtin fast path — no scope/call frame overhead */
+    if (f->is_builtin) {
+        Value result = f->native_fn(ac, args);
+        istk[++isp] = result;
+        ip++; goto *dispatch[c->code[ip].op];
+    }
     int saved_isp = isp;
     Value saved_stack[64];
     for (int j = 0; j <= saved_isp; j++) saved_stack[j] = istk[j];
@@ -1930,10 +1904,578 @@ op_end:
     return;
 }
 
+/* ─── Native builtin function implementations ─── */
+
+static void reg_builtin(const char *name, int arity, ExprType ret_type, NativeFn fn) {
+    if (fc >= fm) { fm = fm ? fm*2 : 16; fs = realloc(fs, fm*sizeof(Fn)); }
+    Fn *f = &fs[fc++]; memset(f, 0, sizeof(Fn));
+    f->n = strdup(name);
+    f->a = arity;
+    f->ret_type = ret_type;
+    f->is_builtin = 1;
+    f->native_fn = fn;
+}
+
+static Value native_split(int ac, Value *args) {
+    (void)ac;
+    Value str_v = args[0], sep_v = args[1];
+    if (str_v.type != VAL_ARR) die("split requires string");
+    Arr *str = str_v.arr;
+    Arr *sep = (sep_v.type == VAL_ARR) ? sep_v.arr : NULL;
+    int slen = str ? str->len : 0;
+    int splen = sep ? sep->len : 0;
+    /* Empty separator: split into individual characters as slices */
+    if (splen == 0) {
+        Arr *result = aalloc(slen > 0 ? slen : 1);
+        result->len = slen > 0 ? slen : 1;
+        result->is_string = 0;
+        if (slen == 0) {
+            Arr *empty = malloc(sizeof(Arr));
+            empty->refcount = 1; empty->len = 0; empty->cap = 0; empty->val = NULL;
+            empty->is_slice = 0; empty->parent = NULL; empty->hash_cache = 0; empty->is_string = 1;
+            result->val[0] = (Value){ .type = VAL_ARR, .arr = empty };
+        } else {
+            for (int i = 0; i < slen; i++) {
+                Arr *view = malloc(sizeof(Arr));
+                view->refcount = 1; view->len = 1; view->cap = 1;
+                view->val = str->val + i;
+                view->is_slice = 1; view->parent = str;
+                view->hash_cache = 0; view->is_string = 1;
+                aretain(str);
+                result->val[i] = (Value){ .type = VAL_ARR, .arr = view };
+            }
+        }
+        arelease(str); if (sep) arelease(sep);
+        return (Value){ .type = VAL_ARR, .arr = result };
+    }
+    int nsegs = 1;
+    for (int i = 0; i <= slen - splen; i++) {
+        int match = 1;
+        for (int j = 0; j < splen; j++) {
+            if ((int)val_num(str->val[i+j]) != (int)val_num(sep->val[j])) { match = 0; break; }
+        }
+        if (match) { nsegs++; i += splen - 1; }
+    }
+    Arr *result = aalloc(nsegs); result->len = nsegs;
+    result->is_string = 0;
+    int seg_idx = 0, start = 0;
+    for (int i = 0; i <= slen - splen && seg_idx < nsegs - 1; i++) {
+        int match = 1;
+        for (int j = 0; j < splen; j++) {
+            if ((int)val_num(str->val[i+j]) != (int)val_num(sep->val[j])) { match = 0; break; }
+        }
+        if (match) {
+            int seg_len = i - start;
+            Arr *view = malloc(sizeof(Arr));
+            view->refcount = 1; view->len = seg_len; view->cap = seg_len;
+            view->val = seg_len > 0 ? (str->val + start) : NULL;
+            view->is_slice = seg_len > 0;
+            view->parent = seg_len > 0 ? str : NULL;
+            view->hash_cache = 0; view->is_string = 1;
+            if (seg_len > 0) aretain(str);
+            result->val[seg_idx++] = (Value){ .type = VAL_ARR, .arr = view };
+            start = i + splen;
+            i += splen - 1;
+        }
+    }
+    int seg_len = slen - start;
+    Arr *view = malloc(sizeof(Arr));
+    view->refcount = 1; view->len = seg_len; view->cap = seg_len;
+    view->val = seg_len > 0 ? (str->val + start) : NULL;
+    view->is_slice = seg_len > 0;
+    view->parent = seg_len > 0 ? str : NULL;
+    view->hash_cache = 0; view->is_string = 1;
+    if (seg_len > 0) aretain(str);
+    result->val[seg_idx] = (Value){ .type = VAL_ARR, .arr = view };
+    arelease(str); if (sep) arelease(sep);
+    return (Value){ .type = VAL_ARR, .arr = result };
+}
+
+static Value native_env(int ac, Value *args) {
+    (void)ac;
+    Value name_v = args[0];
+    if (name_v.type != VAL_ARR || !is_string_arr(name_v.arr)) die("env requires string");
+    Arr *name_arr = name_v.arr;
+    int nlen = name_arr ? name_arr->len : 0;
+    char name[1024];
+    for (int i = 0; i < nlen && i < 1023; i++) name[i] = (char)val_num(name_arr->val[i]);
+    name[nlen < 1024 ? nlen : 1023] = '\0';
+    const char *val = getenv(name);
+    arelease(name_v.arr);
+    Arr *a;
+    if (val) {
+        int vlen = strlen(val);
+        a = aalloc(vlen); a->len = vlen; a->is_string = 1;
+        for (int i = 0; i < vlen; i++) a->val[i] = vnum((double)(unsigned char)val[i]);
+    } else {
+        a = aalloc(0); a->len = 0; a->is_string = 1;
+    }
+    return (Value){ .type = VAL_ARR, .arr = a };
+}
+
+static Value native_args(int ac, Value *args) {
+    (void)ac; (void)args;
+    Arr *result = aalloc(saved_argc > 1 ? saved_argc - 1 : 0);
+    result->len = saved_argc > 1 ? saved_argc - 1 : 0;
+    result->is_string = 0;
+    for (int i = 1; i < saved_argc; i++) {
+        int vlen = strlen(saved_argv[i]);
+        Arr *a = aalloc(vlen); a->len = vlen; a->is_string = 1;
+        for (int j = 0; j < vlen; j++) a->val[j] = vnum((double)(unsigned char)saved_argv[i][j]);
+        result->val[i-1] = (Value){ .type = VAL_ARR, .arr = a };
+    }
+    return (Value){ .type = VAL_ARR, .arr = result };
+}
+
+static Value native_time(int ac, Value *args) {
+    (void)ac; (void)args;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return vnum((double)ts.tv_sec + (double)ts.tv_nsec / 1.0e9);
+}
+
+static Value native_date(int ac, Value *args) {
+    (void)ac; (void)args;
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    Arr *a = aalloc(6); a->len = 6; a->is_string = 0;
+    a->val[0] = vnum((double)(tm->tm_year + 1900));
+    a->val[1] = vnum((double)(tm->tm_mon + 1));
+    a->val[2] = vnum((double)tm->tm_mday);
+    a->val[3] = vnum((double)tm->tm_hour);
+    a->val[4] = vnum((double)tm->tm_min);
+    a->val[5] = vnum((double)tm->tm_sec);
+    return (Value){ .type = VAL_ARR, .arr = a };
+}
+
+static Value native_hash(int ac, Value *args) {
+    (void)ac;
+    Value v = args[0];
+    if (v.type != VAL_ARR) die("hash requires string");
+    unsigned int h = get_arr_hash(v.arr);
+    arelease(v.arr);
+    return vnum((double)h);
+}
+
+static Value native_sleep(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM) die("sleep requires a number");
+    double secs = args[0].num;
+    if (secs < 0) die("sleep duration cannot be negative");
+    struct timespec ts;
+    ts.tv_sec = (time_t)secs;
+    ts.tv_nsec = (long)((secs - (double)ts.tv_sec) * 1.0e9);
+    nanosleep(&ts, NULL);
+    return nilv();
+}
+
+static Value native_read(int ac, Value *args) {
+    (void)ac;
+    Value path_v = args[0], mode_v = args[1];
+    if (path_v.type != VAL_ARR || !is_string_arr(path_v.arr)) die("read: filepath must be a string");
+    if (mode_v.type != VAL_ARR || !is_string_arr(mode_v.arr)) die("read: mode must be a string");
+    int plen = path_v.arr ? path_v.arr->len : 0;
+    char path[1024];
+    for (int i = 0; i < plen && i < 1023; i++) path[i] = (char)val_num(path_v.arr->val[i]);
+    path[plen < 1024 ? plen : 1023] = '\0';
+    int mlen = mode_v.arr ? mode_v.arr->len : 0;
+    char mode[4] = {0};
+    for (int i = 0; i < mlen && i < 3; i++) mode[i] = (char)val_num(mode_v.arr->val[i]);
+    FILE *f = fopen(path, mode);
+    if (!f) die("read: cannot open '%s'", path);
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    rewind(f);
+    Arr *a = aalloc(sz > 0 ? (int)sz : 0);
+    a->len = sz > 0 ? (int)sz : 0;
+    a->is_string = 1;
+    for (long i = 0; i < sz; i++) {
+        int c = getc(f);
+        a->val[i] = vnum((double)(unsigned char)c);
+    }
+    fclose(f);
+    arelease(path_v.arr);
+    arelease(mode_v.arr);
+    return (Value){ .type = VAL_ARR, .arr = a };
+}
+
+static Value native_write(int ac, Value *args) {
+    (void)ac;
+    Value path_v = args[0], data_v = args[1], mode_v = args[2];
+    if (path_v.type != VAL_ARR || !is_string_arr(path_v.arr)) die("write: filepath must be a string");
+    if (data_v.type != VAL_ARR || !is_string_arr(data_v.arr)) die("write: data must be a string");
+    if (mode_v.type != VAL_ARR || !is_string_arr(mode_v.arr)) die("write: mode must be a string");
+    int plen = path_v.arr ? path_v.arr->len : 0;
+    char path[1024];
+    for (int i = 0; i < plen && i < 1023; i++) path[i] = (char)val_num(path_v.arr->val[i]);
+    path[plen < 1024 ? plen : 1023] = '\0';
+    int dlen = data_v.arr ? data_v.arr->len : 0;
+    int mlen = mode_v.arr ? mode_v.arr->len : 0;
+    char mode[4] = {0};
+    for (int i = 0; i < mlen && i < 3; i++) mode[i] = (char)val_num(mode_v.arr->val[i]);
+    FILE *f = fopen(path, mode);
+    if (!f) die("write: cannot open '%s'", path);
+    for (int i = 0; i < dlen; i++) {
+        putc((int)val_num(data_v.arr->val[i]), f);
+    }
+    fclose(f);
+    arelease(path_v.arr);
+    arelease(data_v.arr);
+    arelease(mode_v.arr);
+    return nilv();
+}
+
+static Value native_exec(int ac, Value *args) {
+    (void)ac;
+    Value cmd_v = args[0];
+    if (cmd_v.type != VAL_ARR || !is_string_arr(cmd_v.arr)) die("exec: command must be a string");
+    int clen = cmd_v.arr ? cmd_v.arr->len : 0;
+    char cmd[4096];
+    for (int i = 0; i < clen && i < 4095; i++) cmd[i] = (char)val_num(cmd_v.arr->val[i]);
+    cmd[clen < 4096 ? clen : 4095] = '\0';
+    FILE *p = popen(cmd, "r");
+    if (!p) die("exec: cannot run command");
+    /* Read output in chunks */
+    int cap = 1024, len = 0;
+    char *buf = malloc(cap);
+    while (1) {
+        int n = fread(buf + len, 1, cap - len, p);
+        len += n;
+        if (len >= cap) { cap *= 2; buf = realloc(buf, cap); }
+        if (feof(p)) break;
+    }
+    int status = pclose(p);
+    (void)status;
+    Arr *a = aalloc(len); a->len = len; a->is_string = 1;
+    for (int i = 0; i < len; i++) a->val[i] = vnum((double)(unsigned char)buf[i]);
+    free(buf);
+    arelease(cmd_v.arr);
+    return (Value){ .type = VAL_ARR, .arr = a };
+}
+
+/* ─── Maths helpers for sort ─── */
+
+static int vlt(Value a, Value b) {
+    if (a.type == VAL_NUM && b.type == VAL_NUM) return a.num < b.num;
+    if (a.type == VAL_NUM) return 1;
+    if (b.type == VAL_NUM) return 0;
+    if (!a.arr && !b.arr) return 0;
+    if (!a.arr) return 1;
+    if (!b.arr) return 0;
+    if (a.arr->is_string && b.arr->is_string) {
+        int m = a.arr->len < b.arr->len ? a.arr->len : b.arr->len;
+        for (int i = 0; i < m; i++) {
+            double ca = val_num(a.arr->val[i]), cb = val_num(b.arr->val[i]);
+            if (ca != cb) return ca < cb;
+        }
+        return a.arr->len < b.arr->len;
+    }
+    if (a.arr->len != b.arr->len) return a.arr->len < b.arr->len;
+    for (int i = 0; i < a.arr->len; i++) {
+        if (!veq(a.arr->val[i], b.arr->val[i])) return vlt(a.arr->val[i], b.arr->val[i]);
+    }
+    return 0;
+}
+
+static int value_cmp(const void *a, const void *b) {
+    const Value *va = (const Value *)a, *vb = (const Value *)b;
+    if (vlt(*va, *vb)) return -1;
+    if (vlt(*vb, *va)) return 1;
+    return 0;
+}
+
+static void flatten_recursive(Arr *arr, Arr *result) {
+    if (!arr) return;
+    for (int i = 0; i < arr->len; i++) {
+        Value v = arr->val[i];
+        if (v.type == VAL_ARR && v.arr && !v.arr->is_string) {
+            flatten_recursive(v.arr, result);
+        } else {
+            int idx = result->len;
+            if (idx >= result->cap) {
+                result->cap = result->cap ? result->cap * 2 : 16;
+                result->val = realloc(result->val, result->cap * sizeof(Value));
+            }
+            result->val[idx] = v;
+            if (v.type == VAL_ARR) aretain(v.arr);
+            result->len++;
+        }
+    }
+}
+
+/* ─── Math builtins ─── */
+
+static Value native_sin(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM) die("sin: argument must be a number");
+    return vnum(sin(args[0].num));
+}
+
+static Value native_cos(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM) die("cos: argument must be a number");
+    return vnum(cos(args[0].num));
+}
+
+static Value native_sqrt(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM) die("sqrt: argument must be a number");
+    if (args[0].num < 0) die("sqrt: negative argument");
+    return vnum(sqrt(args[0].num));
+}
+
+static Value native_exp(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM) die("exp: argument must be a number");
+    return vnum(exp(args[0].num));
+}
+
+static Value native_log(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM) die("log: argument must be a number");
+    if (args[0].num <= 0) die("log: argument must be positive");
+    return vnum(log(args[0].num));
+}
+
+static Value native_floor(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM) die("floor: argument must be a number");
+    return vnum(floor(args[0].num));
+}
+
+static Value native_ceil(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM) die("ceil: argument must be a number");
+    return vnum(ceil(args[0].num));
+}
+
+static Value native_round(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM) die("round: argument must be a number");
+    return vnum(round(args[0].num));
+}
+
+/* ─── Random number builtin ─── */
+
+static int rand_seeded = 0;
+
+static Value native_rand(int ac, Value *args) {
+    (void)ac;
+    if (args[0].type != VAL_NUM || args[1].type != VAL_NUM) die("rand: min and max must be numbers");
+    if (!rand_seeded) { srand((unsigned int)(time(NULL) ^ ((long)getpid() << 16))); rand_seeded = 1; }
+    double min = args[0].num, max = args[1].num;
+    if (min >= max) die("rand: min must be less than max");
+    double r = (double)rand() / (double)RAND_MAX;
+    return vnum(min + r * (max - min));
+}
+
+/* ─── Data structure builtins ─── */
+
+static Value native_sort(int ac, Value *args) {
+    (void)ac;
+    Value arr_v = args[0];
+    if (arr_v.type != VAL_ARR) die("sort: argument must be an array");
+    if (!arr_v.arr) { /* empty/nil array */
+        Arr *a = aalloc(0); a->len = 0; a->is_string = 0;
+        return (Value){ .type = VAL_ARR, .arr = a };
+    }
+    Arr *result = adeep_copy(arr_v.arr);
+    qsort(result->val, result->len, sizeof(Value), value_cmp);
+    arelease(arr_v.arr);
+    return (Value){ .type = VAL_ARR, .arr = result };
+}
+
+static Value native_set(int ac, Value *args) {
+    (void)ac;
+    Value arr_v = args[0];
+    if (arr_v.type != VAL_ARR) die("set: argument must be an array");
+    if (!arr_v.arr) {
+        Arr *a = aalloc(0); a->len = 0; a->is_string = 0;
+        return (Value){ .type = VAL_ARR, .arr = a };
+    }
+    Arr *src = arr_v.arr;
+    int n = src->len;
+    Arr *result = aalloc(n); result->len = 0; result->is_string = 0;
+    for (int i = 0; i < n; i++) {
+        Value v = src->val[i];
+        int found = 0;
+        for (int j = 0; j < result->len; j++) {
+            if (veq(v, result->val[j])) { found = 1; break; }
+        }
+        if (!found) {
+            int idx = result->len;
+            result->val[idx] = v;
+            if (v.type == VAL_ARR) aretain(v.arr);
+            result->len++;
+        }
+    }
+    arelease(arr_v.arr);
+    return (Value){ .type = VAL_ARR, .arr = result };
+}
+
+static Value native_flat(int ac, Value *args) {
+    (void)ac;
+    Value arr_v = args[0];
+    if (arr_v.type != VAL_ARR) die("flat: argument must be an array");
+    if (!arr_v.arr) {
+        Arr *a = aalloc(0); a->len = 0; a->is_string = 0;
+        return (Value){ .type = VAL_ARR, .arr = a };
+    }
+    Arr *result = aalloc(16); result->len = 0; result->is_string = 0;
+    flatten_recursive(arr_v.arr, result);
+    arelease(arr_v.arr);
+    return (Value){ .type = VAL_ARR, .arr = result };
+}
+
+/* ─── Terminal / keyboard builtins ─── */
+
+static int orig_termios_valid = 0;
+static struct termios orig_termios;
+
+static void restore_terminal(void) {
+    if (orig_termios_valid) {
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
+        orig_termios_valid = 0;
+    }
+}
+
+static Value native_key(int ac, Value *args) {
+    (void)ac; (void)args;
+    int fd = STDIN_FILENO;
+    struct termios raw, old;
+    int n = 0;
+    char buf[8];
+
+    if (tcgetattr(fd, &old) != 0) {
+        /* Not a terminal — read one byte anyway */
+        char c;
+        if (read(fd, &c, 1) <= 0) {
+            Arr *empty = aalloc(0); empty->len = 0; empty->is_string = 1;
+            return (Value){ .type = VAL_ARR, .arr = empty };
+        }
+        n = 1; buf[0] = c;
+        goto done;
+    }
+
+    /* Save terminal state for atexit restore */
+    if (!orig_termios_valid) {
+        orig_termios = old;
+        orig_termios_valid = 1;
+        atexit(restore_terminal);
+    }
+
+    /* Set raw mode */
+    raw = old;
+    cfmakeraw(&raw);
+    /* VMIN=1, VTIME=0: blocking read of 1 byte */
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    tcsetattr(fd, TCSAFLUSH, &raw);
+
+    /* Read first byte */
+    if (read(fd, buf, 1) <= 0) {
+        tcsetattr(fd, TCSAFLUSH, &old);
+        Arr *empty = aalloc(0); empty->len = 0; empty->is_string = 1;
+        return (Value){ .type = VAL_ARR, .arr = empty };
+    }
+    n = 1;
+
+    /* If ESC, try to read escape sequence with 100ms timeout */
+    if (buf[0] == 0x1b) {
+        struct termios esc_attr;
+        tcgetattr(fd, &esc_attr);
+        esc_attr.c_cc[VMIN] = 0;
+        esc_attr.c_cc[VTIME] = 1;   /* 100ms timeout */
+        tcsetattr(fd, TCSANOW, &esc_attr);
+
+        while (n < 8) {
+            char c;
+            if (read(fd, &c, 1) <= 0) break;
+            buf[n++] = c;
+        }
+    }
+
+    /* Restore terminal */
+    tcsetattr(fd, TCSAFLUSH, &old);
+
+done:;
+    Arr *a = aalloc(n); a->len = n; a->is_string = 1;
+    for (int i = 0; i < n; i++) a->val[i] = vnum((double)(unsigned char)buf[i]);
+    return (Value){ .type = VAL_ARR, .arr = a };
+}
+
+/* ─── System builtins ─── */
+
+static Value native_die(int ac, Value *args) {
+    int code = 1;
+    if (ac >= 1) {
+        if (args[0].type != VAL_NUM) die("die: code must be a number");
+        code = (int)args[0].num;
+    }
+    exit(code);
+    return nilv();
+}
+
+static Value native_glob(int ac, Value *args) {
+    (void)ac;
+    Value pat_v = args[0];
+    if (pat_v.type != VAL_ARR || !is_string_arr(pat_v.arr)) die("glob: pattern must be a string");
+    int plen = pat_v.arr ? pat_v.arr->len : 0;
+    char pattern[1024];
+    for (int i = 0; i < plen && i < 1023; i++) pattern[i] = (char)val_num(pat_v.arr->val[i]);
+    pattern[plen < 1024 ? plen : 1023] = '\0';
+    glob_t g;
+    int ret = glob(pattern, 0, NULL, &g);
+    if (ret != 0) {
+        arelease(pat_v.arr);
+        Arr *a = aalloc(0); a->len = 0; a->is_string = 0;
+        return (Value){ .type = VAL_ARR, .arr = a };
+    }
+    Arr *result = aalloc((int)g.gl_pathc);
+    result->len = (int)g.gl_pathc;
+    result->is_string = 0;
+    for (size_t i = 0; i < g.gl_pathc; i++) {
+        int vlen = strlen(g.gl_pathv[i]);
+        Arr *s = aalloc(vlen); s->len = vlen; s->is_string = 1;
+        for (int j = 0; j < vlen; j++) s->val[j] = vnum((double)(unsigned char)g.gl_pathv[i][j]);
+        result->val[i] = (Value){ .type = VAL_ARR, .arr = s };
+    }
+    globfree(&g);
+    arelease(pat_v.arr);
+    return (Value){ .type = VAL_ARR, .arr = result };
+}
+
 /* ─── Main ─── */
 
 int main(int a, char **v) {
+    saved_argc = a; saved_argv = v;
     cs = snew(); cur_fi = -1;
+    /* Register builtin functions */
+    reg_builtin("split", 2, T_ARR_TYPE, native_split);
+    reg_builtin("env", 1, T_STR_TYPE, native_env);
+    reg_builtin("args", 0, T_ARR_TYPE, native_args);
+    reg_builtin("time", 0, T_NUM_TYPE, native_time);
+    reg_builtin("date", 0, T_ARR_TYPE, native_date);
+    reg_builtin("hash", 1, T_NUM_TYPE, native_hash);
+    reg_builtin("sleep", 1, T_ARR_TYPE, native_sleep);
+    reg_builtin("read", 2, T_STR_TYPE, native_read);
+    reg_builtin("write", 3, T_ARR_TYPE, native_write);
+    reg_builtin("exec", 1, T_STR_TYPE, native_exec);
+    reg_builtin("sin", 1, T_NUM_TYPE, native_sin);
+    reg_builtin("cos", 1, T_NUM_TYPE, native_cos);
+    reg_builtin("sqrt", 1, T_NUM_TYPE, native_sqrt);
+    reg_builtin("exp", 1, T_NUM_TYPE, native_exp);
+    reg_builtin("log", 1, T_NUM_TYPE, native_log);
+    reg_builtin("floor", 1, T_NUM_TYPE, native_floor);
+    reg_builtin("ceil", 1, T_NUM_TYPE, native_ceil);
+    reg_builtin("round", 1, T_NUM_TYPE, native_round);
+    reg_builtin("rand", 2, T_NUM_TYPE, native_rand);
+    reg_builtin("sort", 1, T_ARR_TYPE, native_sort);
+    reg_builtin("set", 1, T_ARR_TYPE, native_set);
+    reg_builtin("flat", 1, T_ARR_TYPE, native_flat);
+    reg_builtin("die", 1, T_ARR_TYPE, native_die);
+    reg_builtin("glob", 1, T_ARR_TYPE, native_glob);
+    reg_builtin("key", 0, T_STR_TYPE, native_key);
     if (a >= 2) {
         char *src = readf(v[1]); if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
         char dir[1024] = {0}; const char *slash = strrchr(v[1], '/');

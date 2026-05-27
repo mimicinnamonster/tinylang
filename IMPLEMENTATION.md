@@ -377,18 +377,9 @@ growth.
 
 Normally `include` takes a string literal whose path is resolved relative to
 the including file's directory. The compiler also supports compile-time
-expressions in the include path via `eval_include_path()`.
+string literal include paths.
 
-The evaluator handles three cases:
-- **String literals** — extracted directly from the token stream.
-- **`thispath()`** — returns the directory of the current source file (with
-  trailing `/`), computed from `comp_file` at compile time.
-- **`+` concatenation** — left-to-right string concatenation of the above.
-
-When the include path comes from an expression (rather than a plain string
-literal), `include_dir` is not prepended — the expression result is used
-directly. This makes `include thispath() + "foo.tl"` resolve the path
-relative to the current file's directory.
+The include path is extracted directly from the string literal token.
 
 ---
 
@@ -826,7 +817,7 @@ for (int i = 0; i < lhs; i++) {
 
 ## 7. Line Count
 
-**Total:** ~1,750 lines.
+**Total:** ~1,780 lines.
 
 | Component | Lines |
 |-----------|-------|
@@ -844,6 +835,7 @@ for (int i = 0; i < lhs; i++) {
   string-keyed hashmap indexing) | ~365 |
 | Main / REPL | ~70 |
 | Include handling + expression eval | ~60 |
+| Native builtins (`key()`, terminal raw mode, `atexit` restore) | ~30 |
 
 ---
 

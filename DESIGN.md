@@ -486,17 +486,6 @@ include "lib/utils.tl"
 
 Paths are resolved relative to the including file's directory.
 
-### Expression include
-
-```tinylang
-include thispath() + "utils.tl"
-```
-
-`thispath()` inside an `include` expression returns the directory of the
-current file (with trailing `/`), so concatenating with a filename includes
-sibling files. The expression is evaluated at compile time — only `thispath()`,
-string literals, and `+` concatenation are supported.
-
 Nested includes work arbitrarily deep.
 
 ---
@@ -517,11 +506,58 @@ No recovery, no try/catch, no assert().
 |------|-----------|-------------|
 | `print` | `print(x)` | Writes `x` to stdout (no trailing newline). Numbers: decimal. Strings: as text. Arrays: `[e1, e2, ...]` |
 | `input` | `input()` | Reads a line from stdin, returns as byte array (string) |
-| `thispath` | `thispath()` | Returns the source file path where the call appears. Inside `include` expressions, returns the directory of the current file |
+| `thisfile` | `thisfile()` | Returns the full file path of the current script as a byte array, always the literal path |
+| `split` | `split(string, sep)` | Splits string by separator, returns array of substring slices |
+| `env` | `env(name)` | Returns environment variable value (empty string if unset) |
+| `args` | `args()` | Returns command-line arguments as array of strings (excludes program name) |
+| `time` | `time()` | Returns Unix timestamp with nanosecond precision via `clock_gettime(CLOCK_REALTIME)` |
+| `date` | `date()` | Returns `[year, month, day, hour, minute, second]` in system timezone |
+| `hash` | `hash(string)` | Returns FNV-1a hash of the string (same function used for array key hashing) |
+| `sleep` | `sleep(secs)` | Suspends execution for given seconds (fractional OK), uses `nanosleep()` |
+| `read` | `read(path, mode)` | Reads file content as string |
+| `write` | `write(path, data, mode)` | Writes string to file (`"w"` overwrite, `"a"` append) |
+| `exec` | `exec(cmd)` | Runs shell command via `/bin/sh -c`, returns stdout as string |
+| `die` | `die(code)` | Exits process with status code (default 1) |
+| `sin` | `sin(x)` | Sine of x (radians) |
+| `cos` | `cos(x)` | Cosine of x |
+| `sqrt` | `sqrt(x)` | Square root (errors on negative) |
+| `exp` | `exp(x)` | e^x |
+| `log` | `log(x)` | Natural log (errors on ≤ 0) |
+| `floor` | `floor(x)` | Round toward -∞ |
+| `ceil` | `ceil(x)` | Round toward +∞ |
+| `round` | `round(x)` | Round to nearest integer |
+| `rand` | `rand(min, max)` | Uniform random double in `[min, max]` |
+| `sort` | `sort(arr)` | Returns sorted copy of array |
+| `set` | `set(arr)` | Returns array of unique elements (first-occurrence order) |
+| `flat` | `flat(arr)` | Recursively flattens nested arrays (strings preserved) |
+| `glob` | `glob(pattern)` | Returns array of file paths matching shell glob |
+| `key` | `key()` | Reads a single keypress from keyboard. Returns as byte array (string). Sets terminal to raw mode — no Enter needed, no echo. Handles arrow keys, function keys, and Meta combinations by reading escape sequences with a 100ms timeout. Ctrl+C won't kill the program (raw mode disables `ISIG`). Restores terminal after each call. Falls back to reading one byte when stdin is a pipe |
 
 `print` special-cases arrays whose elements are all printable ASCII — they are
 printed as text strings rather than `[104, 101, ...]`. `print` does **not** add
 a trailing newline — include `\n` in your strings to get one.
+
+`key()` special-cases the escape byte `0x1b` — after reading it, it waits up to
+100ms for more bytes so a standalone Escape key press vs an arrow key or Meta
+combination can be distinguished:
+
+| Input | Returned bytes |
+|-------|---------------|
+| `a` | `"a"` |
+| `A` | `"A"` |
+| Enter | `"\r"` (CR, no LF in raw mode) |
+| Ctrl+B | `[2]` |
+| Ctrl+C | `[3]` (no signal — raw mode) |
+| ↑ | `"\x1b[A"` |
+| ↓ | `"\x1b[B"` |
+| → | `"\x1b[C"` |
+| ← | `"\x1b[D"` |
+| Home | `"\x1b[H"` |
+| End | `"\x1b[F"` |
+| Escape | `"\x1b"` (just ESC, wait 100ms for sequence) |
+| Meta+W | `"\x1bw"` |
+| F1 | `"\x1bOP"` |
+
 
 ---
 
@@ -533,8 +569,7 @@ program       := top-level statements
 statement     := assignment | if_stmt | while_stmt | func_def | ret_stmt
                | include_stmt | expr_stmt
 include_stmt  := "include" include_path
-include_path  := string | include_expr
-include_expr  := thispath "(" ")" ("+" string)*
+include_path  := string
 
 assignment    := lvalue ("=" | "+=" | "-=" | "*=" | "/=" ) expr
                | destructure
