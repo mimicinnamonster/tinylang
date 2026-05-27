@@ -848,6 +848,19 @@ void comp_include(Code *c) {
     include_dir = saved_dir; free(comp_file); comp_file = saved_file; free(content);
 }
 
+/* Check if tokens at pn form a single-element array literal [expr] (no commas) */
+static int is_single_elem_bracket(int pn) {
+    if (ts[pn].t != T_LB) return 0;
+    pn++; int depth = 1;
+    while (depth > 0 && ts[pn].t != T_EOF) {
+        if (ts[pn].t == T_LP || ts[pn].t == T_LB) depth++;
+        if (ts[pn].t == T_RP || ts[pn].t == T_RB) depth--;
+        if (depth == 1 && ts[pn].t == T_CM) return 0;
+        pn++;
+    }
+    return 1;
+}
+
 void comp_stmt(Code *c) {
     while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
     if (ts[tp].t == T_EOF || ts[tp].t == T_RC) return;
@@ -886,49 +899,36 @@ void comp_stmt(Code *c) {
                 else if (ts[tp].t == T_MI_ASSIGN) compound_op = T_MI;
                 else if (ts[tp].t == T_ST_ASSIGN) compound_op = T_ST;
                 else if (ts[tp].t == T_SL_ASSIGN) compound_op = T_SL;
+                /* Rewrite simple compound into plain assignment: x += RHS → x = x op RHS */
+                if (compound_op && idx_count == 0) {
+                    memmove(&ts[tp + 3], &ts[tp + 1], (tc - tp - 1) * sizeof(Tok));
+                    ts[tp].t = T_ASSIGN;
+                    ts[tp + 1] = (Tok){ .t = T_ID, .s = strdup(nm), .l = comp_line };
+                    ts[tp + 2] = (Tok){ .t = (TK)compound_op, .s = NULL, .l = comp_line };
+                    tc += 2;
+                    compound_op = 0;
+                }
+                /* Indexed compound: replay indices for read, apply op, store */
                 if (compound_op) {
                     tp++;
                     int slot = var_find(nm);
                     if (slot < 0) slot = var_add(nm);
-                    /* Push optimization: arr += [elem] same as arr = arr + [elem] */
-                    int is_push = 0;
-                    if (compound_op == T_PL && idx_count == 0) {
-                        int pn = tp;
-                        is_push = ts[pn].t == T_LB;
-                        if (is_push) {
-                            pn++; int depth = 1;
-                            while (depth > 0 && ts[pn].t != T_EOF) {
-                                if (ts[pn].t == T_LP || ts[pn].t == T_LB) depth++;
-                                if (ts[pn].t == T_RP || ts[pn].t == T_RB) depth--;
-                                if (depth == 1 && ts[pn].t == T_CM) { is_push = 0; break; }
-                                pn++;
-                            }
-                        }
-                    }
-                    if (is_push) {
-                        tp++; /* skip [ */
+                    emit(c, (Instr){OC_VAR_SLOT, slot, 0, .num = 0});
+                    for (int i = 0; i < idx_count; i++) {
+                        int cur_tp = tp;
+                        tp = idx_saved_tp[i];
                         comp_expr(c);
-                        while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
-                        if (ts[tp].t != T_RB) die("expected ]"); tp++;
-                        emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
-                    } else {
-                        /* Generic desugar: read var, replay indices, compile RHS, apply op, store */
-                        emit(c, (Instr){OC_VAR_SLOT, slot, 0, .num = 0});
-                        for (int i = 0; i < idx_count; i++) {
-                            int cur_tp = tp;
-                            tp = idx_saved_tp[i];
-                            comp_expr(c);
-                            tp = cur_tp;
-                            emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
-                        }
-                        comp_expr(c);
-                        emit(c, (Instr){OC_OP, compound_op, 0, .num = 0});
-                        if (idx_count > 0)
-                            emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
-                        else
-                            emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
+                        tp = cur_tp;
+                        emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
                     }
+                    comp_expr(c);
+                    emit(c, (Instr){OC_OP, compound_op, 0, .num = 0});
+                    if (idx_count > 0)
+                        emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
+                    else
+                        emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
                 } else {
+                    /* Plain assignment (including rewritten compound) */
                     if (ts[tp].t != T_ASSIGN) die("expected ="); tp++;
                     int is_push = (idx_count == 0);
                     if (is_push) {
@@ -940,16 +940,7 @@ void comp_stmt(Code *c) {
                             is_push = ts[pn].t == T_PL;
                             if (is_push) {
                                 pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                                is_push = ts[pn].t == T_LB;
-                                if (is_push) {
-                                    pn++; int depth = 1;
-                                    while (depth > 0 && ts[pn].t != T_EOF) {
-                                        if (ts[pn].t == T_LP || ts[pn].t == T_LB) depth++;
-                                        if (ts[pn].t == T_RP || ts[pn].t == T_RB) depth--;
-                                        if (depth == 1 && ts[pn].t == T_CM) { is_push = 0; break; }
-                                        pn++;
-                                    }
-                                }
+                                is_push = is_single_elem_bracket(pn);
                             }
                         }
                     }
