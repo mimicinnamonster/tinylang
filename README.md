@@ -386,6 +386,9 @@ print(!![])     // []
 | `*` | Multiplication / array repeat | Number × number, or array × number |
 | `/` | Division | Halts on division by zero |
 | `%` | Modulo | Uses `fmod`, halts on zero |
+| `&` | Bitwise AND | Integer bitwise AND on doubles |
+| `|` | Bitwise OR | Integer bitwise OR on doubles |
+| `^` | Bitwise XOR | Integer bitwise XOR on doubles |
 | `<<` | Left shift | Integer bit shift on doubles |
 | `>>` | Right shift | Integer bit shift on doubles |
 
@@ -487,6 +490,7 @@ print([] || [])       // []
 | `!` | Logical negation |
 | `-` | Numeric negation |
 | `#` | Array length |
+| `~` | Bitwise NOT |
 
 ```tinylang
 print(-5)             // -5
@@ -494,6 +498,8 @@ print(#[])            // 0
 print(#nil)           // 0 (nil = [])
 print(#"abc")         // 3
 print(#[[1,2],[3,4]]) // 2
+print(~0)             // -1
+print(~1)             // -2
 ```
 
 ### Operator Precedence
@@ -508,6 +514,9 @@ all left-associative):
 | 7 | `<<` `>>` | Shift |
 | 6 | `<` `>` `<=` `>=` | Relational |
 | 5 | `=` `!=` | Equality |
+| 4 | `&` | Bitwise AND |
+| 3 | `^` | Bitwise XOR |
+| 2 | `\|` | Bitwise OR |
 | 1 | `&&` | Logical AND |
 | 0 | `\|\|` | Logical OR |
 
@@ -1107,6 +1116,26 @@ Returns an array of file paths matching a shell glob pattern, using POSIX
 files = glob("*.tl")
 print(#files)            // number of .tl files
 print(files[0])          // first match
+```
+
+##### `key()`
+
+Reads a single keypress from the terminal. Returns the key as a byte array
+(string). Sets the terminal to raw mode — no Enter needed, no echo. Handles
+arrow keys, function keys, and Meta combinations by reading escape sequences
+with a 100ms timeout. Ctrl+C won't kill the program (raw mode disables `ISIG`).
+Restores the terminal after each call. Falls back to reading one byte when
+stdin is a pipe.
+
+```tinylang
+k = key()
+if k == "\x1b[A"
+    print("up\n")
+elif k[0] == 3
+    print("ctrl+c\n")
+elif k[0] == 113
+    break   # q to quit
+end
 ```
 
 #### System
@@ -2044,14 +2073,17 @@ ret_stmt      := "ret" expr ("," expr)*
 block         := "{" stmt_list "}"
 expr          := logical_or
 logical_or    := logical_and ("||" logical_and)*
-logical_and   := comparison ("&&" comparison)*
+logical_and   := bitwise_or ("&&" bitwise_or)*
+bitwise_or    := bitwise_xor ("|" bitwise_xor)*
+bitwise_xor   := bitwise_and ("^" bitwise_and)*
+bitwise_and   := comparison ("&" comparison)*
 comparison    := shift (("==" | "!=" | "<" | ">" | "<=" | ">=") shift)?
 shift         := addition (("<<" | ">>") addition)*
 addition      := multiplication (("+" | "-") multiplication)*
 multiplication := primary (("*" | "/" | "%") primary)*
 
 primary       := number | identifier | "nil" | string | array_literal
-               | call | index | slice | "(" expr ")" | "!" primary | "-" primary | "#" primary
+               | call | index | slice | "(" expr ")" | "!" primary | "-" primary | "#" primary | "~" primary
 
 slice         := primary "[" expr? ":" expr? (":" expr?)? "]"
 ```

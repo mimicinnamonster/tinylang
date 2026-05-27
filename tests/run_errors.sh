@@ -29,7 +29,7 @@ run_test() {
         e_type_minus)     expected_msg="'-' requires numbers";;
         e_type_star)      expected_msg="'*' type mismatch";;
         e_type_slash)     expected_msg="'/' requires numbers";;
-        e_bitwise)        expected_msg="bitwise requires numbers";;
+        e_bitwise)        expected_msg="bitwise";;
         e_lt)             expected_msg="'<' requires numbers";;
         e_ge)             expected_msg="'>=' requires numbers";;
         e_undef_var)      expected_msg="undefined";;

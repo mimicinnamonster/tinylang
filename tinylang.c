@@ -33,7 +33,7 @@ typedef enum {
     T_EOF, T_NUM, T_ID, T_STR, T_NIL,
     T_LP, T_RP, T_LB, T_RB, T_LC, T_RC, T_CM, T_SEMI,
     T_PL, T_MI, T_ST, T_SL, T_PC,
-    T_AM, T_PI, T_CA, T_SHL, T_SHR, T_BN,
+    T_AM, T_PI, T_CA, T_SHL, T_SHR, T_BN, T_TILDE,
     T_ASSIGN, T_PL_ASSIGN, T_MI_ASSIGN, T_ST_ASSIGN, T_SL_ASSIGN,
     T_EQ, T_NE, T_LT, T_GT, T_LE, T_GE,
     T_HASH, T_COLON,
@@ -335,6 +335,15 @@ Value apply(int op, Value l, Value r) {
         case T_SHR:
             if (!lf || !rf) die("'>>' requires numbers");
             return vnum((double)((int64_t)ld >> (int32_t)rd));
+        case T_AM:
+            if (!lf || !rf) die("bitwise & requires numbers");
+            return vnum((double)((int64_t)ld & (int64_t)rd));
+        case T_PI:
+            if (!lf || !rf) die("bitwise | requires numbers");
+            return vnum((double)((int64_t)ld | (int64_t)rd));
+        case T_CA:
+            if (!lf || !rf) die("bitwise ^ requires numbers");
+            return vnum((double)((int64_t)ld ^ (int64_t)rd));
         default: die("unknown op");
     } return nilv();
 }
@@ -552,6 +561,7 @@ void lex(const char *s) {
             case '&': if (pc()=='&'){ac();tk.t=T_AND;}else tk.t=T_AM; break;
             case '|': if (pc()=='|'){ac();tk.t=T_OR;}else tk.t=T_PI; break;
             case '^': tk.t=T_CA; break;
+            case '~': tk.t=T_TILDE; break;
             case '#': tk.t=T_HASH; break; case ':': tk.t=T_COLON; break;
             case '!': if (pc()=='='){ac();tk.t=T_NE;}else tk.t=T_BN; break;
             case '=': if (pc()=='='){ac();tk.t=T_EQ;}else tk.t=T_ASSIGN; break;
@@ -616,6 +626,7 @@ void comp_prim(Code *c) {
         case T_BN: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_BN, 0, .num = 0}); break;
         case T_MI: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_MI, 0, .num = 0}); break;
         case T_HASH: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_HASH, 0, .num = 0}); break;
+        case T_TILDE: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_TILDE, 0, .num = 0}); break;
         default: die("unexpected token at line %d", t.l);
     }
     while (ts[tp].t == T_LB) {
@@ -1438,6 +1449,7 @@ op_unary: {
     if (ins->a == T_BN) { istk[++isp] = truthy(v) ? nilv() : vnum(1); if (v.type==VAL_ARR) arelease(v.arr); }
     else if (ins->a == T_MI) { if (v.type!=VAL_NUM) die("minus on non-number"); istk[++isp] = vnum(-val_num(v)); }
     else if (ins->a == T_HASH) { if (v.type!=VAL_ARR) die("# requires array"); istk[++isp] = vnum((double)(v.arr ? v.arr->len : 0)); if (v.type==VAL_ARR) arelease(v.arr); }
+    else if (ins->a == T_TILDE) { if (v.type!=VAL_NUM) die("bitwise ~ requires number"); istk[++isp] = vnum((double)(~((int64_t)val_num(v)))); }
     ip++; goto *dispatch[c->code[ip].op];
 }
 

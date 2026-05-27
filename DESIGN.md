@@ -157,6 +157,17 @@ occurs twice.
 - Push optimization: `x = x + [expr]` compiles to `OC_PUSH` — appends directly
   in O(1) instead of copying the entire array
 
+### Bitwise
+
+`&` `|` `^` `~`
+
+- `&` bitwise AND: `12 & 10` → `8`
+- `|` bitwise OR: `12 | 10` → `14`
+- `^` bitwise XOR: `12 ^ 10` → `6`
+- `~` bitwise NOT (unary prefix): `~0` → `-1`, `~1` → `-2`
+- All bitwise operators work on the integer part of numbers (cast to int64_t)
+- Operands must be numbers (runtime error otherwise)
+
 ### Comparison
 
 | Op | Meaning | Returns |
@@ -182,6 +193,7 @@ occurs twice.
 - `!` negation (prefix): `[]` → `1`, anything else → `[]`
 - `-` numeric negation (prefix): `-5` negates 5
 - `#` array length (prefix): `#arr` returns element count, type error on numbers
+- `~` bitwise NOT (prefix): `~0` → `-1`, flips all bits of the integer value
 
 ### Context determines `=` meaning
 
@@ -208,6 +220,9 @@ left-associative):
 | 7 | `<<` `>>` | Shift |
 | 6 | `<` `>` `<=` `>=` | Relational |
 | 5 | `=` `!=` | Equality |
+| 4 | `&` | Bitwise AND |
+| 3 | `^` | Bitwise XOR |
+| 2 | `\|` | Bitwise OR |
 | 1 | `&&` | Logical AND |
 | 0 | `\|\|` | Logical OR |
 
