@@ -609,7 +609,10 @@ print(name)
 
 #### `thispath()`
 
-Returns the source file path where the call appears, as a byte array.
+Returns the source file path where the call appears, as a byte array. Inside
+`include` expressions, `thispath()` returns the directory of the current file
+(with trailing `/`), so concatenation with a relative path resolves to the
+correct location.
 
 ```tinylang
 print(thispath())        // e.g., /Users/mimi/project/test.tl
@@ -617,8 +620,9 @@ print(thispath())        // e.g., /Users/mimi/project/test.tl
 
 ### Include System
 
-Load and execute another TinyLang source file at compile time. File resolution
-is relative to the including file's directory.
+Load and execute another TinyLang source file at compile time.
+
+#### String literal include
 
 ```tinylang
 // main.tl
@@ -630,6 +634,24 @@ function greet(name) {
     return "hello " + name
 }
 ```
+
+File resolution is relative to the including file's directory.
+
+#### Expression include
+
+The include path can also be a compile-time expression using `thispath()`
+and `+` concatenation. Inside include expressions, `thispath()` returns
+the directory of the current file (with trailing `/`), so concatenating
+a relative path resolves to the correct sibling file.
+
+```tinylang
+include thispath() + "utils.tl"
+include thispath() + "../lib/helpers.tl"
+include thispath() + "sub" + "/nested.tl"
+```
+
+Only `thispath()`, string literals, and `+` are supported — the expression
+is evaluated entirely at compile time.
 
 Nested includes work arbitrarily deep.
 
@@ -745,6 +767,18 @@ Paths are relative to the including file's directory.
 include "helpers.tl"
 include "../lib/math.tl"
 ```
+
+The include path can also be a compile-time expression:
+
+```tinylang
+include thispath() + "helpers.tl"
+include thispath() + "../lib/math.tl"
+```
+
+When using an expression, `thispath()` returns the directory of the current
+file, so concatenation resolves relative paths correctly. The expression is
+evaluated at compile time — only `thispath()`, string literals, and `+`
+concatenation are supported.
 
 ---
 
@@ -1156,7 +1190,9 @@ warnings (50+ of them). They are expected and intentional.
 program       := top-level statements
 
 statement     := assignment | if_stmt | while_stmt | func_def | ret_stmt | include_stmt | expr_stmt
-include_stmt  := "include" string
+include_stmt  := "include" include_path
+include_path  := string | include_expr
+include_expr  := thispath "(" ")" ("+" string)*
 
 assignment    := lvalue "=" expr
 lvalue        := identifier ("[" slice_or_index "]")*

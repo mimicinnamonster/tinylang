@@ -124,7 +124,8 @@ each function's variable namespace.
 | `comp_if(c)` | `if`/`elif`/`else` with backpatching |
 | `comp_while(c)` | `while` with loop/exit jumps |
 | `comp_fn(c)` | Function definition + body + TCO detection |
-| `comp_include(c)` | `include` directive |
+| `comp_include(c)` | `include` directive (string literal or expression) |
+| `eval_include_path()` | Compile-time evaluation of include path expressions |
 
 ### Push optimization detection
 
@@ -138,6 +139,23 @@ After compiling a function body, the compiler scans the last few instructions
 for `OC_CALL` to the same function in tail position. If found, it is mutated
 to `OC_TCO` — parameter rebinding + instruction pointer reset, no C stack
 growth.
+
+### Include expressions
+
+Normally `include` takes a string literal whose path is resolved relative to
+the including file's directory. The compiler also supports compile-time
+expressions in the include path via `eval_include_path()`.
+
+The evaluator handles three cases:
+- **String literals** — extracted directly from the token stream.
+- **`thispath()`** — returns the directory of the current source file (with
+  trailing `/`), computed from `comp_file` at compile time.
+- **`+` concatenation** — left-to-right string concatenation of the above.
+
+When the include path comes from an expression (rather than a plain string
+literal), `include_dir` is not prepended — the expression result is used
+directly. This makes `include thispath() + "foo.tl"` resolve the path
+relative to the current file's directory.
 
 ---
 
@@ -285,7 +303,7 @@ copies elements into a new `Value[]` array, and pushes the result.
 | Compiler — all functions | ~280 |
 | VM executor — exec() with computed goto | ~280 |
 | Main / REPL | ~60 |
-| Include handling | ~40 |
+| Include handling + expression eval | ~60 |
 
 ---
 

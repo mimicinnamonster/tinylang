@@ -667,18 +667,119 @@ void comp_fn(Code *c) {
         { body->code[last].op = OC_TCO; body->code[last].a = body->code[last].b; body->code[last].b = 0; }
 }
 
+/* Evaluate an include path expression at compile time.
+ * Supports: string literals, thispath(), and + concatenation.
+ * thispath() inside include returns the directory of the current file
+ * (with trailing /) so concatenation with a relative path "just works".
+ * Returns a malloc'd string the caller must free. */
+char *eval_include_path(void) {
+    while (ts[tp].t == T_NL) tp++;
+
+    char *result = NULL;
+
+    /* Parse primary */
+    if (ts[tp].t == T_STR) {
+        Arr *a = (Arr*)ts[tp].s; tp++;
+        int plen = a ? a->len : 0;
+        result = malloc(plen + 1);
+        for (int i = 0; i < plen; i++) result[i] = (char)val_num(a->val[i]);
+        result[plen] = '\0';
+    } else if (ts[tp].t == T_ID && !strcmp(ts[tp].s, "thispath")) {
+        tp++;
+        if (ts[tp].t != T_LP) die("expected ( after thispath");
+        tp++;
+        if (ts[tp].t != T_RP) die("expected ) after thispath");
+        tp++;
+        /* Return the directory of the current file (with trailing /) */
+        if (comp_file) {
+            const char *sl = strrchr(comp_file, '/');
+            if (sl) {
+                int dlen = sl - comp_file + 1;  /* include the slash */
+                result = malloc(dlen + 1);
+                memcpy(result, comp_file, dlen);
+                result[dlen] = '\0';
+            } else {
+                result = strdup("");
+            }
+        } else {
+            result = strdup("");
+        }
+    } else {
+        die("include requires a string literal or thispath() expression");
+    }
+
+    /* Handle + concatenation */
+    while (ts[tp].t == T_PL) {
+        tp++;
+        char *right = NULL;
+        if (ts[tp].t == T_STR) {
+            Arr *a = (Arr*)ts[tp].s; tp++;
+            int plen = a ? a->len : 0;
+            right = malloc(plen + 1);
+            for (int i = 0; i < plen; i++) right[i] = (char)val_num(a->val[i]);
+            right[plen] = '\0';
+        } else if (ts[tp].t == T_ID && !strcmp(ts[tp].s, "thispath")) {
+            tp++;
+            if (ts[tp].t != T_LP) die("expected ( after thispath");
+            tp++;
+            if (ts[tp].t != T_RP) die("expected ) after thispath");
+            tp++;
+            if (comp_file) {
+                const char *sl = strrchr(comp_file, '/');
+                if (sl) {
+                    int dlen = sl - comp_file + 1;
+                    right = malloc(dlen + 1);
+                    memcpy(right, comp_file, dlen);
+                    right[dlen] = '\0';
+                } else {
+                    right = strdup("");
+                }
+            } else {
+                right = strdup("");
+            }
+        } else {
+            die("include concatenation requires string literal or thispath()");
+        }
+        char *tmp = malloc(strlen(result) + strlen(right) + 1);
+        strcpy(tmp, result);
+        strcat(tmp, right);
+        free(result);
+        free(right);
+        result = tmp;
+    }
+
+    return result;
+}
+
 void comp_include(Code *c) {
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
-    if (ts[tp].t != T_STR) die("include requires a string path");
-    Arr *a = (Arr*)ts[tp].s; tp++;
-    int plen = a ? a->len : 0;
-    if (plen >= 1024) die("include path too long");
-    char path[1024];
-    for (int i = 0; i < plen; i++) path[i] = (char)val_num(a->val[i]); path[plen] = '\0';
+    int is_literal = (ts[tp].t == T_STR);
+    char *path;
+    if (is_literal) {
+        /* String literal — extract the path */
+        Arr *a = (Arr*)ts[tp].s; tp++;
+        int plen = a ? a->len : 0;
+        if (plen >= 1024) die("include path too long");
+        path = malloc(plen + 1);
+        for (int i = 0; i < plen; i++) path[i] = (char)val_num(a->val[i]);
+        path[plen] = '\0';
+    } else {
+        /* Expression — evaluate at compile time */
+        path = eval_include_path();
+    }
+    int plen = strlen(path);
+    if (plen >= 1024) { free(path); die("include path too long"); }
     char full[1024];
-    if (include_dir && include_dir[0])
+    if (is_literal && include_dir && include_dir[0]) {
+        /* String literal relative path — resolve against including file's dir */
         snprintf(full, sizeof(full), "%s/%s", include_dir, path);
-    else { size_t nl = strlen(path); if (nl >= sizeof(full)) nl = sizeof(full)-1; memcpy(full, path, nl+1); }
+    } else {
+        /* Absolute path or expression — use directly */
+        if ((size_t)plen >= sizeof(full)) plen = sizeof(full) - 1;
+        memcpy(full, path, plen);
+        full[plen] = '\0';
+    }
+    free(path);
     char *content = readf(full);
     if (!content) die("cannot include '%s'", full);
     Tok *saved_ts = ts; int saved_tc = tc, saved_tp = tp; char *saved_dir = include_dir;

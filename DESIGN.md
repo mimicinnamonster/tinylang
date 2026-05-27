@@ -260,7 +260,35 @@ Built-in function names (`print`, `input`) are NOT keywords.
 
 ---
 
-## 11. Error Handling
+## 11. Include System
+
+Load and execute another TinyLang source file at compile time. The include
+path can be a string literal or an expression that evaluates at compile time.
+
+### String literal include
+
+```tinylang
+include "lib/utils.tl"
+```
+
+Paths are resolved relative to the including file's directory.
+
+### Expression include
+
+```tinylang
+include thispath() + "utils.tl"
+```
+
+`thispath()` inside an `include` expression returns the directory of the
+current file (with trailing `/`), so concatenating with a filename includes
+sibling files. The expression is evaluated at compile time — only `thispath()`,
+string literals, and `+` concatenation are supported.
+
+Nested includes work arbitrarily deep.
+
+---
+
+## 12. Error Handling
 
 Runtime errors halt execution with a message to stderr and a stack trace.
 In script mode the process exits with status 1. In the REPL, errors are caught
@@ -270,27 +298,29 @@ No recovery, no try/catch, no assert().
 
 ---
 
-## 12. Built-in Functions
+## 13. Built-in Functions
 
 | Name | Signature | Description |
 |------|-----------|-------------|
 | `print` | `print(x)` | Writes `x` to stdout. Numbers: decimal. Strings: as text. Arrays: `[e1, e2, ...]` |
 | `input` | `input()` | Reads a line from stdin, returns as byte array (string) |
-| `thispath` | `thispath()` | Returns the source file path where the call appears |
+| `thispath` | `thispath()` | Returns the source file path where the call appears. Inside `include` expressions, returns the directory of the current file |
 
 `print` special-cases arrays whose elements are all printable ASCII — they are
 printed as text strings rather than `[104, 101, ...]`.
 
 ---
 
-## 13. Grammar
+## 14. Grammar
 
 ```
 program       := top-level statements
 
 statement     := assignment | if_stmt | while_stmt | func_def | ret_stmt
                | include_stmt | expr_stmt
-include_stmt  := "include" string
+include_stmt  := "include" include_path
+include_path  := string | include_expr
+include_expr  := thispath "(" ")" ("+" string)*
 
 assignment    := lvalue "=" expr
 lvalue        := identifier ("[" expr "]")*
@@ -325,7 +355,7 @@ args          := /* empty */ | expr ("," expr)*
 
 ---
 
-## 14. Performance Characteristics
+## 15. Performance Characteristics
 
 - **Computed goto dispatch** — bytecode interpreter uses threaded code for ~15%
   faster dispatch vs switch
