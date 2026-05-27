@@ -115,6 +115,25 @@ print(nodes[0][0])                  // 42
 - Tail call optimization: parameter rebinding + ip reset (no C stack growth)
 - Comprehensive test suite (25+ happy-path tests, 20 error tests)
 
+### Portability Notes
+
+The VM uses **computed goto dispatch** (address-of-label `&&label` and indirect
+`goto *ptr`) for its main execution loop — a GNU C extension not in C99.
+The entire dispatch is driven by a jump table (`dispatch[]`) filled with
+label addresses, and each opcode handler ends with an indirect goto. This
+makes the code fast (no costly switch/jump chains), but ties it to GCC and
+Clang — it will not compile with MSVC, ICC, or strict C99-only compilers.
+
+The code also uses `strdup()` which is a POSIX function, not part of C99.
+macOS, Linux, and BSDs all provide it; strict C99-or-only platforms may not.
+
+To check for these and other non-standard extensions at build time:
+
+    cc -std=c99 -Wall -pedantic -o tinylang tinylang.c -lm
+
+This will flag the GNU label-as-value and indirect-goto extensions as
+warnings (50+ of them). They are expected and intentional.
+
 ## Benchmarks
 
 [`benchmarks/`](benchmarks/) contains a performance comparison of TinyLang against

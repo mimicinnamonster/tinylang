@@ -463,7 +463,7 @@ void comp_prim(Code *c) {
     Tok t = ts[tp]; comp_line = t.l; err_line = t.l; err_file = comp_file;
     switch (t.t) {
         case T_NUM: tp++; emit(c, (Instr){OC_NUM, 0, 0, .num = t.n}); break;
-        case T_NIL: tp++; emit(c, (Instr){OC_NIL, 0, 0}); break;
+        case T_NIL: tp++; emit(c, (Instr){OC_NIL, 0, 0, .num = 0}); break;
         case T_STR: { tp++; Arr *o = (Arr*)t.s; emit(c, (Instr){OC_STR, 0, 0, .arr = o}); break; }
         case T_ID: {
             char *nm = strdup(t.s); tp++;
@@ -472,8 +472,8 @@ void comp_prim(Code *c) {
                 int ac = 0;
                 if (ts[tp].t != T_RP) { do { comp_expr(c); ac++; } while (ts[tp].t == T_CM && (tp++, 1)); }
                 tp++;
-                if (!strcmp(t.s, "print")) { if (ac < 1) die("print needs 1 arg"); emit(c, (Instr){OC_PRINT, 0, 0}); }
-                else if (!strcmp(t.s, "input")) emit(c, (Instr){OC_INPUT, 0, 0});
+                if (!strcmp(t.s, "print")) { if (ac < 1) die("print needs 1 arg"); emit(c, (Instr){OC_PRINT, 0, 0, .num = 0}); }
+                else if (!strcmp(t.s, "input")) emit(c, (Instr){OC_INPUT, 0, 0, .num = 0});
                 else if (!strcmp(t.s, "thispath")) {
                     int n = comp_file ? strlen(comp_file) : 0;
                     Arr *a = aalloc(n); a->len = n;
@@ -481,13 +481,13 @@ void comp_prim(Code *c) {
                     emit(c, (Instr){OC_STR, 0, 0, .arr = a});
                 } else {
                     int fi = ffind(t.s); if (fi < 0) die("undefined function '%s'", t.s);
-                    emit(c, (Instr){OC_CALL, fi, ac});
+                    emit(c, (Instr){OC_CALL, fi, ac, .num = 0});
                 }
             } else {
                 /* Variable read — use slot index in function bodies, name at top-level */
                 int slot = var_find(nm);
                 if (slot >= 0) {
-                    emit(c, (Instr){OC_VAR_SLOT, slot, 0});
+                    emit(c, (Instr){OC_VAR_SLOT, slot, 0, .num = 0});
                 } else if (cur_fi >= 0) {
                     die("undefined variable '%s'", nm);
                 } else {
@@ -500,16 +500,16 @@ void comp_prim(Code *c) {
         }
         case T_LB: {
             tp++;
-            if (ts[tp].t == T_RB) { tp++; emit(c, (Instr){OC_NIL, 0, 0}); break; }
+            if (ts[tp].t == T_RB) { tp++; emit(c, (Instr){OC_NIL, 0, 0, .num = 0}); break; }
             int n = 0;
             do { comp_expr(c); n++; } while (ts[tp].t == T_CM && (tp++, 1));
             if (ts[tp].t != T_RB) die("expected ]"); tp++;
-            emit(c, (Instr){OC_MAKE_ARR, n, 0}); break;
+            emit(c, (Instr){OC_MAKE_ARR, n, 0, .num = 0}); break;
         }
         case T_LP: { tp++; comp_expr(c); if (ts[tp].t != T_RP) die("expected )"); tp++; break; }
-        case T_BN: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_BN, 0}); break;
-        case T_MI: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_MI, 0}); break;
-        case T_HASH: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_HASH, 0}); break;
+        case T_BN: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_BN, 0, .num = 0}); break;
+        case T_MI: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_MI, 0, .num = 0}); break;
+        case T_HASH: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_HASH, 0, .num = 0}); break;
         default: die("unexpected token at line %d", t.l);
     }
     while (ts[tp].t == T_LB) {
@@ -527,19 +527,19 @@ void comp_prim(Code *c) {
         }
         if (is_slice) {
             if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
-            else emit(c, (Instr){OC_NIL, 0, 0});
+            else emit(c, (Instr){OC_NIL, 0, 0, .num = 0});
             if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
             if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
-            else emit(c, (Instr){OC_NIL, 0, 0});
+            else emit(c, (Instr){OC_NIL, 0, 0, .num = 0});
             if (ts[tp].t == T_COLON) {
                 tp++;
                 if (ts[tp].t != T_RB) comp_expr(c);
                 else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
             } else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
             if (ts[tp].t != T_RB) die("expected ]"); tp++;
-            emit(c, (Instr){OC_SLICE, 0, 0});
+            emit(c, (Instr){OC_SLICE, 0, 0, .num = 0});
         } else {
-            do { comp_expr(c); emit(c, (Instr){OC_INDEX, 0, 0}); } while (ts[tp].t == T_CM && (tp++, 1));
+            do { comp_expr(c); emit(c, (Instr){OC_INDEX, 0, 0, .num = 0}); } while (ts[tp].t == T_CM && (tp++, 1));
             if (ts[tp].t != T_RB) die("expected ]"); tp++;
         }
     }
@@ -550,15 +550,15 @@ static void comp_expr_prec(Code *c, int min_prec) {
     while (is_binary_op(ts[tp].t) && op_prec(ts[tp].t) >= min_prec) {
         int op = ts[tp].t; tp++;
         if (op == T_AND || op == T_OR) {
-            emit(c, (Instr){ OC_DUP, 0, 0 });
+            emit(c, (Instr){ OC_DUP, 0, 0, .num = 0 });
             int jmp = c->len;
-            emit(c, (Instr){ op == T_AND ? OC_JZ : OC_JNZ, 0, 0 });
-            emit(c, (Instr){ OC_POP, 0, 0 });
+            emit(c, (Instr){ op == T_AND ? OC_JZ : OC_JNZ, 0, 0, .num = 0 });
+            emit(c, (Instr){ OC_POP, 0, 0, .num = 0 });
             comp_expr_prec(c, op_prec(op) + 1);
             c->code[jmp].a = c->len;
         } else {
             comp_expr_prec(c, op_prec(op) + 1);
-            emit(c, (Instr){OC_OP, op, 0});
+            emit(c, (Instr){OC_OP, op, 0, .num = 0});
         }
     }
 }
@@ -579,12 +579,12 @@ void comp_block(Code *c) {
 void comp_if(Code *c) {
     int jz[64], np = 0, jmp[64], nj = 0;
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
-    comp_expr(c); jz[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0});
-    comp_block(c); jmp[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0});
+    comp_expr(c); jz[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0, .num = 0});
+    comp_block(c); jmp[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0, .num = 0});
     while (ts[tp].t == T_ELIF) {
         c->code[jz[np-1]].a = c->len; tp++;
-        comp_expr(c); jz[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0});
-        comp_block(c); jmp[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0});
+        comp_expr(c); jz[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0, .num = 0});
+        comp_block(c); jmp[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0, .num = 0});
     }
     if (ts[tp].t == T_ELSE) { c->code[jz[np-1]].a = c->len; tp++; comp_block(c); }
     else c->code[jz[np-1]].a = c->len;
@@ -593,8 +593,8 @@ void comp_if(Code *c) {
 
 void comp_while(Code *c) {
     int loop = c->len; tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
-    comp_expr(c); int jz = c->len; emit(c, (Instr){OC_JZ, 0, 0});
-    comp_block(c); emit(c, (Instr){OC_JMP, loop, 0}); c->code[jz].a = c->len;
+    comp_expr(c); int jz = c->len; emit(c, (Instr){OC_JZ, 0, 0, .num = 0});
+    comp_block(c); emit(c, (Instr){OC_JMP, loop, 0, .num = 0}); c->code[jz].a = c->len;
 }
 
 void comp_return(Code *c) {
@@ -605,7 +605,7 @@ void comp_return(Code *c) {
     if (is_tc && c->code[c->len-1].op == OC_CALL) {
         Instr *last = &c->code[c->len-1];
         last->op = OC_TCO; last->a = last->b; last->b = 0;
-    } else if (!is_tc) emit(c, (Instr){OC_RET, 0, 0});
+    } else if (!is_tc) emit(c, (Instr){OC_RET, 0, 0, .num = 0});
 }
 
 void comp_fn(Code *c) {
@@ -645,7 +645,7 @@ void comp_fn(Code *c) {
     f->a = pa;
 
     /* Compile body */
-    Code *body = new_code(); comp_block(body); emit(body, (Instr){OC_END, 0, 0});
+    Code *body = new_code(); comp_block(body); emit(body, (Instr){OC_END, 0, 0, .num = 0});
     f->code = body;
     f->nvars = comp_vc;
 
@@ -757,26 +757,26 @@ void comp_stmt(Code *c) {
                     comp_expr(c);
                     while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
                     if (ts[tp].t != T_RB) die("expected ]"); tp++;
-                    emit(c, (Instr){OC_PUSH, slot, 0});
+                    emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
                 } else {
                     comp_expr(c);
                     if (idx_count > 0) {
                         /* Lvalue chain — find or create slot for root variable */
                         int slot = var_find(nm);
                         if (slot < 0) slot = var_add(nm);
-                        emit(c, (Instr){OC_LVALS, slot, idx_count});
+                        emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
                     } else {
                         /* Simple assignment */
                         int slot = var_find(nm);
                         if (slot < 0) slot = var_add(nm);
-                        emit(c, (Instr){OC_STORE_SLOT, slot, 0});
+                        emit(c, (Instr){OC_STORE_SLOT, slot, 0, .num = 0});
                     }
                 }
                 free(nm);
-            } else { comp_expr(c); emit(c, (Instr){ (comp_file ? OC_POP : OC_PRINT), 0, 0 }); }
+            } else { comp_expr(c); emit(c, (Instr){ (comp_file ? OC_POP : OC_PRINT), 0, 0, .num = 0 }); }
             break;
         }
-        default: comp_expr(c); emit(c, (Instr){ (comp_file ? OC_POP : OC_PRINT), 0, 0 }); break;
+        default: comp_expr(c); emit(c, (Instr){ (comp_file ? OC_POP : OC_PRINT), 0, 0, .num = 0 }); break;
     }
 }
 
@@ -786,7 +786,7 @@ void comp_program(Code *c) {
         if (ts[tp].t == T_EOF) break;
         comp_stmt(c);
     }
-    emit(c, (Instr){OC_END, 0, 0});
+    emit(c, (Instr){OC_END, 0, 0, .num = 0});
 }
 
 /* ─── VM Executor (computed goto dispatch) ─── */
