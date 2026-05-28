@@ -179,8 +179,11 @@ is used. Either way, no external tools like `rlwrap` are needed — the REPL
 is self-contained. Errors print a traceback and return to the prompt without
 destroying variables or function definitions.
 
-The REPL reads until braces balance before executing, so multi-line functions
-and blocks work naturally.
+The REPL reads until braces (`{}`), parens (`()`), and brackets (`[]`) all
+balance before executing. It also detects unfinished control-flow keywords
+(`if`, `for`, `fun`) that expect a body block and continues reading even
+if all brackets are balanced. This makes multi-line functions, blocks,
+and expressions work naturally regardless of formatting.
 
 ### Tests
 
@@ -1289,33 +1292,63 @@ naturally evolves toward.  Some patterns arise from compiler constraints
 
 #### Formatting
 
-- Use **2-space indentation** — no tabs.
-- Opening braces go on the same line as the control structure (`if expr {`).
-- `elif` and `else` must appear on the **same line** as the preceding `}`:
-  ```tinylang
-  if x < 0 {
-      ret -1
-  } elif x == 0 {          // } and elif on same line
-      ret 0
-  } else {
-      ret 1
-  }
-  ```
-  The parser does not skip newlines looking for `elif`/`else`; putting them on
-  a new line produces an "unexpected token" error.
-- Short 2-branch `if`-`elif` chains may stay on one line:
-  ```tinylang
-  if mx < px { dx = 1 } elif mx > px { dx = -1 }
-  ```
-- Longer chains (3+ branches) use multi-line formatting as shown above.
-- Separate logically distinct `if` statements (mutually exclusive conditions)
-  rather than forcing a single `elif` chain:
-  ```tinylang
-  if k0 == key_UP_W  || k0 == key_UP_K   { dy = -1 }
-  if k0 == key_DOWN_S|| k0 == key_DOWN_J { dy = 1 }
-  ```
-- Multi-line array literals (`[...]`) are **not** supported — keep them on one
-  line.  The parser treats newlines inside brackets as unexpected tokens.
+Formatting is completely free — whitespace (spaces, tabs, newlines) is fully
+transparent between tokens. You can put newlines anywhere:
+
+```tinylang
+// Brace on its own line
+fun foo()
+{
+}
+
+// Array elements across lines
+arr = [
+  1,
+  2,
+  3
+]
+
+// Nested arrays with newlines
+matrix = [
+  [1, 2],
+  [3, 4]
+]
+
+// if/elif/else with newlines between blocks
+if x < 0
+{
+  ret -1
+}
+elif x == 0
+{
+  ret 0
+}
+else
+{
+  ret 1
+}
+
+// Function calls with newlines
+print(
+  "hello"
+)
+
+// Operators across lines
+sum = a +
+      b +
+      c
+
+// Parameters across lines
+fun add(
+  x=0,
+  y=0
+) {
+  ret x + y
+}
+```
+
+Use **2-space indentation** as a convention. The parser handles any
+arrangement.
 
 #### Naming Conventions
 

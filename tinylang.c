@@ -638,8 +638,10 @@ void comp_prim(Code *c) {
         case T_STR: { tp++; Arr *o = (Arr*)t.s; emit(c, (Instr){OC_STR, 0, 0, .arr = o}); comp_last_type = T_STR_TYPE; break; }
         case T_ID: {
             char *nm = strdup(t.s); tp++;
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t == T_LP) {
                 free(nm); tp++;
+                while (ts[tp].t == T_NL) tp++;
                 int ac = 0;
                 int deferred_clear = -1;
                 if (ts[tp].t != T_RP) {
@@ -664,6 +666,7 @@ void comp_prim(Code *c) {
                             comp_expr(c);
                         }
                         ac++;
+                        while (ts[tp].t == T_NL) tp++;
                     } while (ts[tp].t == T_CM && (tp++, 1));
                 }
                 tp++;
@@ -745,13 +748,15 @@ void comp_prim(Code *c) {
         }
         case T_LB: {
             tp++;
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t == T_RB) { tp++; emit(c, (Instr){OC_NIL, 0, 0, .num = 0}); comp_last_type = T_ARR_TYPE; break; }
             int n = 0;
-            do { comp_expr(c); n++; } while (ts[tp].t == T_CM && (tp++, 1));
+            do { comp_expr(c); n++; while (ts[tp].t == T_NL) tp++; } while (ts[tp].t == T_CM && (tp++, 1));
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t != T_RB) die("expected ]"); tp++;
             emit(c, (Instr){OC_MAKE_ARR, n, 0, .num = 0}); comp_last_type = T_ARR_TYPE; break;
         }
-        case T_LP: { tp++; comp_expr(c); if (ts[tp].t != T_RP) die("expected )"); tp++; break; }
+        case T_LP: { tp++; comp_expr(c); while (ts[tp].t == T_NL) tp++; if (ts[tp].t != T_RP) die("expected )"); tp++; break; }
         case T_BN: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_BN, 0, .num = 0}); comp_last_type = T_UNKNOWN; break;
         case T_MI: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_MI, 0, .num = 0}); comp_last_type = T_NUM_TYPE; break;
         case T_HASH: tp++; comp_prim(c); emit(c, (Instr){OC_UNARY, T_HASH, 0, .num = 0}); comp_last_type = T_NUM_TYPE; break;
@@ -759,9 +764,11 @@ void comp_prim(Code *c) {
         default: die("unexpected token at line %d", t.l);
     }
     int had_index = 0;
+    while (ts[tp].t == T_NL) tp++;
     while (ts[tp].t == T_LB) {
         had_index = 1;
         tp++;
+        while (ts[tp].t == T_NL) tp++;
         int is_slice = 0;
         if (ts[tp].t == T_COLON) is_slice = 1;
         else if (ts[tp].t != T_RB) {
@@ -774,20 +781,27 @@ void comp_prim(Code *c) {
             }
         }
         if (is_slice) {
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
             else emit(c, (Instr){OC_NIL, 0, 0, .num = 0});
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
             else emit(c, (Instr){OC_NIL, 0, 0, .num = 0});
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t == T_COLON) {
                 tp++;
+                while (ts[tp].t == T_NL) tp++;
                 if (ts[tp].t != T_RB) comp_expr(c);
                 else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
             } else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t != T_RB) die("expected ]"); tp++;
             emit(c, (Instr){OC_SLICE, 0, 0, .num = 0});
         } else {
-            do { comp_expr(c); emit(c, (Instr){OC_INDEX, 0, 0, .num = 0}); } while (ts[tp].t == T_CM && (tp++, 1));
+            do { comp_expr(c); while (ts[tp].t == T_NL) tp++; emit(c, (Instr){OC_INDEX, 0, 0, .num = 0}); } while (ts[tp].t == T_CM && (tp++, 1));
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t != T_RB) die("expected ]"); tp++;
         }
     }
@@ -796,6 +810,7 @@ void comp_prim(Code *c) {
 
 static void comp_expr_prec(Code *c, int min_prec) {
     comp_prim(c);
+    while (ts[tp].t == T_NL) tp++;
     while (is_binary_op(ts[tp].t) && op_prec(ts[tp].t) >= min_prec) {
         int op = ts[tp].t; tp++;
         if (op == T_AND || op == T_OR) {
@@ -847,10 +862,12 @@ void comp_if(Code *c) {
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     comp_expr(c); jz[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0, .num = 0});
     comp_block(c); jmp[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0, .num = 0});
+    while (ts[tp].t == T_NL) tp++;
     while (ts[tp].t == T_ELIF) {
         c->code[jz[np-1]].a = c->len; tp++;
         comp_expr(c); jz[np++] = c->len; emit(c, (Instr){OC_JZ, 0, 0, .num = 0});
         comp_block(c); jmp[nj++] = c->len; emit(c, (Instr){OC_JMP, 0, 0, .num = 0});
+        while (ts[tp].t == T_NL) tp++;
     }
     if (ts[tp].t == T_ELSE) { c->code[jz[np-1]].a = c->len; tp++; comp_block(c); }
     else c->code[jz[np-1]].a = c->len;
@@ -871,10 +888,13 @@ void comp_return(Code *c) {
     comp_expr(c);
     int count = 1;
     /* Check for comma-separated expressions (implicit array return) */
+    while (ts[tp].t == T_NL) tp++;
     while (ts[tp].t == T_CM) {
         tp++;
+        while (ts[tp].t == T_NL) tp++;
         comp_expr(c);
         count++;
+        while (ts[tp].t == T_NL) tp++;
     }
     if (count > 1) {
         emit(c, (Instr){OC_MAKE_ARR, count, 0, .num = 0});
@@ -1045,9 +1065,12 @@ static void detect_inline(Fn *f) {
 void comp_fn(Code *c) {
     (void)c;
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
+    while (ts[tp].t == T_NL) tp++;
     if (ts[tp].t != T_ID) die("expected function name");
     char *name = strdup(ts[tp].s); tp++;
+    while (ts[tp].t == T_NL) tp++;
     if (ts[tp].t != T_LP) die("expected ("); tp++;
+    while (ts[tp].t == T_NL) tp++;
     if (fc >= fm) { fm = fm ? fm*2 : 8; fs = realloc(fs, fm*sizeof(Fn)); }
     int fi = fc;
     Fn *f = &fs[fc++]; memset(f, 0, sizeof(Fn));
@@ -1056,17 +1079,23 @@ void comp_fn(Code *c) {
     /* Parse parameters with required defaults */
     char *params[64]; int pa = 0;
     Value def_vals[64];
+    while (ts[tp].t == T_NL) tp++;
     if (ts[tp].t != T_RP) {
         do {
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t != T_ID) die("expected param name");
             params[pa] = strdup(ts[tp].s);
             tp++;
+            while (ts[tp].t == T_NL) tp++;
             if (ts[tp].t != T_ASSIGN) die("parameter '%s' must have a default value", params[pa]);
             tp++;
+            while (ts[tp].t == T_NL) tp++;
             def_vals[pa] = eval_constant_expr();
             pa++;
+            while (ts[tp].t == T_NL) tp++;
         } while (ts[tp].t == T_CM && (tp++, 1));
     }
+    while (ts[tp].t == T_NL) tp++;
     if (ts[tp].t != T_RP) die("expected )"); tp++;
     if (ffind(name) >= 0 && ffind(name) != fi) die("'%s' already defined", name);
 
@@ -1462,19 +1491,25 @@ void comp_stmt(Code *c) {
                         if (slot < 0) slot = var_add(nm);
                         set_var_type(slot, T_ARR_TYPE);
                         tp++; tp++; /* skip x, [ */
+                        while (ts[tp].t == T_NL) tp++;
                         /* Compile start */
                         if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
                         else emit(c, (Instr){OC_NIL, 0, 0, .num = 0});
+                        while (ts[tp].t == T_NL) tp++;
                         if (ts[tp].t != T_COLON) die("expected ':' in slice"); tp++;
+                        while (ts[tp].t == T_NL) tp++;
                         /* Compile stop */
                         if (ts[tp].t != T_COLON && ts[tp].t != T_RB) comp_expr(c);
                         else emit(c, (Instr){OC_NIL, 0, 0, .num = 0});
+                        while (ts[tp].t == T_NL) tp++;
                         /* Compile step (default 1) */
                         if (ts[tp].t == T_COLON) {
                             tp++;
+                            while (ts[tp].t == T_NL) tp++;
                             if (ts[tp].t != T_RB) comp_expr(c);
                             else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
                         } else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
+                        while (ts[tp].t == T_NL) tp++;
                         if (ts[tp].t != T_RB) die("expected ]"); tp++;
                         if (profile_flag) emit(c, (Instr){OC_PROFILE, slot, 0, .num = 3.0});
                         emit(c, (Instr){OC_SLICE_INPLACE, slot, 0, .num = 0});
@@ -2739,25 +2774,6 @@ static Value native_glob(int ac, Value *args) {
     return (Value){ .type = VAL_ARR, .arr = result };
 }
 
-static void wr_le32(int32_t v) {
-    unsigned char buf[4] = { v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff };
-    fwrite(buf, 1, 4, stdout);
-}
-static void wr_le64(int64_t v) {
-    unsigned char buf[8] = { v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff,
-        (v >> 32) & 0xff, (v >> 40) & 0xff, (v >> 48) & 0xff, (v >> 56) & 0xff };
-    fwrite(buf, 1, 8, stdout);
-}
-static void wr_str(const char *s) {
-    int32_t len = s ? (int32_t)strlen(s) : -1;
-    wr_le32(len);
-    if (s) fwrite(s, 1, len, stdout);
-}
-static void wr_arr(const Arr *a) {
-    int32_t len = a ? a->len : -1;
-    wr_le32(len);
-    if (a) for (int j = 0; j < a->len; j++) wr_le64((int64_t)val_num(a->val[j]));
-}
 static const char *op_name(OC op) {
     switch (op) {
         case OC_NUM: return "NUM"; case OC_NIL: return "NIL"; case OC_STR: return "STR";
@@ -2824,28 +2840,6 @@ static void bytecode_stats(void) {
     printf("  Total instructions: %d\n", total_instrs);
     printf("  Total OC_CALL instrs: %d\n", total_calls);
     printf("  Total OC_RET instrs: %d\n", total_ret);
-}
-
-static void dump_binary(Code *c, const char *label) {
-    int32_t count = c ? c->len : 0;
-    wr_str(label);
-    wr_le32(count);
-    if (!c) return;
-    for (int i = 0; i < c->len; i++) {
-        Instr *ins = &c->code[i];
-        wr_le32((int32_t)ins->op);
-        wr_le32(ins->a);
-        wr_le32(ins->b);
-        { int64_t tmp; memcpy(&tmp, &ins->num, 8); wr_le64(tmp); }
-        wr_le32(ins->line);
-        wr_str(ins->name);
-        wr_str(ins->file);
-        wr_arr(ins->arr);
-    }
-}
-static void dump_all_binary(void) {
-    for (int i = 0; i < fc; i++)
-        dump_binary(fs[i].code, fs[i].n);
 }
 
 /* ─── Main ─── */
@@ -2940,17 +2934,50 @@ int main(int a, char **v) {
                 free(rline);
                 /* Empty line — skip */
                 if (!buf[0] || (buf[0] == '\n' && buf[1] == 0)) continue;
-                /* Continue reading until braces balance (multi-line input) */
-                int op = 0, cl = 0;
-                for (char *p = buf; *p; p++) { if (*p == '{') op++; if (*p == '}') cl++; }
-                while (op != cl) {
+                int op = 0, cl = 0, opa = 0, cla = 0, opb = 0, clb = 0;
+                for (char *p = buf; *p; p++) {
+                    if (*p == '{') op++; if (*p == '}') cl++;
+                    if (*p == '(') opa++; if (*p == ')') cla++;
+                    if (*p == '[') opb++; if (*p == ']') clb++;
+                }
+                /* Check if the input has a keyword (if/for/fun) that expects a body */
+                int needs_body = 0;
+                if (op == cl && opa == cla && opb == clb) {
+                    for (char *p = buf; *p; p++) {
+                        int is_boundary = (p == buf || !isalnum((unsigned char)p[-1]));
+                        if (is_boundary && !strncmp(p, "if", 2) && !isalnum((unsigned char)p[2]) && op == 0)
+                            { needs_body = 1; break; }
+                        if (is_boundary && !strncmp(p, "for", 3) && !isalnum((unsigned char)p[3]) && op == 0)
+                            { needs_body = 1; break; }
+                        if (is_boundary && !strncmp(p, "fun", 3) && !isalnum((unsigned char)p[3]) && op == 0)
+                            { needs_body = 1; break; }
+                    }
+                }
+                /* Continue reading until braces, parens, brackets balance and body keywords are satisfied */
+                while (op != cl || opa != cla || opb != clb || needs_body) {
                     rline = readline("  ");
                     if (!rline) break;
                     strcat(buf, rline);
                     strcat(buf, "\n");
                     free(rline);
-                    op = 0; cl = 0;
-                    for (char *p = buf; *p; p++) { if (*p == '{') op++; if (*p == '}') cl++; }
+                    op = 0; cl = 0; opa = 0; cla = 0; opb = 0; clb = 0;
+                    for (char *p = buf; *p; p++) {
+                        if (*p == '{') op++; if (*p == '}') cl++;
+                        if (*p == '(') opa++; if (*p == ')') cla++;
+                        if (*p == '[') opb++; if (*p == ']') clb++;
+                    }
+                    needs_body = 0;
+                    if (op == cl && opa == cla && opb == clb) {
+                        for (char *p = buf; *p; p++) {
+                            int is_boundary = (p == buf || !isalnum((unsigned char)p[-1]));
+                            if (is_boundary && !strncmp(p, "if", 2) && !isalnum((unsigned char)p[2]) && op == 0)
+                                { needs_body = 1; break; }
+                            if (is_boundary && !strncmp(p, "for", 3) && !isalnum((unsigned char)p[3]) && op == 0)
+                                { needs_body = 1; break; }
+                            if (is_boundary && !strncmp(p, "fun", 3) && !isalnum((unsigned char)p[3]) && op == 0)
+                                { needs_body = 1; break; }
+                        }
+                    }
                 }
                 add_history(buf);
             }
@@ -2960,9 +2987,26 @@ int main(int a, char **v) {
                 char line[4096];
                 if (!fgets(line, sizeof(line), stdin)) { printf("\n"); goto done; }
                 strcat(buf, line);
-                int op = 0, cl = 0;
-                for (char *p = buf; *p; p++) { if (*p == '{') op++; if (*p == '}') cl++; }
-                if (op == cl) break;
+                int op = 0, cl = 0, opa = 0, cla = 0, opb = 0, clb = 0;
+                int needs_body = 0;
+                for (char *p = buf; *p; p++) {
+                    if (*p == '{') op++; if (*p == '}') cl++;
+                    if (*p == '(') opa++; if (*p == ')') cla++;
+                    if (*p == '[') opb++; if (*p == ']') clb++;
+                }
+                if (op == cl && opa == cla && opb == clb) {
+                    /* Check for if/for/fun keywords that expect a body */
+                    for (char *p = buf; *p; p++) {
+                        int is_boundary = (p == buf || !isalnum((unsigned char)p[-1]));
+                        if (is_boundary && !strncmp(p, "if", 2) && !isalnum((unsigned char)p[2]) && op == 0)
+                            { needs_body = 1; break; }
+                        if (is_boundary && !strncmp(p, "for", 3) && !isalnum((unsigned char)p[3]) && op == 0)
+                            { needs_body = 1; break; }
+                        if (is_boundary && !strncmp(p, "fun", 3) && !isalnum((unsigned char)p[3]) && op == 0)
+                            { needs_body = 1; break; }
+                    }
+                }
+                if ((op == cl && opa == cla && opb == clb) && !needs_body) break;
                 printf("  "); fflush(stdout);
             }
 #endif

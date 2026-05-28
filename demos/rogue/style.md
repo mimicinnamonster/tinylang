@@ -187,21 +187,35 @@ Never rely on side-effect mutation of a passed object.
 
 ## 5. Control Flow
 
-### 5a. `elif` / `else` on the same line as `}`
+### 5a. `elif` / `else` formatting
 
-TinyLang's parser does **not** skip newlines before checking for `elif` or `else`.
-They must be on the same line as the preceding `}`:
+`elif` and `else` can go on their own line or on the same line as `}` —
+the parser now skips newlines before all keywords. Either style works:
 
 ```tinylang
+// On same line as }
 if mi >= 0 {
     ch = bestiary_glyph(monster_type(mon[mi]))
-} elif ii >= 0 {                           // } and elif on same line
+} elif ii >= 0 {
     if item_is_potion(its[ii]) { ch = "!" } else { ch = "$" }
 } elif t == _W {
     ch = "#"
-} elif t == _F {
-    ch = "."
-} elif t == _S {
+}
+
+// Or on own line
+if x < 0
+{
+    ret -1
+}
+elif x == 0
+{
+    ret 0
+}
+else
+{
+    ret 1
+}
+```
     ch = ">"
 }
 ```
@@ -324,9 +338,7 @@ constants use private function constants instead (see section 2).
 | `arr = []; arr[0] = x` | Out of bounds on empty array. Pre-allocate with `[0] * N`. |
 | `monsters[i][M_ATK]` with `M_ATK` as a top-level constant | Function can't see it. Use `monster_atk(monsters[i])` instead. |
 | `ret arr[idx]` for numeric accessors | Type inference fails (returns `T_ARR_TYPE`). Wrap with `floor()`. |
-| `else` or `elif` on a new line | Parser doesn't find it — "unexpected token" error. |
-| Multi-line `[...]` array literals | Parser treats `T_NL` inside brackets as unexpected. |
-| Nested `else { if {} elif {} }` | Hard to read. Use flat `elif` chain on same line as `}`. |
+| Nested `else { if {} elif {} }` | Hard to read. Use flat `elif` chain. |
 | Global state mutated inside functions | COW creates copies; caller won't see changes. Always reassign. |
 
 ---
@@ -339,7 +351,6 @@ constants use private function constants instead (see section 2).
 | Define-before-use | Include graph = dependency graph |
 | Every parameter needs a default | All functions have explicit defaults |
 | Array elements are `T_UNKNOWN` | `floor()` wrapper on numeric accessors |
-| `elif`/`else` don't skip newlines | Same-line `} elif` formatting |
 | COW + value semantics | Mutate and return; caller reassigns |
 | No structs, no classes | Constructor + accessor + mutator emulation |
 | No closures, no nested functions | Everything is file-level; communication via parameters |

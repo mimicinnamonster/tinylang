@@ -57,7 +57,7 @@ Value arr_item(Arr *a, int i);    // read element (always a->val[i])
 Produces a flat `Tok[]` array from source.
 
 - Skip whitespace, handle `//` comments
-- Every newline becomes `T_NL` (parser skips at entry points)
+- Every newline becomes `T_NL` (parser skips at all transition points)
 - Numbers: `5`, `5.0`, `.5`, `5.`, `0xFF` (hex)
 - Identifiers + keywords (`if`, `elif`, `else`, `for`, `fun`, `ret`, `nil`, `include`)
 - Strings: `"..."` with escape sequences (`\n`, `\t`, `\\`, `\"`, `\xHH`)
