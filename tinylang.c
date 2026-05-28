@@ -51,7 +51,7 @@ typedef enum {
     OC_OP, OC_ADD_NUM, OC_SUB_NUM, OC_MUL_NUM, OC_DIV_NUM, OC_UNARY, OC_INDEX,
     OC_CALL, OC_TCO,
     OC_JZ, OC_JMP, OC_RET, OC_POP,
-    OC_LVALS, OC_PUSH, OC_LVALS_PUSH, OC_SLICE,
+    OC_LVALS, OC_PUSH, OC_SLICE,
     OC_PRINT, OC_INPUT,
     OC_DUP, OC_JNZ,
     OC_PUSH_ALL,
@@ -1494,44 +1494,6 @@ void comp_stmt(Code *c) {
                                     }
                                 }
                             }
-                        } else {
-                            /* Push detection for indexed LHS: var [...] + [...] */
-                            int pn = tp;
-                            while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                            is_push = ts[pn].t == T_ID && !strcmp(ts[pn].s, nm);
-                            if (is_push) {
-                                pn++;
-                                /* Skip past the index brackets (same count as compiled LHS) */
-                                for (int k = 0; k < idx_count && is_push; k++) {
-                                    while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                                    if (ts[pn].t != T_LB) { is_push = 0; break; }
-                                    pn++;
-                                    int bd = 1;
-                                    while (bd > 0 && ts[pn].t != T_EOF) {
-                                        if (ts[pn].t == T_LB || ts[pn].t == T_LP) bd++;
-                                        if (ts[pn].t == T_RB || ts[pn].t == T_RP) bd--;
-                                        pn++;
-                                    }
-                                }
-                                if (is_push) {
-                                    while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                                    is_push = ts[pn].t == T_PL;
-                                    if (is_push) {
-                                        pn++; while (ts[pn].t == T_NL || ts[pn].t == T_SEMI) pn++;
-                                        is_push = is_bracket_literal(pn);
-                                        if (is_push) {
-                                            int scan = pn + 1, bd = 1;
-                                            while (bd > 0 && ts[scan].t != T_EOF) {
-                                                if (ts[scan].t == T_LP || ts[scan].t == T_LB) bd++;
-                                                if (ts[scan].t == T_RP || ts[scan].t == T_RB) bd--;
-                                                scan++;
-                                            }
-                                            while (ts[scan].t == T_NL || ts[scan].t == T_SEMI) scan++;
-                                            is_push = !is_binary_op(ts[scan].t);
-                                        }
-                                    }
-                                }
-                            }
                         }
                         if (is_push) {
                         int slot = var_find(nm);
@@ -1551,13 +1513,8 @@ void comp_stmt(Code *c) {
                         tp++; tp++;  /* skip +, [ */
                         do {
                             comp_expr(c);
-                            if (idx_count > 0) {
-                                if (profile_flag) emit(c, (Instr){OC_PROFILE, slot, 0, .num = 3.0});
-                                emit(c, (Instr){OC_LVALS_PUSH, slot, idx_count, .num = 0});
-                            } else {
-                                if (profile_flag) emit(c, (Instr){OC_PROFILE, slot, 0, .num = 3.0});
-                                emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
-                            }
+                            if (profile_flag) emit(c, (Instr){OC_PROFILE, slot, 0, .num = 3.0});
+                            emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
                         } while (ts[tp].t == T_CM && (tp++, 1));
                         if (ts[tp].t != T_RB) die("expected ]"); tp++;
                     } else {
@@ -1776,30 +1733,18 @@ op_index: {
         if (res.type == VAL_ARR) aretain(res.arr);
         arelease(arr.arr); istk[++isp] = res;
     } else if (idx.type == VAL_ARR) {
-        if (idx.arr && idx.arr->len > 0 && is_string_arr(idx.arr)) {
-            /* String key → hash-based indexing */
-            if (!arr.arr || arr.arr->len == 0) die("cannot index into empty array");
-            unsigned int h = get_arr_hash(idx.arr);
-            int ii = (int)(h % (unsigned int)arr.arr->len);
-            Value res = arr.arr->val[ii];
-            if (res.type == VAL_ARR) aretain(res.arr);
-            arelease(arr.arr);
-            arelease(idx.arr);
-            istk[++isp] = res;
-        } else {
-            /* Generic array → chain of numeric indices */
-            Value cur = arr;
-            if (idx.arr) for (int j = 0; j < idx.arr->len; j++) {
-                int ii = (int)val_num(idx.arr->val[j]);
-                if (cur.type != VAL_ARR || !cur.arr || ii < 0 || ii >= cur.arr->len) die("index out of bounds");
-                Value next = cur.arr->val[ii];
-                if (next.type == VAL_ARR) aretain(next.arr);
-                if (cur.type == VAL_ARR) arelease(cur.arr);
-                cur = next;
-            }
-            if (idx.type == VAL_ARR) arelease(idx.arr);
-            istk[++isp] = cur;
+        /* Generic array → chain of numeric indices */
+        Value cur = arr;
+        if (idx.arr) for (int j = 0; j < idx.arr->len; j++) {
+            int ii = (int)val_num(idx.arr->val[j]);
+            if (cur.type != VAL_ARR || !cur.arr || ii < 0 || ii >= cur.arr->len) die("index out of bounds");
+            Value next = cur.arr->val[ii];
+            if (next.type == VAL_ARR) aretain(next.arr);
+            if (cur.type == VAL_ARR) arelease(cur.arr);
+            cur = next;
         }
+        if (idx.type == VAL_ARR) arelease(idx.arr);
+        istk[++isp] = cur;
     } else die("index must be number or array");
     ip++; goto dispatch;
 }
@@ -1820,18 +1765,10 @@ op_lvals: {
             if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
             sp = &sp->arr->val[ii];
         } else if (indices[j].type == VAL_ARR) {
-            if (indices[j].arr && indices[j].arr->len > 0 && is_string_arr(indices[j].arr)) {
-                /* String key → hash-based indexing */
-                if (sp->type != VAL_ARR || !sp->arr || sp->arr->len == 0) die("cannot index into empty array");
-                unsigned int h = get_arr_hash(indices[j].arr);
-                int ii = (int)(h % (unsigned int)sp->arr->len);
+            for (int k = 0; k < indices[j].arr->len; k++) {
+                int ii = (int)val_num(indices[j].arr->val[k]);
+                if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
                 amake_uniq(sp); sp = &sp->arr->val[ii];
-            } else {
-                for (int k = 0; k < indices[j].arr->len; k++) {
-                    int ii = (int)val_num(indices[j].arr->val[k]);
-                    if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
-                    amake_uniq(sp); sp = &sp->arr->val[ii];
-                }
             }
         } else die("index must be number or array");
     }
@@ -1860,55 +1797,6 @@ op_push: {
     vassign(&slot_val->arr->val[len], elem);
     slot_val->arr->len = len + 1;
     if (elem.type == VAL_ARR) arelease(elem.arr);
-    ip++; goto dispatch;
-}
-
-op_lvals_push: {
-    err_line = c->code[ip].line; err_file = c->code[ip].file;
-    Instr *ins = &c->code[ip];
-    int slot = ins->a, depth = ins->b;
-    Value elem = istk[isp--];
-    Value indices[16];
-    for (int j = depth-1; j >= 0; j--) indices[j] = istk[isp--];
-    Value *sp = &cs->v[slot];
-    /* Navigate to the target bucket (same logic as op_lvals) */
-    for (int j = 0; j < depth; j++) {
-        amake_uniq(sp);
-        if (indices[j].type == VAL_NUM) {
-            int ii = (int)val_num(indices[j]);
-            if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
-            sp = &sp->arr->val[ii];
-        } else if (indices[j].type == VAL_ARR) {
-            if (indices[j].arr && indices[j].arr->len > 0 && is_string_arr(indices[j].arr)) {
-                if (sp->type != VAL_ARR || !sp->arr || sp->arr->len == 0) die("cannot index into empty array");
-                unsigned int h = get_arr_hash(indices[j].arr);
-                int ii = (int)(h % (unsigned int)sp->arr->len);
-                amake_uniq(sp); sp = &sp->arr->val[ii];
-            } else {
-                for (int k = 0; k < indices[j].arr->len; k++) {
-                    int ii = (int)val_num(indices[j].arr->val[k]);
-                    if (sp->type != VAL_ARR || !sp->arr || ii < 0 || ii >= sp->arr->len) die("index out of bounds");
-                    amake_uniq(sp); sp = &sp->arr->val[ii];
-                }
-            }
-        } else die("index must be number or array");
-    }
-    /* Now sp points to the bucket — push elem into it */
-    if (sp->type != VAL_ARR) die("cannot push into non-array");
-    if (!sp->arr) { sp->arr = aalloc(4); sp->arr->len = 0; }
-    else amake_uniq(sp);
-    int len = sp->arr->len;
-    if (len >= sp->arr->cap) {
-        int old_cap = sp->arr->cap;
-        sp->arr->cap = sp->arr->cap ? sp->arr->cap * 2 : 4;
-        sp->arr->val = realloc(sp->arr->val, sp->arr->cap * sizeof(Value));
-        memset(sp->arr->val + old_cap, 0, (sp->arr->cap - old_cap) * sizeof(Value));
-    }
-    vassign(&sp->arr->val[len], elem);
-    sp->arr->len = len + 1;
-    if (elem.type == VAL_ARR) arelease(elem.arr);
-    for (int j = 0; j < depth; j++)
-        if (indices[j].type == VAL_ARR) arelease(indices[j].arr);
     ip++; goto dispatch;
 }
 
@@ -2264,7 +2152,6 @@ dispatch:
     case OC_INDEX: goto op_index;
     case OC_LVALS: goto op_lvals;
     case OC_PUSH: goto op_push;
-    case OC_LVALS_PUSH: goto op_lvals_push;
     case OC_SLICE: goto op_slice;
     case OC_CALL: goto op_call;
     case OC_TCO: goto op_tco;
@@ -2869,7 +2756,7 @@ static const char *op_name(OC op) {
         case OC_UNARY: return "UNARY"; case OC_INDEX: return "INDEX"; case OC_CALL: return "CALL";
         case OC_TCO: return "TCO"; case OC_JZ: return "JZ"; case OC_JMP: return "JMP";
         case OC_RET: return "RET"; case OC_POP: return "POP"; case OC_LVALS: return "LVALS";
-        case OC_PUSH: return "PUSH"; case OC_LVALS_PUSH: return "LVALS_PUSH"; case OC_SLICE: return "SLICE";
+        case OC_PUSH: return "PUSH"; case OC_SLICE: return "SLICE";
         case OC_PRINT: return "PRINT"; case OC_INPUT: return "INPUT"; case OC_DUP: return "DUP";
         case OC_JNZ: return "JNZ"; case OC_PUSH_ALL: return "PUSH_ALL"; case OC_SLICE_INPLACE: return "SLICE_IP";
         case OC_DESTRUCTURE: return "DEST"; case OC_MUTATE_NUM: return "MUTATE"; case OC_CLEAR_SLOT: return "CLEAR"; case OC_PROFILE: return "PROF";
@@ -2904,7 +2791,7 @@ static void bytecode_stats(void) {
             } else if (ins->op == OC_VAR_SLOT || ins->op == OC_STORE_SLOT ||
                        ins->op == OC_CLEAR_SLOT || ins->op == OC_MUTATE_NUM) {
                 printf(" slot=%d", ins->a);
-            } else if (ins->op == OC_LVALS || ins->op == OC_PUSH || ins->op == OC_LVALS_PUSH ||
+            } else if (ins->op == OC_LVALS || ins->op == OC_PUSH ||
                        ins->op == OC_PUSH_ALL || ins->op == OC_SLICE_INPLACE) {
                 printf(" slot=%d", ins->a);
             } else if (ins->op == OC_RET) {

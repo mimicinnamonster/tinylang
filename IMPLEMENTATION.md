@@ -789,114 +789,6 @@ This means all mutation paths — indexed assignment (`arr[i] = x`), push
 (`arr = arr + [x]`), push-all, and lvalue chains — automatically flatten views
 before modifying them, preserving value semantics transparently.
 
-### 6.6 String-Keyed Hashmaps
-
-When an array is indexed by a string (e.g. `arr["key"]`), the array acts as a
-fixed-size hashmap. The string's FNV-1a hash is computed modulo the array
-length to determine the index:
-
-```c
-#define FNV32_BASE  ((unsigned int) 0x811c9dc5)
-#define FNV32_PRIME ((unsigned int) 0x01000193)
-
-unsigned int fnv1a_hash(Arr *a) {
-    unsigned int hash = FNV32_BASE;
-    for (int i = 0; i < a->len; i++)
-        hash = (hash * FNV32_PRIME) ^ (unsigned int)val_num(a->val[i]);
-    return hash;
-}
-```
-
-This is the same algorithm Git uses in its `hashmap.c` `strhash()` function.
-
-#### Runtime Detection
-
-String-keyed access is detected in `op_index` and `op_lvals` at runtime.
-When the index value is an array (`VAL_ARR`) and `is_string_arr()` returns
-true (all bytes are printable ASCII or common whitespace), the VM computes
-`hash(key) % len(array)` and uses that as the index. Non-string arrays
-continue to use the dynamic chain-of-indices behavior.
-
-```c
-op_index: {
-    // ...
-    } else if (idx.type == VAL_ARR) {
-        if (idx.arr && idx.arr->len > 0 && is_string_arr(idx.arr)) {
-            /* String key → hash-based indexing */
-            if (!arr.arr || arr.arr->len == 0)
-                die("cannot index into empty array");
-            unsigned int h = get_arr_hash(idx.arr);
-            int ii = (int)(h % (unsigned int)arr.arr->len);
-            // ... return arr.arr->val[ii]
-        } else {
-            /* Generic array → chain of numeric indices */
-            // ... existing multi-index chain logic
-        }
-    }
-}
-```
-
-The same distinction applies in `op_lvals` for assignment, enabling
-`arr["key"] = val` to use hash-based writes.
-
-#### Hash Caching
-
-The `Arr` struct has a `hash_cache` field that fits in existing struct
-padding at zero size cost. The first time a string is used as a key, its
-hash is computed and stored. Subsequent accesses use the cached value,
-making repeated `arr["foo"]` in loops O(1) after the first iteration:
-
-```c
-unsigned int get_arr_hash(Arr *a) {
-    if (!a->hash_cache)
-        a->hash_cache = fnv1a_hash(a);
-    return a->hash_cache;
-}
-```
-
-The sentinel works because FNV-1a can never produce `0` — `FNV32_BASE`
-(`0x811C9DC5`) has bit 31 set, XOR with byte values only affects bits 0-7,
-and multiplication by the odd prime `FNV32_PRIME` can never yield zero
-from a non-zero input.
-
-Caching is per `Arr` object. String literals compile to persistent `OC_STR`
-instructions whose `Arr*` lives for the entire program run, so their hash
-is computed at most once. Variables holding strings also cache on their
-underlying `Arr`, so loops with stable string variables pay the hash cost
-only on the first iteration.
-
-#### Collision Model
-
-The array is a fixed-size hash table with **no collision resolution** — if
-two keys map to the same bucket, the last write wins. Users who need
-collision-safe storage should use the append pattern:
-
-```tinylang
-map = [[]] * 100          // each bucket is an array
-map["foo"] += ["val"]    // push into bucket
-```
-
-The `+=` compound assignment desugars to `arr["key"] = arr["key"] + [val]`,
-which goes through the standard push optimization. Even if `"foo"` and
-`"bar"` collide, both values accumulate in the same bucket array.
-
-#### Compound Assignment with String Indices
-
-When the compiler encounters `arr["key"] += expr`, it performs the standard
-token rewrite to `arr["key"] = arr["key"] + expr`. The copy of T_STR tokens
-during the rewrite properly retains the `Arr*` reference count to prevent
-double-free during cleanup:
-
-```c
-for (int i = 0; i < lhs; i++) {
-    ts[tp + 1 + i] = ts[name_tp + i];
-    if (ts[tp + 1 + i].t == T_ID && ts[tp + 1 + i].s)
-        ts[tp + 1 + i].s = strdup(ts[tp + 1 + i].s);
-    else if (ts[tp + 1 + i].t == T_STR && ts[tp + 1 + i].s)
-        aretain((Arr*)ts[tp + 1 + i].s);
-}
-```
-
 ---
 
 ## 7. Line Count
@@ -906,7 +798,7 @@ for (int i = 0; i < lhs; i++) {
 | Component | Lines |
 |-----------|-------|
 | Includes, types, enums, globals | ~65 |
-| Value + Array helpers (incl. view support, FNV-1a hash) | ~100 |
+| Value + Array helpers (incl. view support) | ~100 |
 | `apply()` (operators) | ~85 |
 | `die()` (error handling) | ~50 |
 | `print_val()`, `truthy()`, `veq()` | ~40 |
@@ -915,8 +807,7 @@ for (int i = 0; i < lhs; i++) {
 | Lexer | ~100 |
 | Compiler — all functions (incl. type inference, destructure detection,
   default params via `eval_constant_expr()`) | ~395 |
-| VM executor — exec() with goto-to-switch dispatch (incl. OC_DESTRUCTURE,
-  string-keyed hashmap indexing) | ~365 |
+| VM executor — exec() with goto-to-switch dispatch (incl. OC_DESTRUCTURE) | ~365 |
 | Main / REPL | ~70 |
 | Include handling + expression eval | ~60 |
 | Native builtins (`key()`, terminal raw mode, `atexit` restore) | ~30 |

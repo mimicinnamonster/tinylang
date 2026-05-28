@@ -65,13 +65,6 @@ copy[0][1] = 99
 print(orig[0][1])                      // 2 (unchanged)
 print(copy[0][1])                      // 99
 
-// Hashmaps: index arrays with string keys (FNV-1a hash, modulo bucket count)
-map = [[]] * 100
-map["foo"] += ["bar"]                 // collision-safe append
-map["foo"] += ["baz"]
-print(#map["foo"])                    // 2 (two values at "foo"'s bucket)
-print(map["hello"])                   // [] (empty bucket — no value set)
-
 // Array destructuring: unpack any array into variables
 x, y = [10, 20]
 print(x)                               // 10
@@ -96,12 +89,10 @@ A full language in a single C file. No required dependencies. Compiles in <1s.
 | **Pure C99** | ✓ Compiles `-std=c99 -pedantic` | ✗ | ✗ | ✓ |
 | **Predictable performance** | ✓ No JIT warmup, no GC pauses, no runtime dispatch | ✗ GC pauses, runtime type checks | ✗ Warmup-dependent, GC pauses | ✓ Always fast |
 | **Array building** | O(1) amortized push | O(n) amortized | O(1) push, dynamic arrays | ✗ Manual |
-| **Hashmaps performance** | 1× (baseline) | **3–11× slower** | **1–2× faster** | **5–100× faster** |
+
 | **Float math throughput** | 1× (baseline) | **~5× slower** | **~1.5× faster** | **~10× faster** |
 | **Zero-copy slicing** | ✓ O(1) view, share backing store | ✗ O(n) full copy | ✗ O(n) full copy | ✓ O(1) pointer arithmetic |
 | **Tail call optimization** | ✓ Guaranteed infinite recursion | ✗ No TCO | ✗ No TCO | ✓~ Compiler-dependent |
-| **Hash caching** | ✓ Auto-cached on `Arr` | ✗ Re-hashes every access | ✓~ JIT may inline | ✓ Manual
-
 
 ## Table of Contents
 
@@ -144,10 +135,8 @@ A full language in a single C file. No required dependencies. Compiles in <1s.
   - [8. Parameter Binding by Slot Index](#8-parameter-binding-by-slot-index)
   - [9. Pre-Sized Scopes with Slot Initialization](#9-pre-sized-scopes-with-slot-initialization)
   - [10. Zero-Copy Slice Views](#10-zero-copy-slice-views)
-  - [11. Hash Caching (String Keys)](#11-hash-caching-string-keys)
-  - [12. String-Keyed Hashmap Access (OC_LVALS_PUSH)](#12-string-keyed-hashmap-access-oc_lvals_push)
-  - [13. Function Inlining (Compile-Time)](#13-function-inlining-compile-time)
-  - [14. Move-Semantics COW Avoidance](#14-move-semantics-cow-avoidance)
+  - [11. Function Inlining (Compile-Time)](#11-function-inlining-compile-time)
+  - [12. Move-Semantics COW Avoidance](#12-move-semantics-cow-avoidance)
   - [Cumulative Optimization Impact](#cumulative-optimization-impact)
 - [Performance Comparisons](#performance-comparisons-tinylang-vs-c-vs-nodejs-vs-python)
   - [Full-Size Results](#full-size-results)
@@ -221,8 +210,7 @@ TinyLang has exactly **three types: `number`, `array`, and `string`**.
 - **`string`** — a byte array (implemented as an `array` under the hood with a
   marker flag). All array operations work on strings: indexing, slicing,
   concatenation, length, and push optimization. Strings are distinguishable
-  from generic arrays at compile time for correct hashmap-vs-index-chain
-  distinction and for string-specific formatting in `print()`.
+  from generic arrays at compile time for string-specific formatting in `print()`.
 
 ```tinylang
 // Numbers
@@ -247,9 +235,7 @@ empty = []                   // empty array = nil/false
 Strings are a distinct type implemented as byte arrays under the hood.
 `"abc"` creates a string containing bytes `[97, 98, 99]`. All array operations
 work on strings: indexing, slicing, concatenation, length, push, and repetition.
-The `print` function displays strings as text rather than `[value, ...]`, and
-string-keyed hashmap access uses FNV-1a hashing (`arr["key"]`) rather than
-multi-index chaining.
+The `print` function displays strings as text rather than `[value, ...]`.
 
 `print` does **not** add a trailing newline — include `\n` in your strings
 when you want one.
@@ -464,7 +450,7 @@ All comparisons return `1` (truthy) or `[]` (falsey).
 
 | Operator | Meaning |
 |----------|---------|
-| `=` | Equal (assignment in statement context) |
+| `==` | Equal |
 | `!=` | Not equal |
 | `<` | Less than |
 | `>` | Greater than |
@@ -474,20 +460,20 @@ All comparisons return `1` (truthy) or `[]` (falsey).
 Array equality is **deep** — element-by-element recursive comparison.
 
 ```tinylang
-print(5 = 5)          // 1
-print(5 = 6)          // []
-print(5 < 6)          // 1
-print(5 > 3)          // 1
-print(3 <= 5)         // 1
-print(5 <= 5)         // 1
-print([1, 2] = [1, 2]) // 1 (deep equal)
-print([1, 2] = [1, 3]) // []
-print(5 = "hello")    // [] (mixed type = not equal)
+print(5 == 5)          // 1
+print(5 == 6)          // []
+print(5 < 6)           // 1
+print(5 > 3)           // 1
+print(3 <= 5)          // 1
+print(5 <= 5)          // 1
+print([1, 2] == [1, 2]) // 1 (deep equal)
+print([1, 2] == [1, 3]) // []
+print(5 == "hello")    // [] (mixed type = not equal)
 ```
 
-> **Note:** `=` means **assignment** when it appears at the start of a statement
-> (`x = 5`), but **comparison** everywhere else (`if x = 5 { }`, `print(x = 5)`).
-> This is context-determined at compile time.
+> **Note:** `=` is always **assignment** (`x = 5`). `==` is the equality
+> **comparison** operator (`if x == 5 { }`). These are distinct tokens — the
+> lexer produces `T_ASSIGN` for `=` and `T_EQ` for `==`.
 
 #### Logical (short-circuit)
 
@@ -534,7 +520,7 @@ all left-associative):
 | 8 | `+` `-` | Additive |
 | 7 | `<<` `>>` | Shift |
 | 6 | `<` `>` `<=` `>=` | Relational |
-| 5 | `=` `!=` | Equality |
+| 5 | `==` `!=` | Equality |
 | 4 | `&` | Bitwise AND |
 | 3 | `^` | Bitwise XOR |
 | 2 | `\|` | Bitwise OR |
@@ -548,7 +534,7 @@ operator. Parentheses override.
 print(5 + 3 * 2)        // 11   (5 + 6)
 print((5 + 3) * 2)      // 16   (8 * 2)
 print(10 - 4 <= 3 * 2)  // 1    (6 <= 6)
-print(5 + 3 > 6 = 4 + 2 > 5) // 1  ((8>6) = (6>5))
+print(5 + 3 > 6 == 4 + 2 > 5) // 1  ((8>6) == (6>5))
 print(1 + 2 * 3 > 4 + 5) // []  (7 > 9)
 ```
 
@@ -806,7 +792,7 @@ neg_repeat = [5] * (-1)  // []
 
 ```tinylang
 n = nil
-print(n = [])            // 1
+print(n == [])           // 1
 print(n != [])           // []
 print(!n)                // 1
 ```
@@ -847,75 +833,6 @@ dyn[dyn_idx] = 99
 print(dyn[0][1])        // 99
 ```
 
-### Hashmaps (String Keys)
-
-Any array can be used as a hashmap by indexing with a string key.
-The string's bytes are hashed using the **FNV-1a** algorithm (same as Git's
-`strhash`) and `hash % len(array)` determines the index.
-
-```tinylang
-// Use an array as a hashmap
-map = [0, 0, 0, 0, 0]
-map["hello"] = 42
-print(map["hello"])     // 42
-
-// Same key always maps to same slot (deterministic)
-print(map["hello"])     // 42
-```
-
-#### Buckets
-
-The array is a fixed-size hash table. Each slot is a **bucket**.
-Different keys may hash to the same bucket — collisions are resolved by
-**last write wins**:
-
-```tinylang
-coll = [0, 0]
-coll["hello"] = 111
-coll["world"] = 222    // overwrites if same bucket as "hello"
-print(coll[1])         // 222 ("world" was written last)
-```
-
-#### Collision-Safe Append Pattern
-
-To store multiple values per key without losing data on collision,
-initialize each bucket as an array and use `+=` to append:
-
-```tinylang
-// Pre-allocate buckets
-map = [[]] * 100
-
-// Append to the bucket
-map["foo"] += ["first"]
-map["foo"] += ["second"]
-map["bar"] += ["other"]
-
-// If "foo" and "bar" collide, their values accumulate:
-// map[hash("foo") % 100] → ["first", "second", "other"]
-```
-
-The `+=` desugars to `arr["key"] = arr["key"] + [val]`, which triggers the
-push optimization — the value is appended in-place to the bucket's array.
-
-#### Supported Syntax
-
-```tinylang
-// Read / Write
-val = arr["key"]
-arr["key"] = val
-
-// Multi-index (chained hash)
-arr["a", "b"]       // arr[hash("a")][hash("b")]
-arr["a"]["b"]       // same with chained brackets
-
-// Compound assignment
-arr["key"] += [val]  // push into bucket
-
-// Variable key
-k = input()
-arr[k] = val
-```
-
 ### Functions
 
 ```tinylang
@@ -937,14 +854,14 @@ print(#noop())           // 0
 
 // Recursion
 fun fact(n=0) {
-    if n = 0 { ret 1 }
+    if n == 0 { ret 1 }
     ret n * fact(n - 1)
 }
 print(fact(5))           // 120
 
 // Tail recursion (TCO — no stack growth)
 fun fact_tco(n=0, acc=1) {
-    if n = 0 { ret acc }
+    if n == 0 { ret acc }
     ret fact_tco(n - 1, n * acc)
 }
 print(fact_tco(1000, 1)) // inf (no stack overflow)
@@ -996,7 +913,7 @@ Key rules:
 fun classify(n=0) {
     if n < 0 {
         ret -1
-    } elif n = 0 {
+    } elif n == 0 {
         ret 0
     } else {
         ret 1
@@ -1299,8 +1216,8 @@ print(#split(",a,b", ",")[0] == 0)  // 1
 
 ##### `hash(string)`
 
-Returns the FNV-1a hash of a string — the same hash function used internally
-for array key hashing. Deterministic: same string always produces the same hash
+Returns the FNV-1a hash of a string using the FNV-1a algorithm.
+Deterministic: same string always produces the same hash
 value (unsigned 32-bit range).
 
 ```tinylang
@@ -1378,7 +1295,7 @@ naturally evolves toward.  Some patterns arise from compiler constraints
   ```tinylang
   if x < 0 {
       ret -1
-  } elif x = 0 {           // } and elif on same line
+  } elif x == 0 {          // } and elif on same line
       ret 0
   } else {
       ret 1
@@ -1489,14 +1406,6 @@ the same optimisation:
 arr = []
 arr += [10]
 arr += [20, 30]
-```
-
-For hashmap (string-keyed) arrays, the same technique works with `+=`:
-
-```tinylang
-map = [[]] * 100
-map["foo"] += ["bar"]        // collision-safe append, O(1) amortised
-map["foo"] += ["baz"]
 ```
 
 #### Mutate a Table (Struct) with a Function
@@ -1628,27 +1537,93 @@ fun map(fn_name="", list=[], result=[]) {
 }
 ```
 
-#### Hashmaps (String Keys)
+#### Hashmaps (String Keys via `hash()`)
 
-Any array can be used as a hashmap by indexing with a string key.  The
-string's bytes are hashed with FNV-1a and `hash % len(array)` determines
-the index.  Hashes are cached on the `Arr` struct — repeated access with
-the same key is O(1) after the first hash computation:
+TinyLang does not have built-in string-keyed array indexing (`arr["foo"]`).
+Instead, use the `hash()` built-in function to compute an FNV-1a hash of a
+string and index into an array manually:
+
+```tinylang
+arr = [0, 0, 0, 0, 0]
+idx = hash("hello") % #arr
+arr[idx] = 42
+print(arr[hash("hello") % #arr])   // 42
+```
+
+**Deterministic:** the same string always hashes to the same value, so
+`hash("hello") % N` always produces the same index for a given N.
+
+**Collisions:** different strings may hash to the same bucket (index).
+With a simple flat array, the last write wins:
 
 ```tinylang
 map = [0, 0, 0, 0, 0]
-map["hello"] = 42
-print(map["hello"])     // 42
+map[hash("hello") % #map] = 10
+map[hash("world") % #map] = 20  // overwrites if same bucket
 ```
 
-For collision-safe storage, initialise each bucket as an empty array and
-use the append idiom:
+**Collision-safe storage:** use an array of arrays (`[[]] * N`) and
+store multiple values per bucket:
 
 ```tinylang
-map = [[]] * 100
-map["foo"] += ["bar"]
-map["foo"] += ["baz"]
+buckets = [[]] * 5
+b = hash("foo") % #buckets
+buckets[b] = buckets[b] + [10]   // push into bucket
+buckets[b] = buckets[b] + [20]
 ```
+
+**Full hashmap with key-value pairs and chaining:**
+
+```tinylang
+fun hashmap_new(n=0) { ret [[]] * n }
+
+fun _hm_find(bucket=[], key="") {
+    i = 0
+    for i < #bucket {
+        if bucket[i][0] == key { ret i }
+        i = i + 1
+    }
+    ret -1
+}
+
+fun hashmap_set(map=[], key="", val=0) {
+    n = #map
+    if n == 0 { ret map }
+    b = hash(key) % n
+    bucket = map[b]
+    j = _hm_find(bucket, key)
+    if j >= 0 {
+        bucket[j][1] = val          // overwrite existing key
+        map[b] = bucket
+    } else {
+        map[b] = bucket + [[key, val]]  // append new pair
+    }
+    ret map
+}
+
+fun hashmap_get(map=[], key="") {
+    n = #map
+    if n == 0 { ret [] }
+    b = hash(key) % n
+    j = _hm_find(map[b], key)
+    if j >= 0 { ret map[b][j][1] }
+    ret []
+}
+
+// Usage
+m = hashmap_new(10)
+m = hashmap_set(m, "name", 42)
+m = hashmap_set(m, "name", 100)     // overwrite
+print(hashmap_get(m, "name"))       // 100
+```
+
+Key concepts:
+- `hash(key) % N` maps any string to a deterministic bucket index
+- Each bucket is an array of `[key, value]` pairs (chaining for collisions)
+- `_hm_find` searches a bucket linearly for a matching key
+- On overwrite, COW makes a copy of the bucket; write it back to `map[b]`
+- The `hash()` value and the number of buckets determine the memory/performance
+trade-off: more buckets → fewer collisions → faster lookups
 
 ### OOP Style
 
@@ -2122,13 +2097,13 @@ stack frame.
 ```tinylang
 // Tail-recursive: never overflows the C stack
 fun countdown(n=0) {
-    if n = 0 { ret 0 }
+    if n == 0 { ret 0 }
     ret countdown(n - 1)   // TCO
 }
 
 // NOT tail-recursive: still uses C stack
 fun broken(n=0) {
-    if n = 0 { ret 0 }
+    if n == 0 { ret 0 }
     ret 1 + broken(n - 1)  // needs to multiply after ret
 }
 ```
@@ -2229,89 +2204,7 @@ chains — automatically flatten views without any special-case awareness.
   views still point to old data
 - Strided slices (`step != 1`) — still O(n) copy
 
-### 11. Hash Caching (String Keys)
-
-When a string is used as a hashmap key, its FNV-1a hash is computed **once**
-and cached on the `Arr` struct. A loop using the same string key pays the
-hash cost only on the first iteration:
-
-```c
-unsigned int get_arr_hash(Arr *a) {
-    if (!a->hash_cache)
-        a->hash_cache = fnv1a_hash(a);
-    return a->hash_cache;
-}
-```
-
-The cache field fits in existing struct padding — **zero memory overhead**.
-The sentinel works because FNV-1a can never produce `0` (the base value
-`0x811C9DC5` has bit 31 set, and no sequence of XOR+multiply can clear it).
-
-```tinylang
-key = "hello"
-i = 0
-for i < 10000 {
-    print(map[key])     // hash computed once, cached for 9999 iterations
-    i = i + 1
-}
-
-// Multiple strings each cache their own hash
-j = 0
-for j < 10000 {
-    print(map["foo"])   // hash("foo") computed once
-    print(map["bar"])   // hash("bar") computed once
-    j = j + 1
-}
-// Total: 2 hash computations, not 20000
-```
-
-**Impact:** O(n) → O(1) on repeated key access. The hash is cached on the
-`Arr*` embedded in each `OC_STR` instruction (for literals) or on the string
-variable's `Arr*` (for runtime strings). In either case, as long as the same
-`Arr` object is reused, the cached hash is returned.
-
-### 12. String-Keyed Hashmap Access (`OC_LVALS_PUSH`)
-
-When the compiler detects `arr["key"] += [val]` (indexed LHS + bracket
-literal RHS), it emits the fused opcode `OC_LVALS_PUSH` instead of the
-general assignment path.
-
-**Without optimization:** The compound assignment desugars to
-`arr["key"] = arr["key"] + [val]`. For a bucket with N elements, the `+`
-concatenates two arrays — O(N) per operation, O(N²) total for N appends.
-
-**With OC_LVALS_PUSH:** The opcode navigates through the index (hash-based
-or numeric) to find the target bucket, then pushes the element in-place —
-O(1) amortized per operation:
-
-```c
-op_lvals_push: {
-    // 1. Navigate to the bucket (same logic as OC_LVALS)
-    for (int j = 0; j < depth; j++) {
-        amake_uniq(sp);
-        // ... hash-based or numeric indexing ...
-        sp = &sp->arr->val[ii];
-    }
-    // 2. Push element into bucket (same logic as OC_PUSH)
-    int len = sp->arr->len;
-    if (len >= sp->arr->cap) { /* grow */ }
-    vassign(&sp->arr->val[len], elem);
-    sp->arr->len = len + 1;
-}
-```
-
-```tinylang
-map = [[]] * 100
-for i < 50000 {
-    map["batch"] += [i]   // OC_LVALS_PUSH: O(1) amortized
-    i = i + 1
-}
-```
-
-**Impact:** 50k appends went from **3.6s (O(N²) concat) → 0.009s (O(N) push)**
-— a **400× speedup**.
-
-### 13. Function Inlining (Compile-Time)
+### 11. Function Inlining (Compile-Time)
 
 The compiler detects simple function patterns at compile time and replaces the
 call with inline instructions, completely eliminating the dispatch overhead
@@ -2383,23 +2276,11 @@ Player updates, monster movement, and level mutations all benefit.
 
 #### Runtime detection
 
-Hash-based indexing is detected **at runtime** in both `OC_INDEX` (reads) and
-`OC_LVALS`/`OC_LVALS_PUSH` (writes). When the index value is an array whose
-elements are all printable ASCII bytes (a "string"), the VM computes
-`hash(key) % len(array)` and uses that as the index. Non-string arrays
-continue to use the existing chain-of-numeric-indices behavior:
+Indexing with an array of numbers chains through multiple indices:
 
 ```tinylang
-arr["abc"]     // hash-based (printable ASCII)
-arr[[0, 1]]    // chain-based (non-printable numbers)
-
-// Variables work too
-key = "hello"
-arr[key] = 999   // hash-based at runtime
+arr[[0, 1]]    // chain-based: arr[0][1]
 ```
-
-This means `arr[[104, 101, 108, 108, 111]]` ("hello" as raw bytes) is also
-treated as a hash key — the runtime only checks byte values, not syntax.
 
 
 ### Cumulative Optimization Impact
@@ -2415,8 +2296,6 @@ treated as a hash key — the runtime only checks byte values, not syntax.
 | Slice in-place | Eliminates view allocation | `x = x[slice]` mutates directly when exclusive |
 | COW sharing | Variable, workload-dependent | Zero-copy reads, copy only on write |
 | Slot initialization | Eliminates runtime guards | Array slots pre-initialized to `[]` |
-| Hash caching (string keys) | O(n)→O(1) on repeated key access | FNV-1a computed once per unique string, cached on Arr struct |
-| String-keyed hashmap (OC_LVALS_PUSH) | Eliminates O(n²) on indexed push | Navigate to bucket + push in one fused opcode |
 | **Function inlining** | ~40% fewer dispatches | Inlines constant funcs, accessors at compile time |
 | **Move-semantics COW** | ~90% fewer COW copies | `x = f(x, ...)` passes by move, avoids deep copy |
 | Single-pass compiler | ~0 (constant factor) | No AST allocation overhead |
@@ -2468,30 +2347,6 @@ for full-size extrapolations). N-body uses the flat-array version with
 Three targeted VM changes using compile-time type information brought n-body
 from 204s down to ~46s.
 
-### Hashmap (String-Keyed) Performance
-
-Same FNV-1a hashmap-over-array implementation in C, Node.js, Python, and
-TinyLang. TinyLang automatically **caches hashes** on the `Arr` struct.
-
-| Benchmark | C (-O2) | Node.js | Python 3 | TinyLang |
-|---|---|---|---|---|
-| Same-key read (1M) | **<0.001s** | 0.082s | 1.087s | **0.097s** |
-| Diff-key write (50k) | **0.004s** | 0.009s | 0.078s | **0.019s** |
-| Multi-key read (100k) | **<0.001s** | 0.001s | 0.006s | **0.031s** |
-| Collision append (50k) | **0.001s** | 0.001s | 0.004s | **0.009s** |
-
-Key findings:
-- **Hash caching:** TinyLang's same-key read is competitive with Node.js V8
-  JIT despite being a bytecode interpreter.
-- **String concat optimized:** `"key_" + i` is **166× faster** than the
-  original intermediate-Arr approach.
-- **Push optimization on indexed LHS:** `arr["key"] += [val]` went from
-  O(n²) at 3.6s down to **0.009s** — **400× faster**.
-
-See [`benchmarks/REPORT.md`](benchmarks/REPORT.md) for the full analysis and
-[`benchmarks/hashmap_COMPARISON.md`](benchmarks/hashmap_COMPARISON.md) for
-hashmap-specific benchmarks.
-
 ---
 
 ## Running Benchmarks
@@ -2518,7 +2373,7 @@ Benchmark source files:
 - Optional GNU Readline/libedit integration for line editing and history
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
 - Stack-based VM: C99 goto-to-switch dispatch, `Value istk[4096]` stack
-- 32 opcodes including 4 dedicated numeric opcodes (ADD/SUB/MUL/DIV),
+- 31 opcodes including 4 dedicated numeric opcodes (ADD/SUB/MUL/DIV),
   `OC_MUTATE_NUM` fused read-modify-write, `OC_CLEAR_SLOT` for move semantics,
   and `OC_PROFILE` for profiling
 - Slot-indexed variable access: O(1) instead of O(n) strcmp

@@ -53,14 +53,6 @@ println("你好")    // Chinese
 println("Привет") // Russian
 println("日本語")  // Japanese
 
-// --- String in hashmap ---
-println("--- hashmap ---")
-m = [[]] * 10
-m["héllo"] = 1
-m["wörld"] = 2
-m["😀"] = 3
-println(m["héllo"])
-println(m["😀"])
 
 // --- input ---
 println("--- input ---")

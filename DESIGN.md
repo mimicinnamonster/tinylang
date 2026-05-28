@@ -173,13 +173,13 @@ occurs twice.
 
 | Op | Meaning | Returns |
 |----|---------|---------|
-| `=` | equal | `1` or `[]` |
+| `==` | equal | `1` or `[]` |
 | `!=` | not equal | `1` or `[]` |
 | `<` | less than | `1` or `[]` |
 | `>` | greater than | `1` or `[]` |
 
 - Array equality is **deep** — element-by-element recursive comparison
-- Mixed-type comparison (`5 = "hello"`) returns `[]`, not an error
+- Mixed-type comparison (`5 == "hello"`) returns `[]`, not an error
 
 ### Logical (short-circuit)
 
@@ -196,16 +196,13 @@ occurs twice.
 - `#` array length (prefix): `#arr` returns element count, type error on numbers
 - `~` bitwise NOT (prefix): `~0` → `-1`, flips all bits of the integer value
 
-### Context determines `=` meaning
+### Comparison operator: `==`
 
-| Position | What `=` means |
-|----------|---------------|
-| `x = 5` at statement start | **assignment** |
-| `x, y = [1, 2]` comma-separated idents | **destructure assignment** |
-| `arr[0] = 5` lvalue chain | **assignment** |
-| `if x = 5 { }` | **comparison** |
-| `print(x = 5)` inside `()` | **comparison** |
-| `y = x = 5` right-side `=` | **comparison** (result assigned to `y`) |
+TinyLang uses separate tokens for assignment and comparison:
+- `=` is always **assignment** (`x = 5`, `arr[0] = 5`, `x, y = [1, 2]`)
+- `==` is the equality **comparison** operator (`if x == 5 { }`, `print(x == 5)`)
+
+These are distinct lexer tokens — `T_ASSIGN` for `=`, `T_EQ` for `==`.
 
 ---
 
@@ -220,7 +217,7 @@ left-associative):
 | 8 | `+` `-` | Additive |
 | 7 | `<<` `>>` | Shift |
 | 6 | `<` `>` `<=` `>=` | Relational |
-| 5 | `=` `!=` | Equality |
+| 5 | `==` `!=` | Equality |
 | 4 | `&` | Bitwise AND |
 | 3 | `^` | Bitwise XOR |
 | 2 | `\|` | Bitwise OR |
@@ -334,128 +331,6 @@ when `x` is an all-number array.
 
 ---
 
-## 9.5. Hashmaps (String-Keyed Indexing)
-
-Any array can be used as a hashmap by indexing with a string key: `arr["key"]`.
-The string's hash determines the array index, computed using the **FNV-1a**
-algorithm (same as Git's `strhash`):
-
-```c
-unsigned int fnv1a_hash(Arr *a) {
-    unsigned int hash = 0x811c9dc5u;  // FNV32_BASE
-    for (int i = 0; i < a->len; i++) {
-        unsigned int c = (unsigned int)val_num(a->val[i]);
-        hash = (hash * 0x01000193u) ^ c;  // FNV32_PRIME
-    }
-    return hash;
-}
-```
-
-The index is `hash(key) % len(array)`. This is deterministic — the same string
-always maps to the same slot for a given array size.
-
-### Buckets
-
-The array acts as a fixed-size hash table. Each slot is a **bucket**:
-
-```tinylang
-// Array of 100 buckets for hashing
-map = [[]] * 100
-
-// These may collide (map to the same bucket)
-map["foo"] = "first"
-map["bar"] = "second"  // overwrites if same bucket as "foo"
-```
-
-On collision, the value is simply **overwritten** — the last write wins:
-
-```tinylang
-arr = [0, 0, 0]
-arr["hello"] = 111
-arr["world"] = 222   // overwrites if same bucket
-print(arr[1])         // whichever key hashed to slot 1
-```
-
-### Collision-Safe Append Pattern
-
-To store multiple values per key without overwriting on collision:
-
-```tinylang
-// Initialize: each bucket is an empty array
-map = [[]] * 100
-
-// Append to the bucket — arr[key] += [value] desugars to
-// arr[key] = arr[key] + [value], which pushes into the bucket's array
-map["foo"] += ["first_value"]
-map["foo"] += ["second_value"]
-map["bar"] += ["other"]
-
-// Even if "foo" and "bar" collide to the same bucket, the values
-// are accumulated in that bucket's array:
-print(map[bucket])  // ["first_value", "second_value", "other"]
-```
-
-Key points:
-- `arr["key"] += [val]` uses the same push optimization as `x = x + [elem]`
-- If two keys collide, their values simply share the same bucket array
-- Without `+=`, colliding keys silently overwrite — use `+=` when you need
-  collision-safe storage
-
-### Hash Caching
-
-The FNV-1a hash is computed **once per unique string value** and cached on the
-underlying `Arr` struct. Subsequent accesses with the same string (whether
-literal or variable) use the cached hash in O(1):
-
-```tinylang
-key = "expensive"
-for i < 10000 {
-    print(map[key])   // hash computed once, cached for 9999 iterations
-    i = i + 1
-}
-```
-
-### Distinction from Numeric Indexing
-
-String-keyed access is detected **at runtime**: if the index value is an array
-whose bytes are all printable ASCII (a "string"), it uses hash-based indexing.
-Otherwise, it uses the existing chain-of-numeric-indices behavior:
-
-```tinylang
-arr["abc"]     // hash-based (string: printable ASCII)
-arr[[0, 1]]    // chain-based (numbers 0,1 — non-printable)
-arr[[10, 20]]  // chain-based (10=newline, 20=not printable → chain)
-```
-
-This means `arr[[104, 101, 108, 108, 111]]` ("hello" as raw bytes) is also
-treated as a hash key, since all bytes are printable. For dynamic index chains,
-always use literal or constructed arrays of numbers.
-
-### Supported Syntax
-
-```tinylang
-// Read
-val = arr["key"]
-
-// Write
-arr["key"] = val
-
-// Multi-index (chained hash)
-arr["a", "b"]        // arr[hash("a")][hash("b")]
-arr["a"]["b"]        // same, chained brackets
-
-// Compound assignment (collision-safe append)
-arr["key"] += [val]   // push val into bucket
-arr["key"] -= [val]   // arr[key] = arr[key] - [val]
-arr["key"] *= n       // arr[key] = arr[key] * n
-
-// Variable as key
-k = input()
-arr[k] = val
-```
-
----
-
 ## 10. Literals & Identifiers
 
 ### Numbers
@@ -528,7 +403,7 @@ No recovery, no try/catch, no assert().
 | `args` | `args()` | Returns command-line arguments as array of strings (excludes program name) |
 | `time` | `time()` | Returns Unix timestamp with nanosecond precision via `clock_gettime(CLOCK_REALTIME)` |
 | `date` | `date()` | Returns `[year, month, day, hour, minute, second]` in system timezone |
-| `hash` | `hash(string)` | Returns FNV-1a hash of the string (same function used for array key hashing) |
+| `hash` | `hash(string)` | Returns the FNV-1a hash of a string |
 | `sleep` | `sleep(secs)` | Suspends execution for given seconds (fractional OK), uses `nanosleep()` |
 | `read` | `read(path, mode)` | Reads file content as string |
 | `write` | `write(path, data, mode)` | Writes string to file (`"w"` overwrite, `"a"` append) |
