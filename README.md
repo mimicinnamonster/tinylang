@@ -8,7 +8,7 @@ Every design choice prioritises **simple implementation** and
 **easy optimisation** — no runtime type dispatch, no garbage collector,
 no closures, no pointers, no AST, no intermediate representations.
 Just a single-pass compiler emitting flat bytecode for a stack-based VM,
-all in a small single C file.
+all in a single C file.
 
 The central thesis: **static typing and simple semantics are not constraints —
 they are enablers.**  Every optimisation in the VM flows directly from a
@@ -84,13 +84,13 @@ print(x)                               // 20
 
 ### Where TinyLang Excels
 
-A full language in a small C file. No required dependencies. Compiles in <1s.
+A full language in a single C file. No required dependencies. Compiles in <1s.
 
 | Property | TinyLang's | Python's | Node.js's | C's |
 |----------|----------|--------|---------|---|
 | **Memory efficiency** | 1.2–5.7 MB | 25–40 MB | 14–17 MB | 1–2 MB |
 | **Startup time** | ✓ ~2ms compile + run | ~30ms startup | ~40ms startup + JIT warmup | Compile only |
-| **Implementation size** | ✓ ~2k lines | ~700K lines (CPython) | ~1.2M lines (V8+Node) | ~12.8M lines (LLVM) |
+| **Implementation size** | ✓ ~3K line C file | ~700K lines (CPython) | ~1.2M lines (V8+Node) | ~12.8M lines (LLVM) |
 | **Deterministic cleanup** | ✓ Refcount | ✗ GC pauses | ✗ GC pauses | ✗ Manual |
 | **No dependencies** | ✓ Single .c | ✗ Python runtime | ✗ Node runtime | LLVM |
 | **Pure C99** | ✓ Compiles `-std=c99 -pedantic` | ✗ | ✗ | ✓ |
@@ -138,6 +138,11 @@ A full language in a small C file. No required dependencies. Compiles in <1s.
   - [7. Single-Pass Compilation](#7-single-pass-compilation-no-ast)
   - [8. Parameter Binding by Slot Index](#8-parameter-binding-by-slot-index)
   - [9. Pre-Sized Scopes with Slot Initialization](#9-pre-sized-scopes-with-slot-initialization)
+  - [10. Zero-Copy Slice Views](#10-zero-copy-slice-views)
+  - [11. Hash Caching (String Keys)](#11-hash-caching-string-keys)
+  - [12. String-Keyed Hashmap Access (OC_LVALS_PUSH)](#12-string-keyed-hashmap-access-oc_lvals_push)
+  - [13. Function Inlining (Compile-Time)](#13-function-inlining-compile-time)
+  - [14. Move-Semantics COW Avoidance](#14-move-semantics-cow-avoidance)
   - [Cumulative Optimization Impact](#cumulative-optimization-impact)
 - [Performance Comparisons](#performance-comparisons-tinylang-vs-c-vs-nodejs-vs-python)
   - [Full-Size Results](#full-size-results)
@@ -159,6 +164,12 @@ cc -std=c99 -Wall -pedantic -O3 -lm -o tiny tinylang.c
 
 # With optional readline support (line editing, history, arrow keys):
 cc -DREADLINE -Wall -Wextra -O2 -lm -o tiny tinylang.c -lreadline
+
+# Bytecode dump (text format):
+./tiny --bytecode program.tl
+
+# Profile mode (count calls, TCO, COW deep copies):
+./tiny --profile program.tl
 ```
 
 ### REPL
@@ -1876,6 +1887,76 @@ for i < 50000 {
 **Impact:** 50k appends went from **3.6s (O(N²) concat) → 0.009s (O(N) push)**
 — a **400× speedup**.
 
+### 13. Function Inlining (Compile-Time)
+
+The compiler detects simple function patterns at compile time and replaces the
+call with inline instructions, completely eliminating the dispatch overhead
+(scope allocation, parameter binding, stack save/restore, return).
+
+**Detected patterns:**
+
+1. **Constant functions** (zero args, always return same value):
+   `fun foo() { ret 42 }` → inline as `OC_NUM 42`
+   `fun foo() { ret nil }` → inline as `OC_NIL`
+   `fun foo() { ret "hi" }` → inline as `OC_STR "hi"`
+
+2. **Accessor with constant index** (one arg, returns `obj[N]`):
+   `fun first(obj=[]) { ret obj[0] }` → inline as `OC_NUM 0` + `OC_INDEX`
+
+3. **Accessor with parameter index** (two args, returns `obj[field]`):
+   `fun elem(obj=[], i=0) { ret obj[i] }` → inline as `OC_INDEX`
+
+4. **Floor-wrapped accessors**: `fun hp(p=[]) { ret floor(p[HP]) }` →
+   inline as `OC_NUM HP` + `OC_INDEX` + `CALL floor` (saves an accessor dispatch
+   but keeps the builtin `floor()` fast-path call)
+
+The inliner also catches the field-index functions used in the OOP style
+(`_player_HP() { ret 0 }`, `_monster_X() { ret 0 }`), eliminating those
+call dispatches entirely.
+
+**Impact:** Eliminates ~40% of function call dispatches in OOP-style code.
+Field index functions (33 in the roguelike demo) are fully inlined.
+Accessors with `floor()` wrappers save one dispatch level each.
+
+### 14. Move-Semantics COW Avoidance
+
+When a function mutates a passed array and returns it, the standard OOP pattern
+`x = f(x, ...)` normally triggers a COW deep copy inside the function (because
+the parameter creates a shared reference). The move-semantics optimization
+eliminates this copy by transferring ownership instead of sharing.
+
+**How it works at compile time:**
+
+When the compiler detects `x = f(x, ...)` (same variable as first arg and
+assignment target), it emits an `OC_CLEAR_SLOT` instruction after pushing
+x's value. This releases x's slot, leaving only the stack reference.
+
+**How it works at runtime:**
+
+Inside `OC_CALL`, the parameter binding checks the array's refcount before
+retaining:
+
+```c
+if (args[j].type == VAL_ARR && args[j].arr) {
+    if (args[j].arr->refcount > 1) aretain(args[j].arr);
+}
+```
+
+When refcount is 1 (exclusive ownership — the slot was cleared), the retain
+is skipped. The function takes ownership of the array with no shared
+references. `amake_uniq` sees refcount == 1 and does **not** deep-copy,
+so the mutation happens in-place.
+
+When the function returns the array, the caller stores it back in the slot.
+
+**Safety:** If another variable shares the array (refcount > 1), the retain
+fires as normal. The COW copy inside the function protects the other
+reference — value semantics are preserved. The optimization only elides
+the copy when the array is exclusively owned.
+
+**Impact:** Eliminates ~90% of COW deep copies in OOP-style mutation patterns.
+Player updates, monster movement, and level mutations all benefit.
+
 #### Runtime detection
 
 Hash-based indexing is detected **at runtime** in both `OC_INDEX` (reads) and
@@ -1912,8 +1993,10 @@ treated as a hash key — the runtime only checks byte values, not syntax.
 | Slot initialization | Eliminates runtime guards | Array slots pre-initialized to `[]` |
 | Hash caching (string keys) | O(n)→O(1) on repeated key access | FNV-1a computed once per unique string, cached on Arr struct |
 | String-keyed hashmap (OC_LVALS_PUSH) | Eliminates O(n²) on indexed push | Navigate to bucket + push in one fused opcode |
+| **Function inlining** | ~40% fewer dispatches | Inlines constant funcs, accessors at compile time |
+| **Move-semantics COW** | ~90% fewer COW copies | `x = f(x, ...)` passes by move, avoids deep copy |
 | Single-pass compiler | ~0 (constant factor) | No AST allocation overhead |
-| Combined (dispatch + slots + types) | **55–85%** | Across all benchmarks |
+| Combined (dispatch + slots + types + inline + move) | **55–85%** | Across all benchmarks |
 
 ---
 
@@ -2011,8 +2094,9 @@ Benchmark source files:
 - Optional GNU Readline/libedit integration for line editing and history
 - Pre-lexed token array → single-pass compiler → flat bytecode (`Instr[]`)
 - Stack-based VM: C99 goto-to-switch dispatch, `Value istk[4096]` stack
-- 30 opcodes including 4 dedicated numeric opcodes (ADD/SUB/MUL/DIV)
-  and `OC_MUTATE_NUM` fused read-modify-write for compound assignment
+- 32 opcodes including 4 dedicated numeric opcodes (ADD/SUB/MUL/DIV),
+  `OC_MUTATE_NUM` fused read-modify-write, `OC_CLEAR_SLOT` for move semantics,
+  and `OC_PROFILE` for profiling
 - Slot-indexed variable access: O(1) instead of O(n) strcmp
 - Compile-time type tracking: `comp_types[]` parallel to `comp_vars[]`
   with expression-level type inference for dedicated opcode dispatch

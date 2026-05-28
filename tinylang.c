@@ -58,6 +58,8 @@ typedef enum {
     OC_SLICE_INPLACE,
     OC_DESTRUCTURE,
     OC_MUTATE_NUM,
+    OC_CLEAR_SLOT,
+    OC_PROFILE,
     OC_END,
 } OC;
 
@@ -72,6 +74,17 @@ int rf; Value rv;
 Value istk[4096]; int isp;
 int cur_fi;
 
+static int show_bytecode = 0;
+static int profile_flag = 0;
+
+/* Profile counters — incremented by OC_PROFILE opcodes (only in bytecode
+ * when --profile is active; zero runtime overhead otherwise) */
+static long profile_user_calls = 0;
+static long profile_builtin_calls = 0;
+static long profile_tco_calls = 0;
+static long profile_cow_copies = 0;
+static long profile_cow_bytes = 0;
+
 static int saved_argc;
 static char **saved_argv;
 
@@ -83,7 +96,7 @@ CallFrame call_stack[128]; int call_depth = -1;
 
 typedef enum { T_UNKNOWN = 0, T_NUM_TYPE = 1, T_ARR_TYPE = 2, T_STR_TYPE = 3 } ExprType;
 typedef Value (*NativeFn)(int ac, Value *args);
-typedef struct { char *n; int a; int nvars, *p_slots; ExprType ret_type; Code *code; Value *def_vals; int is_builtin; NativeFn native_fn; } Fn;
+typedef struct { char *n; int a; int nvars, *p_slots; ExprType ret_type; Code *code; Value *def_vals; int is_builtin; NativeFn native_fn; int is_inlinable; int inline_pat; double inline_num; Arr *inline_arr; int inline_obj_slot; int inline_field_slot; double inline_index; } Fn;
 Fn *fs; int fc, fm;
 
 jmp_buf repl_jmp; int repl_catching;
@@ -99,6 +112,12 @@ static int fn_ret_seen;
 
 /* Track the type of the most recently compiled expression (for numeric opcode optimization) */
 static ExprType comp_last_type;
+
+/* Hint for move-semantics optimization: if >= 0, the next function call's
+ * first argument is expected to be this slot, and OC_CLEAR_SLOT should be
+ * emitted to avoid unnecessary COW deep copies. Set by comp_stmt when
+ * compiling x = f(x, ...). */
+static int move_slot_hint = -1;
 
 void die(const char *f, ...);
 
@@ -622,7 +641,26 @@ void comp_prim(Code *c) {
             if (ts[tp].t == T_LP) {
                 free(nm); tp++;
                 int ac = 0;
-                if (ts[tp].t != T_RP) { do { comp_expr(c); ac++; } while (ts[tp].t == T_CM && (tp++, 1)); }
+                if (ts[tp].t != T_RP) {
+                    /* Check for move-semantics optimization on first arg */
+                    int move_first = 0;
+                    if (move_slot_hint >= 0 && ts[tp].t == T_ID &&
+                        var_find(ts[tp].s) == move_slot_hint &&
+                        (ts[tp+1].t == T_CM || ts[tp+1].t == T_RP)) {
+                        move_first = 1;
+                    }
+                    do {
+                        if (ac == 0 && move_first) {
+                            int slot = move_slot_hint;
+                            comp_expr(c);
+                            emit(c, (Instr){OC_CLEAR_SLOT, slot, 0, .num = 0});
+                            move_slot_hint = -1;
+                        } else {
+                            comp_expr(c);
+                        }
+                        ac++;
+                    } while (ts[tp].t == T_CM && (tp++, 1));
+                }
                 tp++;
                 if (!strcmp(t.s, "print")) { if (ac < 1) die("print needs 1 arg"); emit(c, (Instr){OC_PRINT, 0, 0, .num = 0}); }
                 else if (!strcmp(t.s, "input")) emit(c, (Instr){OC_INPUT, 0, 0, .num = 0});
@@ -633,8 +671,51 @@ void comp_prim(Code *c) {
                     emit(c, (Instr){OC_STR, 0, 0, .arr = a});
                 } else {
                     int fi = ffind(t.s); if (fi < 0) die("undefined function '%s'", t.s);
-                    comp_last_type = fs[fi].ret_type;
-                    emit(c, (Instr){OC_CALL, fi, ac, .num = 0});
+                    Fn *fn = &fs[fi];
+                    comp_last_type = fn->ret_type;
+                    if (fn->is_inlinable && ac == fn->a) {
+                        /* Inline the function body instead of calling it */
+                        switch (fn->inline_pat) {
+                            case 0: /* CONST_NUM */
+                                emit(c, (Instr){OC_NUM, 0, 0, .num = fn->inline_num});
+                                break;
+                            case 1: /* CONST_NIL */
+                                emit(c, (Instr){OC_NIL, 0, 0, .num = 0});
+                                break;
+                            case 2: /* CONST_STR */
+                                emit(c, (Instr){OC_STR, 0, 0, .arr = fn->inline_arr});
+                                break;
+                            case 3: /* ACCESSOR_CONST */
+                                emit(c, (Instr){OC_NUM, 0, 0, .num = fn->inline_index});
+                                emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
+                                break;
+                            case 4: /* ACCESSOR_PARAM */
+                                emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
+                                break;
+                            case 5: /* ACCESSOR_CONST_FLOOR */
+                                emit(c, (Instr){OC_NUM, 0, 0, .num = fn->inline_index});
+                                emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
+                                { int ffi = ffind("floor");
+                                  if (ffi >= 0) {
+                                      if (profile_flag) emit(c, (Instr){OC_PROFILE, 0, 0, .num = 1.0});
+                                      emit(c, (Instr){OC_CALL, ffi, 1, .num = 0});
+                                  } }
+                                break;
+                            case 6: /* ACCESSOR_PARAM_FLOOR */
+                                emit(c, (Instr){OC_INDEX, 0, 0, .num = 0});
+                                { int ffi = ffind("floor");
+                                  if (ffi >= 0) {
+                                      if (profile_flag) emit(c, (Instr){OC_PROFILE, 0, 0, .num = 1.0});
+                                      emit(c, (Instr){OC_CALL, ffi, 1, .num = 0});
+                                  } }
+                                break;
+                        }
+                    } else {
+                        if (profile_flag) {
+                            emit(c, (Instr){OC_PROFILE, 0, 0, .num = fs[fi].is_builtin ? 1.0 : 0.0});
+                        }
+                        emit(c, (Instr){OC_CALL, fi, ac, .num = 0});
+                    }
                 }
             } else {
                 /* Variable read — use slot index in function bodies, name at top-level */
@@ -845,6 +926,113 @@ Value eval_constant_expr(void) {
     return nilv();
 }
 
+/* Scan a compiled function body for inlinable patterns.
+ * Patterns:
+ *   0 (CONST_NUM):  zero-arg, returns a constant number
+ *   1 (CONST_NIL):  zero-arg, returns nil
+ *   2 (CONST_STR):  zero-arg, returns a string/array constant
+ *   3 (ACCESSOR_CONST):  one-arg, body is VAR_SLOT(p0) + NUM(idx) + INDEX + RET + END
+ *   4 (ACCESSOR_PARAM):  two-arg, body is VAR_SLOT(p0) + VAR_SLOT(p1) + INDEX + RET + END
+ * Sets f->is_inlinable and the corresponding inline fields. */
+static void detect_inline(Fn *f) {
+    Code *body = f->code;
+    if (!body || body->len < 3) return;
+    int last = body->len - 1;
+    if (last < 0 || body->code[last].op != OC_END) return;
+    last--;
+    if (last < 0 || body->code[last].op != OC_RET) return;
+    last--;
+    if (last < 0) return;
+
+    /* Pattern 0-2: CONST — zero args, single constant before RET */
+    if (f->a == 0 && last == 0) {
+        Instr *val = &body->code[last];
+        if (val->op == OC_NUM) {
+            f->is_inlinable = 1; f->inline_pat = 0;
+            f->inline_num = val->num; f->inline_arr = NULL;
+            return;
+        }
+        if (val->op == OC_NIL) {
+            f->is_inlinable = 1; f->inline_pat = 1;
+            f->inline_num = 0; f->inline_arr = NULL;
+            return;
+        }
+        if (val->op == OC_STR) {
+            f->is_inlinable = 1; f->inline_pat = 2;
+            f->inline_num = 0; f->inline_arr = val->arr;
+            aretain(val->arr);
+            return;
+        }
+        return;
+    }
+
+    /* After consuming END and RET, `last` points to the instruction before RET.
+     * For a body [VAR_SLOT, NUM, INDEX, RET, END], last = 2 (INDEX).
+     * We check instructions at [last-2 .. last] for the 3-instr pattern. */
+
+    /* Pattern 3: ACCESSOR_CONST — one arg, VAR_SLOT + NUM(idx) + INDEX + RET */
+    if (f->a == 1 && last >= 2) {
+        if (body->code[last-2].op != OC_VAR_SLOT) goto check_const_floor;
+        if (body->code[last-1].op != OC_NUM) goto check_const_floor;
+        if (body->code[last].op != OC_INDEX) goto check_const_floor;
+        int obj_slot = body->code[last-2].a;
+        if (obj_slot != f->p_slots[0]) return;
+        f->is_inlinable = 1; f->inline_pat = 3;
+        f->inline_obj_slot = obj_slot;
+        f->inline_index = body->code[last-1].num;
+        return;
+    }
+    check_const_floor:
+    /* Pattern 5: ACCESSOR_CONST_FLOOR — like 3 but wraps with floor():
+     *   VAR_SLOT + NUM(idx) + INDEX + CALL floor(1) + RET + END */
+    if (f->a == 1 && last >= 3) {
+        if (body->code[last-3].op != OC_VAR_SLOT) goto check_param;
+        if (body->code[last-2].op != OC_NUM) goto check_param;
+        if (body->code[last-1].op != OC_INDEX) goto check_param;
+        if (body->code[last].op != OC_CALL || body->code[last].b != 1) goto check_param;
+        int fi = body->code[last].a;
+        if (fi < 0 || !fs[fi].is_builtin || strcmp(fs[fi].n, "floor")) goto check_param;
+        int obj_slot = body->code[last-3].a;
+        if (obj_slot != f->p_slots[0]) return;
+        f->is_inlinable = 1; f->inline_pat = 5;
+        f->inline_obj_slot = obj_slot;
+        f->inline_index = body->code[last-2].num;
+        return;
+    }
+    check_param:
+    /* Pattern 4: ACCESSOR_PARAM — two args, VAR_SLOT(p0) + VAR_SLOT(p1) + INDEX + RET */
+    if (f->a == 2 && last >= 2) {
+        if (body->code[last-2].op != OC_VAR_SLOT) goto check_param_floor;
+        if (body->code[last-1].op != OC_VAR_SLOT) goto check_param_floor;
+        if (body->code[last].op != OC_INDEX) goto check_param_floor;
+        int obj_slot = body->code[last-2].a;
+        int field_slot = body->code[last-1].a;
+        if (obj_slot != f->p_slots[0] || field_slot != f->p_slots[1]) return;
+        f->is_inlinable = 1; f->inline_pat = 4;
+        f->inline_obj_slot = obj_slot;
+        f->inline_field_slot = field_slot;
+        return;
+    }
+    check_param_floor:
+    /* Pattern 6: ACCESSOR_PARAM_FLOOR — like 4 but wraps with floor():
+     *   VAR_SLOT(p0) + VAR_SLOT(p1) + INDEX + CALL floor(1) + RET + END */
+    if (f->a == 2 && last >= 3) {
+        if (body->code[last-3].op != OC_VAR_SLOT) return;
+        if (body->code[last-2].op != OC_VAR_SLOT) return;
+        if (body->code[last-1].op != OC_INDEX) return;
+        if (body->code[last].op != OC_CALL || body->code[last].b != 1) return;
+        int fi = body->code[last].a;
+        if (fi < 0 || !fs[fi].is_builtin || strcmp(fs[fi].n, "floor")) return;
+        int obj_slot = body->code[last-3].a;
+        int field_slot = body->code[last-2].a;
+        if (obj_slot != f->p_slots[0] || field_slot != f->p_slots[1]) return;
+        f->is_inlinable = 1; f->inline_pat = 6;
+        f->inline_obj_slot = obj_slot;
+        f->inline_field_slot = field_slot;
+        return;
+    }
+}
+
 void comp_fn(Code *c) {
     (void)c;
     tp++; comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
@@ -911,6 +1099,7 @@ void comp_fn(Code *c) {
     f->code = body;
     f->nvars = comp_vc;
     f->ret_type = fn_ret_seen ? fn_ret_type : T_ARR_TYPE;
+    detect_inline(f);
 
     /* Free function's var table */
     for (int i = 0; i < comp_vc; i++) free(comp_vars[i]);
@@ -1212,6 +1401,7 @@ void comp_stmt(Code *c) {
                     if (slot >= 0 && comp_types[slot] == T_ARR_TYPE && idx_count >= 1 && comp_last_type == T_NUM_TYPE) {
                         tp++;  /* skip compound op token */
                         comp_expr(c);  /* compile RHS delta expression */
+                        if (profile_flag) emit(c, (Instr){OC_PROFILE, slot, 0, .num = 3.0});
                         emit(c, (Instr){OC_MUTATE_NUM, slot, idx_count, .num = (double)compound_op});
                         free(nm);
                         break;
@@ -1277,6 +1467,7 @@ void comp_stmt(Code *c) {
                             else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
                         } else emit(c, (Instr){OC_NUM, 0, 0, .num = 1.0});
                         if (ts[tp].t != T_RB) die("expected ]"); tp++;
+                        if (profile_flag) emit(c, (Instr){OC_PROFILE, slot, 0, .num = 3.0});
                         emit(c, (Instr){OC_SLICE_INPLACE, slot, 0, .num = 0});
                     } else {
                         int is_push = 0;
@@ -1360,10 +1551,13 @@ void comp_stmt(Code *c) {
                         tp++; tp++;  /* skip +, [ */
                         do {
                             comp_expr(c);
-                            if (idx_count > 0)
+                            if (idx_count > 0) {
+                                if (profile_flag) emit(c, (Instr){OC_PROFILE, slot, 0, .num = 3.0});
                                 emit(c, (Instr){OC_LVALS_PUSH, slot, idx_count, .num = 0});
-                            else
+                            } else {
+                                if (profile_flag) emit(c, (Instr){OC_PROFILE, slot, 0, .num = 3.0});
                                 emit(c, (Instr){OC_PUSH, slot, 0, .num = 0});
+                            }
                         } while (ts[tp].t == T_CM && (tp++, 1));
                         if (ts[tp].t != T_RB) die("expected ]"); tp++;
                     } else {
@@ -1394,11 +1588,27 @@ void comp_stmt(Code *c) {
                             int slot = var_find(nm);
                             if (slot < 0) slot = var_add(nm);
                             set_var_type(slot, T_ARR_TYPE);
+                            if (profile_flag) emit(c, (Instr){OC_PROFILE, slot, 0, .num = 3.0});
                             emit(c, (Instr){OC_LVALS, slot, idx_count, .num = 0});
                         } else {
                             int pn = tp;
                             ExprType store_type = peek_expr_type(&pn);
+                            /* Detect x = f(x, ...) pattern for move semantics */
+                            if (idx_count == 0) {
+                                int scan = tp;
+                                while (ts[scan].t == T_NL || ts[scan].t == T_SEMI) scan++;
+                                if (ts[scan].t == T_ID && ts[scan+1].t == T_LP) {
+                                    int scan2 = scan + 2;
+                                    while (ts[scan2].t == T_NL) scan2++;
+                                    if (ts[scan2].t == T_ID && !strcmp(ts[scan2].s, nm) &&
+                                        (ts[scan2+1].t == T_CM || ts[scan2+1].t == T_RP)) {
+                                        int s = var_find(nm);
+                                        if (s >= 0) move_slot_hint = s;
+                                    }
+                                }
+                            }
                             comp_expr(c);
+                            move_slot_hint = -1;
                             int slot = var_find(nm);
                             if (slot < 0) slot = var_add(nm);
                             set_var_type(slot, store_type);
@@ -1868,7 +2078,12 @@ op_call: {
     for (int j = 0; j < f->a; j++) {
         if (j < ac) {
             cs->v[f->p_slots[j]] = args[j];
-            if (args[j].type == VAL_ARR) aretain(args[j].arr);
+            if (args[j].type == VAL_ARR && args[j].arr) {
+                /* Move semantics: if the arr is exclusively owned (refcount==1),
+                 * skip the retain — the function takes ownership. This avoids
+                 * unnecessary COW deep copies when the caller clears its slot. */
+                if (args[j].arr->refcount > 1) aretain(args[j].arr);
+            }
         } else if (f->def_vals) {
             Value d = f->def_vals[j];
             cs->v[f->p_slots[j]] = d;
@@ -1898,7 +2113,7 @@ op_tco: {
     for (int j = 0; j < f->a; j++) {
         if (j < ac) {
             cs->v[f->p_slots[j]] = args[j];
-            if (args[j].type == VAL_ARR) aretain(args[j].arr);
+            if (args[j].type == VAL_ARR && args[j].arr) aretain(args[j].arr);
         } else if (f->def_vals) {
             Value d = f->def_vals[j];
             cs->v[f->p_slots[j]] = d;
@@ -1988,6 +2203,15 @@ op_destructure: {
     ip++; goto dispatch;
 }
 
+op_clear_slot: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    int slot = c->code[ip].a;
+    Value *v = &cs->v[slot];
+    if (v->type == VAL_ARR) arelease(v->arr);
+    *v = nilv();
+    ip++; goto dispatch;
+}
+
 op_mutate_num: {
     err_line = c->code[ip].line; err_file = c->code[ip].file;
     Instr *ins = &c->code[ip];
@@ -2056,11 +2280,33 @@ dispatch:
     case OC_SLICE_INPLACE: goto op_slice_inplace;
     case OC_DESTRUCTURE: goto op_destructure;
     case OC_MUTATE_NUM: goto op_mutate_num;
+    case OC_CLEAR_SLOT: goto op_clear_slot;
+    case OC_PROFILE: goto op_profile;
     case OC_END: goto op_end;
     }
 
 op_end:
     return;
+
+op_profile: {
+    err_line = c->code[ip].line; err_file = c->code[ip].file;
+    int kind = (int)c->code[ip].num;
+    switch (kind) {
+        case 0: profile_user_calls++; break;
+        case 1: profile_builtin_calls++; break;
+        case 2: profile_tco_calls++; break;
+        case 3: {
+            /* COW: check slot refcount — if > 1, a deep copy is imminent */
+            int slot = c->code[ip].a;
+            if (cs->v[slot].type == VAL_ARR && cs->v[slot].arr && cs->v[slot].arr->refcount > 1) {
+                profile_cow_copies++;
+                profile_cow_bytes += cs->v[slot].arr->len * (int)sizeof(Value);
+            }
+            break;
+        }
+    }
+    ip++; goto dispatch;
+}
 }
 
 /* ─── Native builtin function implementations ─── */
@@ -2595,6 +2841,115 @@ static Value native_glob(int ac, Value *args) {
     return (Value){ .type = VAL_ARR, .arr = result };
 }
 
+static void wr_le32(int32_t v) {
+    unsigned char buf[4] = { v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff };
+    fwrite(buf, 1, 4, stdout);
+}
+static void wr_le64(int64_t v) {
+    unsigned char buf[8] = { v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff,
+        (v >> 32) & 0xff, (v >> 40) & 0xff, (v >> 48) & 0xff, (v >> 56) & 0xff };
+    fwrite(buf, 1, 8, stdout);
+}
+static void wr_str(const char *s) {
+    int32_t len = s ? (int32_t)strlen(s) : -1;
+    wr_le32(len);
+    if (s) fwrite(s, 1, len, stdout);
+}
+static void wr_arr(const Arr *a) {
+    int32_t len = a ? a->len : -1;
+    wr_le32(len);
+    if (a) for (int j = 0; j < a->len; j++) wr_le64((int64_t)val_num(a->val[j]));
+}
+static const char *op_name(OC op) {
+    switch (op) {
+        case OC_NUM: return "NUM"; case OC_NIL: return "NIL"; case OC_STR: return "STR";
+        case OC_MAKE_ARR: return "MAKE_ARR"; case OC_VAR: return "VAR"; case OC_VAR_SLOT: return "VAR_SLOT";
+        case OC_STORE_SLOT: return "STORE_SLOT"; case OC_OP: return "OP"; case OC_ADD_NUM: return "ADD_NUM";
+        case OC_SUB_NUM: return "SUB_NUM"; case OC_MUL_NUM: return "MUL_NUM"; case OC_DIV_NUM: return "DIV_NUM";
+        case OC_UNARY: return "UNARY"; case OC_INDEX: return "INDEX"; case OC_CALL: return "CALL";
+        case OC_TCO: return "TCO"; case OC_JZ: return "JZ"; case OC_JMP: return "JMP";
+        case OC_RET: return "RET"; case OC_POP: return "POP"; case OC_LVALS: return "LVALS";
+        case OC_PUSH: return "PUSH"; case OC_LVALS_PUSH: return "LVALS_PUSH"; case OC_SLICE: return "SLICE";
+        case OC_PRINT: return "PRINT"; case OC_INPUT: return "INPUT"; case OC_DUP: return "DUP";
+        case OC_JNZ: return "JNZ"; case OC_PUSH_ALL: return "PUSH_ALL"; case OC_SLICE_INPLACE: return "SLICE_IP";
+        case OC_DESTRUCTURE: return "DEST"; case OC_MUTATE_NUM: return "MUTATE"; case OC_CLEAR_SLOT: return "CLEAR"; case OC_PROFILE: return "PROF";
+        case OC_END: return "END"; default: return "???";
+    }
+}
+
+static void bytecode_stats(void) {
+    int total_instrs = 0;
+    int total_calls = 0;
+    int total_ret = 0;
+    int fn_count = 0;
+    for (int i = 0; i < fc; i++) {
+        Fn *f = &fs[i];
+        if (!f->code) continue;
+        fn_count++;
+        int count = f->code->len;
+        total_instrs += count;
+        printf("  %s: %d instrs", f->n, count);
+        if (f->is_inlinable) {
+            printf(" [inlinable]");
+        }
+        printf("\n");
+        for (int j = 0; j < count; j++) {
+            Instr *ins = &f->code->code[j];
+            printf("    %4d: %s", j, op_name(ins->op));
+            if (ins->op == OC_CALL || ins->op == OC_TCO) {
+                printf(" %s(%d)", fs[ins->a].n, ins->b);
+                total_calls++;
+            } else if (ins->op == OC_NUM) {
+                printf(" %.0f", ins->num);
+            } else if (ins->op == OC_VAR_SLOT || ins->op == OC_STORE_SLOT ||
+                       ins->op == OC_CLEAR_SLOT || ins->op == OC_MUTATE_NUM) {
+                printf(" slot=%d", ins->a);
+            } else if (ins->op == OC_LVALS || ins->op == OC_PUSH || ins->op == OC_LVALS_PUSH ||
+                       ins->op == OC_PUSH_ALL || ins->op == OC_SLICE_INPLACE) {
+                printf(" slot=%d", ins->a);
+            } else if (ins->op == OC_RET) {
+                total_ret++;
+            } else if (ins->op == OC_OP) {
+                printf(" op=%d", ins->a);
+            } else if (ins->op == OC_JZ || ins->op == OC_JNZ || ins->op == OC_JMP) {
+                printf(" ->%d", ins->a);
+            } else if (ins->op == OC_MAKE_ARR || ins->op == OC_DESTRUCTURE) {
+                printf(" n=%d", ins->a);
+            } else if (ins->op == OC_UNARY) {
+                printf(" op=%d", ins->a);
+            }
+            printf("\n");
+        }
+    }
+    printf("\n");
+    printf("  Functions: %d\n", fn_count);
+    printf("  Total instructions: %d\n", total_instrs);
+    printf("  Total OC_CALL instrs: %d\n", total_calls);
+    printf("  Total OC_RET instrs: %d\n", total_ret);
+}
+
+static void dump_binary(Code *c, const char *label) {
+    int32_t count = c ? c->len : 0;
+    wr_str(label);
+    wr_le32(count);
+    if (!c) return;
+    for (int i = 0; i < c->len; i++) {
+        Instr *ins = &c->code[i];
+        wr_le32((int32_t)ins->op);
+        wr_le32(ins->a);
+        wr_le32(ins->b);
+        { int64_t tmp; memcpy(&tmp, &ins->num, 8); wr_le64(tmp); }
+        wr_le32(ins->line);
+        wr_str(ins->name);
+        wr_str(ins->file);
+        wr_arr(ins->arr);
+    }
+}
+static void dump_all_binary(void) {
+    for (int i = 0; i < fc; i++)
+        dump_binary(fs[i].code, fs[i].n);
+}
+
 /* ─── Main ─── */
 
 int main(int a, char **v) {
@@ -2627,10 +2982,18 @@ int main(int a, char **v) {
     reg_builtin("glob", 1, T_ARR_TYPE, native_glob);
     reg_builtin("key", 0, T_STR_TYPE, native_key);
     if (a >= 2) {
-        char *src = readf(v[1]); if (!src) { fprintf(stderr, "cannot read '%s'\n", v[1]); return 1; }
-        char dir[1024] = {0}; const char *slash = strrchr(v[1], '/');
-        if (slash) { memcpy(dir, v[1], slash - v[1]); } include_dir = dir;
-        comp_file = strdup(v[1]);
+        /* Parse flags */
+        char *file = NULL;
+        for (int i = 1; i < a; i++) {
+            if (!strcmp(v[i], "--bytecode")) show_bytecode = 1;
+            else if (!strcmp(v[i], "--profile")) profile_flag = 1;
+            else file = v[i];
+        }
+        if (!file) { fprintf(stderr, "usage: tiny [--bytecode] [--profile] <file>\n"); return 1; }
+        char *src = readf(file); if (!src) { fprintf(stderr, "cannot read '%s'\n", file); return 1; }
+        char dir[1024] = {0}; const char *slash = strrchr(file, '/');
+        if (slash) { memcpy(dir, file, slash - file); } include_dir = dir;
+        comp_file = strdup(file);
         lex(src); Code *code = new_code();
         comp_vars = NULL; comp_types = NULL; comp_vc = 0; comp_vm = 0;
         comp_program(code); free(src); free(comp_file); comp_file = NULL;
@@ -2649,7 +3012,20 @@ int main(int a, char **v) {
             if ((comp_types[i] == T_ARR_TYPE || comp_types[i] == T_STR_TYPE) && cs->v[i].type == VAL_NUM)
                 cs->v[i] = (Value){ .type = VAL_ARR };
         }
-        exec(code); code_free(code); free(ts);
+        if (show_bytecode) { bytecode_stats(); return 0; }
+        exec(code);
+        if (profile_user_calls || profile_builtin_calls || profile_tco_calls || profile_cow_copies) {
+            fprintf(stderr, "\n--- Profile ---\n");
+            fprintf(stderr, "  User function calls:  %ld\n", profile_user_calls);
+            fprintf(stderr, "  Builtin calls:        %ld\n", profile_builtin_calls);
+            fprintf(stderr, "  Tail calls (TCO):     %ld\n", profile_tco_calls);
+            fprintf(stderr, "  Total calls:          %ld\n",
+                    profile_user_calls + profile_builtin_calls + profile_tco_calls);
+            fprintf(stderr, "  COW deep copies:      %ld\n", profile_cow_copies);
+            fprintf(stderr, "  COW bytes copied:     %ld\n", profile_cow_bytes);
+            fprintf(stderr, "\n");
+        }
+        code_free(code); free(ts);
     } else {
         char buf[65536];
 #ifdef READLINE

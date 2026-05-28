@@ -1,9 +1,9 @@
 # TinyLang — Implementation Guide
 
-**~1,700 lines of C.** Single-pass compiler to bytecode with stack-based VM,
+**Single-file C compiler+VM.** Single-pass compiler to bytecode with stack-based VM,
 goto-to-switch dispatch, slot-indexed variable access, compile-time type
 tracking, refcount+COW, zero-copy slice views, tail call optimization,
-and array destructuring.
+function inlining, move-semantics COW avoidance, and array destructuring.
 
 ---
 
@@ -75,7 +75,7 @@ A single-pass recursive descent compiler that walks the token array and emits
 `Instr[]` bytecode. No intermediate AST — each parser function emits instructions
 directly.
 
-### Instruction Set (30 opcodes)
+### Instruction Set (32 opcodes)
 
 ```c
 typedef enum {
@@ -94,6 +94,8 @@ typedef enum {
     OC_SLICE_INPLACE,                       // x = x[slice] in-place mutation
     OC_DESTRUCTURE,                         // array destructure into multiple variables
     OC_MUTATE_NUM,                          // fused read-modify-write for arr[idx] op= expr
+    OC_CLEAR_SLOT,                          // release slot value (move-semantics COW)
+    OC_PROFILE,                             // runtime profiling (emitted with --profile)
     OC_END,                                 // terminator
 } OC;
 ```
