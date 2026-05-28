@@ -35,34 +35,40 @@ e1 = [1, 2, 3, 0, 5, 6, 7, 4, 4, 5, 6, 7]
 // ── Terminal characters are ~2:1 height:width, so we correct for it
 ASPECT = 0.45
 
-// ── Detect terminal size from environment (COLUMNS/LINES), fall back to 80x24
-col_str = env("COLUMNS")
-lin_str = env("LINES")
-if col_str != "" { W = tonum(col_str) } else { W = 80 }
-if lin_str != "" { H = tonum(lin_str) } else { H = 24 }
+// ── Detect terminal size via stty, fall back to 80x24
+sz = exec("stty size < /dev/tty 2>/dev/null")
+if sz == "" {
+    W = 80; H = 24
+} else {
+    parts = split(sz, " ")
+    H = tonum(parts[0])
+    W = tonum(parts[1])
+}
 
 CX = W / 2
 CY = H / 2
 // Scale to fill ~70% of the smaller screen dimension without clipping
-SCALE = floor(W / 6.5)
-if SCALE * H / W > 3 { SCALE = floor(H / 2.7) }
+SCALE = floor(W / 7)
+if SCALE * H * 2 > W * 3 { SCALE = floor(H / 3) }
 
 // ── Animation state ──
 angle = 0
-start = time()
 running = 1
 key_check = 0
 
 // Hide cursor, clear screen
 print("\x1b[?25l")
 print("\x1b[2J")
+// Put terminal in raw mode so individual keypresses are immediately available
+// -icanon: no line buffering, -echo: no echo, onlcr: NL→CR+NL on output
+exec("stty -icanon -echo onlcr 2>/dev/null")
 
 for running {
     // Non-blocking key check every 15 frames (~4 times/sec)
     key_check = key_check + 1
     if key_check >= 15 {
         key_check = 0
-        k = exec("read -t 0.001 -n 1 key 2>/dev/null; echo \"$key\"")
+        k = exec("perl -e 'use POSIX; \$f=fcntl(STDIN,F_GETFL,0); fcntl(STDIN,F_SETFL,\$f|O_NONBLOCK); \$c=getc; print \$c' 2>/dev/null")
         if k != "" && k[0] != 10 {
             // q=113, ESC=27, Ctrl+C=3
             if k[0] == 113 || k[0] == 27 || k[0] == 3 { running = 0 }
@@ -162,6 +168,9 @@ for running {
 }
 
 // ── Cleanup ──
+// Restore terminal to sane state
+exec("stty sane 2>/dev/null")
+// Show cursor
 print("\x1b[?25h")
 println("")
 println("3D cube demo finished! ✨")
