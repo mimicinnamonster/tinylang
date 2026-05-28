@@ -108,7 +108,7 @@ A full language in a single C file. No required dependencies. Compiles in <1s.
 - [Quick start](#quick-start)
   - [REPL](#repl)
   - [Tests](#tests)
-- [Language Features Guide](#language-features-guide)
+- [Language Features](#language-features)
   - [Types](#types)
   - [Strings](#strings-syntactic-sugar-for-byte-arrays)
   - [Literals & Identifiers](#literals--identifiers)
@@ -128,6 +128,11 @@ A full language in a single C file. No required dependencies. Compiles in <1s.
   - [Include System](#include-system)
   - [Error Handling](#error-handling)
   - [Built-in Functions](#built-in-functions)
+- [Language Idioms](#language-idioms)
+  - [Preferred Style](#preferred-style)
+  - [Common Operations](#common-operations)
+  - [Data Structures](#data-structures)
+  - [OOP Style](#oop-style)
 - [Optimizations & VM Internals](#optimizations--vm-internals)
   - [1. Goto-to-Switch Dispatch](#1-goto-to-switch-dispatch)
   - [2. Slot-Indexed Variable Access](#2-slot-indexed-variable-access)
@@ -202,7 +207,7 @@ All tests must pass before committing.
 
 ---
 
-## Language Features Guide
+## Language Features
 
 ### Types
 
@@ -1352,6 +1357,425 @@ it's called inside an included file.
 
 ```tinylang
 print(thisfile())        // e.g., /Users/mimi/project/test.tl
+```
+
+---
+
+## Language Idioms
+
+This section documents the idiomatic style and patterns that TinyLang code
+naturally evolves toward.  Some patterns arise from compiler constraints
+(define-before-use, no closures), others from performance considerations
+(COW, move semantics), and others from the minimal type system.
+
+### Preferred Style
+
+#### Formatting
+
+- Use **2-space indentation** — no tabs.
+- Opening braces go on the same line as the control structure (`if expr {`).
+- `elif` and `else` must appear on the **same line** as the preceding `}`:
+  ```tinylang
+  if x < 0 {
+      ret -1
+  } elif x = 0 {           // } and elif on same line
+      ret 0
+  } else {
+      ret 1
+  }
+  ```
+  The parser does not skip newlines looking for `elif`/`else`; putting them on
+  a new line produces an "unexpected token" error.
+- Short 2-branch `if`-`elif` chains may stay on one line:
+  ```tinylang
+  if mx < px { dx = 1 } elif mx > px { dx = -1 }
+  ```
+- Longer chains (3+ branches) use multi-line formatting as shown above.
+- Separate logically distinct `if` statements (mutually exclusive conditions)
+  rather than forcing a single `elif` chain:
+  ```tinylang
+  if k0 == key_UP_W  || k0 == key_UP_K   { dy = -1 }
+  if k0 == key_DOWN_S|| k0 == key_DOWN_J { dy = 1 }
+  ```
+- Multi-line array literals (`[...]`) are **not** supported — keep them on one
+  line.  The parser treats newlines inside brackets as unexpected tokens.
+
+#### Naming Conventions
+
+| Kind | Convention | Example |
+|---|---|---|
+| Functions | `snake_case` | `player_new`, `monster_find_at` |
+| Private helpers | `_namespace_method` | `_player_descend`, `_mapgen_rooms` |
+| Field index functions | `_classname_FIELD` | `_player_HP()` |
+| Class constants | `_classname_CONSTANT` | `_monster_GOBLIN()` |
+| Top-level constants | `namespace_NAME` | `tile_WALL`, `map_W` |
+| Variables | `snake_case` | `player`, `monsters` |
+
+#### Early Returns and Short Circuits
+
+Use **guard clauses** to flatten nesting.  Validate conditions early and return:
+
+```tinylang
+fun _ai_try_move(nx=0, ny=0, mx=0, my=0, map=[]) {
+    if nx < 0 || nx >= MW || ny < 0 || ny >= MH { ret [mx, my] }
+    if map[ny][nx] == 0 { ret [mx, my] }
+    // main path continues here without extra indentation
+}
+```
+
+Prefer the short-circuit logical operators `&&` and `||` over nested `if`:
+
+```tinylang
+// Clear:
+if x >= 0 && x < width && y >= 0 && y < height { ... }
+
+// Instead of nested:
+if x >= 0 {
+    if x < width {
+        if y >= 0 { ... }
+    }
+}
+```
+
+#### Structured Programming
+
+- **One function, one responsibility.**  When a block reaches 15–20 lines or
+  acquires a second level of nesting, extract it into a private helper.
+- Functions communicate exclusively through parameters and return values —
+  no globals, no closures.
+- Public orchestration functions call private helpers in sequence:
+  ```tinylang
+  fun mapgen_level(lvl=1, MW=60, MH=20) {
+      rooms    = _mapgen_rooms(MW, MH)
+      map      = _mapgen_fill(rooms, MW, MH)
+      map      = _mapgen_carve(rooms, map, MW, MH)
+      start    = _mapgen_stairs(map, rooms, MW, MH)
+      ret level_new(map, vis, monsters, items, start[0], start[1])
+  }
+  ```
+- **Avoid deeply nested or very long functions.**  A function over ~30 lines is
+  a strong signal it should be decomposed.  The largest function in the
+  roguelike demo is `render_frame` at 231 instructions — a fraction of the
+  original 821-instruction monolith.
+- **Avoid too many function parameters.**  If a function needs more than 5–7
+  parameters, consider grouping related values into an array (struct) and
+  passing that instead.
+
+### Common Operations
+
+#### Push to Array (In-Place Append)
+
+The canonical way to append elements to an array uses the `+` operator with
+assignment to the same variable.  The compiler recognises this pattern and
+emits the push optimisation — O(1) amortised per element, no temporary array:
+
+```tinylang
+arr = []
+arr = arr + [10]          // single element, O(1) amortised
+arr = arr + [20, 30]      // multi-element, O(1) per element
+
+// In a loop — O(n) total, not O(n²):
+i = 0
+for i < 100000 {
+    arr = arr + [i]
+    i = i + 1
+}
+```
+
+The compound assignment `+=` desugars to the same pattern and benefits from
+the same optimisation:
+
+```tinylang
+arr = []
+arr += [10]
+arr += [20, 30]
+```
+
+For hashmap (string-keyed) arrays, the same technique works with `+=`:
+
+```tinylang
+map = [[]] * 100
+map["foo"] += ["bar"]        // collision-safe append, O(1) amortised
+map["foo"] += ["baz"]
+```
+
+#### Mutate a Table (Struct) with a Function
+
+Because TinyLang uses copy-on-write (COW) with value semantics, mutating a
+passed array does **not** affect the caller's variable.  The idiom is to
+mutate inside the function, **return the object**, and have the caller
+**reassign**:
+
+```tinylang
+fun player_damage(p=[], v=0) {
+    p[_player_HP()] = p[_player_HP()] - v
+    if p[_player_HP()] < 0 { p[_player_HP()] = 0 }
+    ret p                     // ← return the modified object
+}
+
+// Caller must reassign:
+player = player_damage(player, 5)
+```
+
+For systems that modify multiple objects, return a tuple and destructure:
+
+```tinylang
+r = ai_process_monsters(level, player, messages)
+level    = r[0]
+player   = r[1]
+messages = r[2]
+```
+
+The **move-semantics optimisation** in the VM detects `x = f(x, ...)` and
+eliminates the COW deep copy — ownership is transferred directly when the
+array is exclusively owned.
+
+#### Const (Compile-Time Constants via Functions)
+
+TinyLang functions cannot see top-level variables, but they **can** see other
+functions.  The idiomatic way to create a named constant accessible from any
+function is a tiny function that returns a literal value.  The inliner
+eliminates the call overhead entirely:
+
+```tinylang
+// Field index constant — inlined to OC_NUM
+fun _player_HP()    { ret 0 }
+fun _player_MAXHP() { ret 1 }
+
+// Class constant — inlined to OC_NUM or OC_STR
+fun _monster_GOBLIN() { ret 0 }
+fun _item_POTION()    { ret 0 }
+```
+
+```tinylang
+// Usage in any function:
+p[_player_HP()] = p[_player_HP()] + 5
+```
+
+For top-level constants that only top-level code needs (no function access
+required), use plain variables with a namespace prefix:
+
+```tinylang
+tile_WALL   = 0
+tile_FLOOR  = 1
+key_QUIT_Q  = 113
+```
+
+### Data Structures
+
+#### Arrays as Fixed-Length Structs
+
+The primary data structure idiom is a fixed-length array whose fields are
+accessed by named index functions.  This is the closest TinyLang has to a
+struct or class:
+
+```tinylang
+// Layout: [hp, maxhp, atk, def, gold, level, kills]
+// Each field is a named index function:
+fun _player_HP()    { ret 0 }
+fun _player_MAXHP() { ret 1 }
+fun _player_ATK()   { ret 2 }
+// ...
+
+// Constructor pre-allocates with [0] * N:
+fun player_new(hp=0, maxhp=0, atk=0) {
+    p = [0] * 7
+    p[_player_HP()]    = hp
+    p[_player_MAXHP()] = maxhp
+    p[_player_ATK()]   = atk
+    ret p
+}
+
+// Access:
+p[_player_HP()]
+```
+
+#### Linked Lists (Lisp-Style)
+
+TinyLang supports Lisp-style linked lists naturally through nested arrays.
+A cons cell is `[value, rest]` — a 2-element array where the first element
+is the value and the second is either another cons cell or `nil` (empty
+array) to terminate the list:
+
+```tinylang
+// Build a linked list: (1 2 3 4)
+list = [1, [2, [3, [4, nil]]]]
+
+// Access head and tail:
+head = list[0]           // 1
+tail = list[1]           // [2, [3, [4, nil]]]
+
+// Iterate recursively with tail-call optimisation:
+fun sum(list=[], acc=0) {
+    if list == nil { ret acc }
+    ret sum(list[1], acc + list[0])   // TCO — no stack growth
+}
+
+print(sum([1, [2, [3, [4, nil]]]]))    // 10
+```
+
+Functions that operate on linked lists follow the classic recursive pattern,
+safe for arbitrary depth thanks to guaranteed tail-call optimisation:
+
+```tinylang
+fun length(list=[], acc=0) {
+    if list == nil { ret acc }
+    ret length(list[1], acc + 1)
+}
+
+fun map(fn_name="", list=[], result=[]) {
+    // fn_name dispatch via if/elif chain
+}
+```
+
+#### Hashmaps (String Keys)
+
+Any array can be used as a hashmap by indexing with a string key.  The
+string's bytes are hashed with FNV-1a and `hash % len(array)` determines
+the index.  Hashes are cached on the `Arr` struct — repeated access with
+the same key is O(1) after the first hash computation:
+
+```tinylang
+map = [0, 0, 0, 0, 0]
+map["hello"] = 42
+print(map["hello"])     // 42
+```
+
+For collision-safe storage, initialise each bucket as an empty array and
+use the append idiom:
+
+```tinylang
+map = [[]] * 100
+map["foo"] += ["bar"]
+map["foo"] += ["baz"]
+```
+
+### OOP Style
+
+TinyLang has no classes, no objects, and no methods.  The OOP style is an
+idiomatic pattern that emulates classes using arrays (structs), private
+helper functions (methods), and a naming convention (namespacing).
+
+#### Namespacing
+
+All functions belonging to a conceptual "class" share a prefix matching the
+file name.  This is enforced by the **one class per file** convention:
+
+```
+player.tl     →  all functions start with player_
+monster.tl    →  all functions start with monster_
+level.tl      →  all functions start with level_
+```
+
+Private functions (not called from outside the module) use a leading
+underscore: `_player_HP`, `_mapgen_rooms`.
+
+#### Class Structure
+
+Every conceptual class consists of four layers:
+
+| Layer | Convention | Example |
+|---|---|---|
+| Field index functions | `_classname_FIELD()` → ret N | `_player_HP() { ret 0 }` |
+| Constructor | `classname_new(...)` | `player_new(hp=0, ...) { p=[0]*N; ... ret p }` |
+| Accessors | `classname_field(obj)` → ret value | `player_hp(p) { ret floor(p[_player_HP()]) }` |
+| Mutators | `classname_action(obj, ...)` → ret modified obj | `player_damage(p, v) { ... ret p }` |
+
+#### Field Index Functions
+
+These are the foundation.  Every field of the struct has a tiny function
+returning its index.  To reorder fields, change only these `ret N` values
+and the constructor — all accessors and mutators follow automatically:
+
+```tinylang
+// player.tl — [hp, maxhp, atk, def, gold, level, kills]
+
+fun _player_HP()    { ret 0 }
+fun _player_MAXHP() { ret 1 }
+fun _player_ATK()   { ret 2 }
+fun _player_DEF()   { ret 3 }
+fun _player_GOLD()  { ret 4 }
+fun _player_LEVEL() { ret 5 }
+fun _player_KILLS() { ret 6 }
+```
+
+All field index functions are inlined at compile time (the inliner detects
+`fun _() { ret CONSTANT }`), so the call overhead is zero.
+
+#### Constructor
+
+Pre-allocate the array with `[0] * N` (or `[[]] * N` for array-valued
+fields), then assign each field by its named index:
+
+```tinylang
+fun player_new(hp=0, maxhp=0, atk=0, def=0, gold=0, lvl=1, kills=0) {
+    p = [0] * 7
+    p[_player_HP()]    = hp
+    p[_player_MAXHP()] = maxhp
+    p[_player_ATK()]   = atk
+    p[_player_DEF()]   = def
+    p[_player_GOLD()]  = gold
+    p[_player_LEVEL()] = lvl
+    p[_player_KILLS()] = kills
+    ret p
+}
+```
+
+For objects that store arrays, use `[[]] * N`:
+
+```tinylang
+fun level_new(map=[], vis=[], monsters=[], items=[], px=0, py=0) {
+    l = [[]] * 6
+    l[_level_MAP()]  = map
+    l[_level_VIS()]  = vis
+    l[_level_MONSTERS()] = monsters
+    l[_level_ITEMS()]     = items
+    l[_level_PX()]   = px
+    l[_level_PY()]   = py
+    ret l
+}
+```
+
+#### Accessors
+
+Read a single field and return it.  Numeric accessors **must** wrap the
+value with `floor()` — TinyLang's type inference treats `ret arr[idx]` as
+`T_UNKNOWN`, making the function default to `T_ARR_TYPE`.  `floor()` is
+a built-in whose return type is registered as `T_NUM_TYPE`, propagating
+the correct numeric type:
+
+```tinylang
+fun player_hp(p=[])    { ret floor(p[_player_HP()]) }
+fun player_maxhp(p=[]) { ret floor(p[_player_MAXHP()]) }
+
+// Array-valued accessors do NOT need floor():
+fun level_map(l=[])        { ret l[_level_MAP()] }
+fun level_monsters(l=[])   { ret l[_level_MONSTERS()] }
+```
+
+#### Mutators
+
+Mutate one or more fields, then **return the object** so the caller can
+reassign (see the mutate-with-function idiom above):
+
+```tinylang
+fun player_damage(p=[], v=0) {
+    p[_player_HP()] = p[_player_HP()] - v
+    if p[_player_HP()] < 0 { p[_player_HP()] = 0 }
+    ret p
+}
+
+// Higher-level mutators compose the primitives:
+fun player_descend(p=[]) {
+    p[_player_LEVEL()] = p[_player_LEVEL()] + 1
+    p[_player_MAXHP()] = p[_player_MAXHP()] + 5
+    p[_player_HP()]    = p[_player_MAXHP()]
+    ret p
+}
+
+// Caller reassigns:
+player = player_damage(player, 5)
+player = player_descend(player)
 ```
 
 ---
