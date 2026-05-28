@@ -641,6 +641,7 @@ void comp_prim(Code *c) {
             if (ts[tp].t == T_LP) {
                 free(nm); tp++;
                 int ac = 0;
+                int deferred_clear = -1;
                 if (ts[tp].t != T_RP) {
                     /* Check for move-semantics optimization on first arg */
                     int move_first = 0;
@@ -653,7 +654,11 @@ void comp_prim(Code *c) {
                         if (ac == 0 && move_first) {
                             int slot = move_slot_hint;
                             comp_expr(c);
-                            emit(c, (Instr){OC_CLEAR_SLOT, slot, 0, .num = 0});
+                            /* Defer CLEAR_SLOT until after ALL arguments are
+                             * compiled, so subsequent argument sub-expressions
+                             * can still read the slot. Emit it right before
+                             * the CALL instruction below. */
+                            deferred_clear = slot;
                             move_slot_hint = -1;
                         } else {
                             comp_expr(c);
@@ -714,6 +719,10 @@ void comp_prim(Code *c) {
                         if (profile_flag) {
                             emit(c, (Instr){OC_PROFILE, 0, 0, .num = fs[fi].is_builtin ? 1.0 : 0.0});
                         }
+                        /* Emit deferred clear right before CALL, after all
+                         * argument sub-expressions have been compiled. */
+                        if (deferred_clear >= 0)
+                            emit(c, (Instr){OC_CLEAR_SLOT, deferred_clear, 0, .num = 0});
                         emit(c, (Instr){OC_CALL, fi, ac, .num = 0});
                     }
                 }
@@ -1550,7 +1559,9 @@ void comp_stmt(Code *c) {
                         } else {
                             int pn = tp;
                             ExprType store_type = peek_expr_type(&pn);
-                            /* Detect x = f(x, ...) pattern for move semantics */
+                            /* Detect x = f(x, ...) pattern for move semantics
+                             * Only apply when x appears exactly ONCE in the RHS expression.
+                             * Otherwise clearing the slot prematurely breaks later reads. */
                             if (idx_count == 0) {
                                 int scan = tp;
                                 while (ts[scan].t == T_NL || ts[scan].t == T_SEMI) scan++;
