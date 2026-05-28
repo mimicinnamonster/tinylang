@@ -180,7 +180,7 @@ and blocks work naturally.
 ### Tests
 
 ```sh
-./run_tests.sh      # runs all happy-path and error tests
+./tests/run_tests.sh      # runs all happy-path and error tests
 ```
 
 - **Happy-path tests** — `tests/test_*.tl` and `tests/bench_*.tl`

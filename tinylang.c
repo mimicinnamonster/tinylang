@@ -1126,7 +1126,8 @@ static ExprType peek_expr_type(int *pn) {
 
 void comp_stmt(Code *c) {
     while (ts[tp].t == T_NL || ts[tp].t == T_SEMI) tp++;
-    if (ts[tp].t == T_EOF || ts[tp].t == T_RC) return;
+    if (ts[tp].t == T_EOF) return;
+    if (ts[tp].t == T_RC) die("unexpected '}'");
     comp_line = ts[tp].l; err_line = ts[tp].l; err_file = comp_file;
     switch (ts[tp].t) {
         case T_IF: comp_if(c); break;
