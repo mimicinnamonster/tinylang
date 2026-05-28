@@ -1642,8 +1642,10 @@ op_push: {
     else amake_uniq(slot_val);
     int len = slot_val->arr->len;
     if (len >= slot_val->arr->cap) {
+        int old_cap = slot_val->arr->cap;
         slot_val->arr->cap = slot_val->arr->cap ? slot_val->arr->cap * 2 : 4;
         slot_val->arr->val = realloc(slot_val->arr->val, slot_val->arr->cap * sizeof(Value));
+        memset(slot_val->arr->val + old_cap, 0, (slot_val->arr->cap - old_cap) * sizeof(Value));
     }
     vassign(&slot_val->arr->val[len], elem);
     slot_val->arr->len = len + 1;
@@ -1687,8 +1689,10 @@ op_lvals_push: {
     else amake_uniq(sp);
     int len = sp->arr->len;
     if (len >= sp->arr->cap) {
+        int old_cap = sp->arr->cap;
         sp->arr->cap = sp->arr->cap ? sp->arr->cap * 2 : 4;
         sp->arr->val = realloc(sp->arr->val, sp->arr->cap * sizeof(Value));
+        memset(sp->arr->val + old_cap, 0, (sp->arr->cap - old_cap) * sizeof(Value));
     }
     vassign(&sp->arr->val[len], elem);
     sp->arr->len = len + 1;
@@ -1713,8 +1717,10 @@ op_push_all: {
         for (int i = 0; i < rn; i++) {
             int len = slot_val->arr->len;
             if (len >= slot_val->arr->cap) {
+                int old_cap = slot_val->arr->cap;
                 slot_val->arr->cap = slot_val->arr->cap ? slot_val->arr->cap * 2 : 4;
                 slot_val->arr->val = realloc(slot_val->arr->val, slot_val->arr->cap * sizeof(Value));
+                memset(slot_val->arr->val + old_cap, 0, (slot_val->arr->cap - old_cap) * sizeof(Value));
             }
             vassign(&slot_val->arr->val[len], ra->val[i]);
             slot_val->arr->len = len + 1;
